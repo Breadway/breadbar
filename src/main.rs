@@ -16,8 +16,38 @@ impl SimpleComponent for App {
 
     view! {
         gtk::ApplicationWindow {
+            add_css_class: "aster-bar",
             set_title: Some("aster"),
             set_default_height: 32,
+
+            gtk::CenterBox {
+                #[wrap(Some)]
+                set_start_widget = &gtk::Box {
+                    set_orientation: gtk::Orientation::Horizontal,
+                    set_spacing: 4,
+                    set_margin_start: 8,
+
+                    gtk::Label {
+                        set_label: "1  2  3",
+                    }
+                },
+
+                #[wrap(Some)]
+                set_center_widget = &gtk::Label {
+                    set_label: "00:00",
+                },
+
+                #[wrap(Some)]
+                set_end_widget = &gtk::Box {
+                    set_orientation: gtk::Orientation::Horizontal,
+                    set_spacing: 8,
+                    set_margin_end: 8,
+
+                    gtk::Label {
+                        set_label: "—  —  —  —",
+                    }
+                },
+            }
         }
     }
 
@@ -35,6 +65,9 @@ impl SimpleComponent for App {
 
         let model = App;
         let widgets = view_output!();
+
+        theme::apply();
+
         ComponentParts { model, widgets }
     }
 

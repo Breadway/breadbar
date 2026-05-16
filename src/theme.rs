@@ -1,1 +1,67 @@
+use gtk4::CssProvider;
+use serde::Deserialize;
 
+#[derive(Deserialize)]
+struct WalColors {
+    special: Special,
+    colors: Colors,
+}
+
+#[derive(Deserialize)]
+struct Special {
+    background: String,
+}
+
+#[derive(Deserialize)]
+struct Colors {
+    color0: String,
+    color1: String,
+    color15: String,
+}
+
+fn hex_to_rgba(hex: &str, alpha: f32) -> String {
+    let h = hex.trim_start_matches('#');
+    let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(0);
+    let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(0);
+    let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(0);
+    format!("rgba({r},{g},{b},{alpha})")
+}
+
+fn load_css() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let text = std::fs::read_to_string(format!("{home}/.cache/wal/colors.json"))
+        .unwrap_or_default();
+
+    let (bg, surface, fg, accent) = if let Ok(wal) = serde_json::from_str::<WalColors>(&text) {
+        (wal.special.background, wal.colors.color0, wal.colors.color15, wal.colors.color1)
+    } else {
+        (
+            "#1e1e2e".to_string(),
+            "#181825".to_string(),
+            "#cdd6f4".to_string(),
+            "#89b4fa".to_string(),
+        )
+    };
+
+    format!(
+        "window.aster-bar {{ background-color: {bg_rgba}; }}\
+         .workspace-btn {{ background: {surface}; color: {fg}; border-radius: 4px;\
+             border: none; min-width: 24px; padding: 0 8px; }}\
+         .workspace-btn:hover, .workspace-btn.active {{ background: {accent}; }}\
+         label {{ color: {fg}; }}",
+        bg_rgba = hex_to_rgba(&bg, 0.92),
+        surface = surface,
+        fg = fg,
+        accent = accent,
+    )
+}
+
+pub fn apply() {
+    let provider = CssProvider::new();
+    provider.load_from_string(&load_css());
+    gtk4::style_context_add_provider_for_display(
+        &gtk4::gdk::Display::default().expect("no display"),
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
