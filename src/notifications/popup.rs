@@ -58,7 +58,7 @@ fn dismiss(cards_box: &gtk4::Box, window: &gtk4::Window, cards: &Cards, id: u32)
 
 fn create_window() -> gtk4::Window {
     let window = gtk4::Window::new();
-    window.add_css_class("aster-notification");
+    window.add_css_class("breadbar-notification");
     window.init_layer_shell();
     window.set_layer(Layer::Overlay);
     window.set_anchor(Edge::Top, true);

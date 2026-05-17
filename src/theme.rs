@@ -44,7 +44,7 @@ fn load_css() -> String {
     };
 
     format!(
-        "window.aster-bar {{ background-color: {bg_rgba}; }}\
+        "window.breadbar {{ background-color: {bg_rgba}; }}\
          .workspace-btn {{ background: {surface}; color: {fg}; border-radius: 4px;\
              border: none; min-width: 24px; padding: 0 8px; }}\
          .workspace-btn:hover, .workspace-btn.active {{ background: {accent}; }}\

@@ -55,7 +55,7 @@ impl NotifServer {
     }
 
     fn get_server_information(&self) -> (String, String, String, String) {
-        ("aster".into(), "breadway".into(), "0.1.0".into(), "1.2".into())
+        ("breadbar".into(), "breadway".into(), "0.1.0".into(), "1.2".into())
     }
 }
 
