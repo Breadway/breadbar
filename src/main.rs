@@ -11,7 +11,9 @@ use relm4::prelude::*;
 pub struct App {
     workspaces: Vec<Workspace>,
     active_ws: WorkspaceId,
-    // Stored handle so update() can manipulate the live widget directly.
+    time_str: String,
+    stats_str: String,
+    // GObject handle — manipulated directly in update() to avoid update_view conflicts.
     workspace_box: gtk4::Box,
 }
 
@@ -19,6 +21,8 @@ pub struct App {
 pub enum AppInput {
     WorkspaceList(Vec<Workspace>),
     ActiveWorkspace(WorkspaceId),
+    ClockTick,
+    StatsUpdate(String),
 }
 
 #[relm4::component(pub)]
@@ -49,7 +53,8 @@ impl SimpleComponent for App {
 
                 #[wrap(Some)]
                 set_center_widget = &gtk::Label {
-                    set_label: "00:00",
+                    #[watch]
+                    set_label: &model.time_str,
                 },
 
                 #[wrap(Some)]
@@ -59,7 +64,8 @@ impl SimpleComponent for App {
                     set_margin_end: 8,
 
                     gtk::Label {
-                        set_label: "—  —  —  —",
+                        #[watch]
+                        set_label: &model.stats_str,
                     }
                 },
             }
@@ -78,19 +84,21 @@ impl SimpleComponent for App {
         root.set_anchor(Edge::Right, true);
         root.set_exclusive_zone(32);
 
-        // Placeholder until view_output! gives us the real handle.
         let mut model = App {
             workspaces: vec![],
             active_ws: 1,
+            time_str: bar::clock::current(),
+            stats_str: String::new(),
             workspace_box: gtk4::Box::new(gtk4::Orientation::Horizontal, 4),
         };
         let widgets = view_output!();
 
-        // Swap in the actual widget so update() can reach it.
         model.workspace_box = widgets.workspace_box.clone();
 
         theme::apply();
-        bar::workspaces::spawn_watcher(sender);
+        bar::workspaces::spawn_watcher(sender.clone());
+        bar::clock::spawn_ticker(sender.clone());
+        bar::stats::spawn_poller(sender);
 
         ComponentParts { model, widgets }
     }
@@ -101,12 +109,19 @@ impl SimpleComponent for App {
                 let mut sorted = list;
                 sorted.sort_by_key(|w| w.id);
                 self.workspaces = sorted;
+                self.rebuild_buttons();
             }
             AppInput::ActiveWorkspace(id) => {
                 self.active_ws = id;
+                self.rebuild_buttons();
+            }
+            AppInput::ClockTick => {
+                self.time_str = bar::clock::current();
+            }
+            AppInput::StatsUpdate(s) => {
+                self.stats_str = s;
             }
         }
-        self.rebuild_buttons();
     }
 }
 
