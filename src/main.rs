@@ -99,6 +99,7 @@ impl SimpleComponent for App {
         bar::workspaces::spawn_watcher(sender.clone());
         bar::clock::spawn_ticker(sender.clone());
         bar::stats::spawn_poller(sender);
+        notifications::spawn();
 
         ComponentParts { model, widgets }
     }
@@ -138,6 +139,16 @@ impl App {
 }
 
 fn main() {
+    // Reload theme CSS on SIGHUP (e.g. after pywal runs).
+    relm4::spawn(async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut stream = signal(SignalKind::hangup()).expect("SIGHUP handler");
+        loop {
+            stream.recv().await;
+            gtk4::glib::MainContext::default().invoke(theme::apply);
+        }
+    });
+
     let app = RelmApp::new("sh.breadway.aster");
     app.run::<App>(());
 }

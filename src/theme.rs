@@ -48,7 +48,14 @@ fn load_css() -> String {
          .workspace-btn {{ background: {surface}; color: {fg}; border-radius: 4px;\
              border: none; min-width: 24px; padding: 0 8px; }}\
          .workspace-btn:hover, .workspace-btn.active {{ background: {accent}; }}\
-         label {{ color: {fg}; }}",
+         label {{ color: {fg}; }}\
+         window.aster-notification {{ background-color: alpha({bg_plain}, 0.95); }}\
+         .notification-card {{ background: {surface}; border-radius: 6px;\
+             padding: 10px; margin-bottom: 4px; }}\
+         .notification-summary {{ font-weight: bold; color: {fg}; }}\
+         .notification-app {{ color: {fg}; opacity: 0.6; }}\
+         .notification-body {{ color: {fg}; }}",
+        bg_plain = bg,
         bg_rgba = hex_to_rgba(&bg, 0.92),
         surface = surface,
         fg = fg,
