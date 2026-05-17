@@ -43,8 +43,8 @@ impl SimpleComponent for App {
 
     view! {
         gtk::ApplicationWindow {
-            add_css_class: "aster-bar",
-            set_title: Some("aster"),
+            add_css_class: "breadbar",
+            set_title: Some("breadbar"),
             set_default_height: 32,
 
             #[name = "center_box"]
@@ -199,6 +199,6 @@ fn main() {
         }
     });
 
-    let app = RelmApp::new("sh.breadway.aster");
+    let app = RelmApp::new("sh.breadway.breadbar");
     app.run::<App>(());
 }

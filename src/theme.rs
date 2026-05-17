@@ -49,7 +49,7 @@ fn load_css() -> String {
              border: none; min-width: 24px; padding: 0 8px; }}\
          .workspace-btn:hover, .workspace-btn.active {{ background: {accent}; }}\
          label {{ color: {fg}; }}\
-         window.aster-notification {{ background-color: alpha({bg_plain}, 0.95); }}\
+         window.breadbar-notification {{ background-color: alpha({bg_plain}, 0.95); }}\
          .notification-card {{ background: {surface}; border-radius: 6px;\
              padding: 10px; margin-bottom: 4px; }}\
          .notification-summary {{ font-weight: bold; color: {fg}; }}\
