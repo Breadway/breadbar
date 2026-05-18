@@ -44,10 +44,13 @@ fn load_css() -> String {
     };
 
     format!(
-        "window.breadbar {{ background-color: {bg_rgba}; }}\
-         .workspace-btn {{ background: {surface}; color: {fg}; border-radius: 4px;\
-             border: none; min-width: 24px; padding: 0 8px; }}\
-         .workspace-btn:hover, .workspace-btn.active {{ background: {accent}; }}\
+        "* {{ font-family: 'JetBrainsMono Nerd Font Mono', monospace; font-size: 12px; }}\
+         window.breadbar {{ background-color: {bg_rgba}; border-radius: 0; }}\
+         .workspace-btn {{ background: transparent; color: {fg}; opacity: 0.45;\
+             border-radius: 0 0 8px 8px; border: none; outline: none; box-shadow: none;\
+             min-width: 24px; padding: 2px 8px; }}\
+         .workspace-btn:hover {{ opacity: 0.8; }}\
+         .workspace-btn.active {{ background: {accent}; opacity: 1; }}\
          label {{ color: {fg}; }}\
          window.breadbar-notification {{ background-color: alpha({bg_plain}, 0.95); }}\
          .notification-card {{ background: {surface}; border-radius: 6px;\

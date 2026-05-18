@@ -1,11 +1,18 @@
 use crate::{App, AppInput};
 use relm4::ComponentSender;
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        LazyLock, Mutex, OnceLock,
+    },
+};
 
-const WIFI_STRONG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Strong.svg");
-const WIFI_MEDIUM: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Medium.svg");
-const WIFI_WEAK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Weak.svg");
-const WIFI_OFF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Connecting.svg");
+pub const WIFI_STRONG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Strong.svg");
+pub const WIFI_MEDIUM: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Medium.svg");
+pub const WIFI_WEAK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Weak.svg");
+pub const WIFI_OFF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Connecting.svg");
 
 #[derive(Debug)]
 pub struct Stats {
@@ -22,7 +29,11 @@ struct CpuSnapshot {
     idle: u64,
 }
 
-static PREV_CPU: std::sync::OnceLock<Mutex<CpuSnapshot>> = std::sync::OnceLock::new();
+static PREV_CPU: OnceLock<Mutex<CpuSnapshot>> = OnceLock::new();
+static BAT_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+static WIFI_CACHE: LazyLock<Mutex<(String, &'static str)>> =
+    LazyLock::new(|| Mutex::new(("—".to_string(), WIFI_OFF)));
+static WIFI_TICK: AtomicU8 = AtomicU8::new(0);
 
 fn read_cpu() -> f32 {
     let text = fs::read_to_string("/proc/stat").unwrap_or_default();
@@ -65,15 +76,16 @@ fn read_ram() -> u64 {
     total.saturating_sub(avail)
 }
 
-fn bat_path() -> Option<PathBuf> {
-    fs::read_dir("/sys/class/power_supply")
-        .ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .map_or(false, |n| n.to_string_lossy().starts_with("BAT"))
+fn bat_path() -> Option<&'static PathBuf> {
+    BAT_PATH
+        .get_or_init(|| {
+            fs::read_dir("/sys/class/power_supply")
+                .ok()?
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .find(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("BAT")))
         })
+        .as_ref()
 }
 
 fn read_power() -> Option<f32> {
@@ -161,7 +173,17 @@ pub async fn poll() -> Stats {
     let mem = read_ram();
     let power = read_power().map_or_else(|| "  —W".into(), |w| format!("{w:4.1}W"));
     let bat = read_battery().map_or_else(|| " —".into(), |p| format!("{p:3}%"));
-    let (wifi_ssid, wifi_icon) = read_wifi().await;
+    // Refresh WiFi every 8 cycles (~16 s); cache the result in between.
+    let (wifi_ssid, wifi_icon) = {
+        let tick = WIFI_TICK.fetch_add(1, Ordering::Relaxed);
+        if tick % 8 == 0 {
+            let fresh = read_wifi().await;
+            *WIFI_CACHE.lock().unwrap() = fresh.clone();
+            fresh
+        } else {
+            WIFI_CACHE.lock().unwrap().clone()
+        }
+    };
     Stats {
         cpu: format!("{cpu:3.0}%"),
         mem: if mem >= 1024 * 1024 {

@@ -25,6 +25,8 @@ pub struct App {
     bat_lbl: gtk4::Label,
     wifi_lbl: gtk4::Label,
     wifi_img: gtk4::Image,
+    // Pre-loaded textures indexed by the WIFI_* constant pointer values.
+    wifi_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
 }
 
 #[derive(Debug)]
@@ -53,7 +55,6 @@ impl SimpleComponent for App {
                 set_start_widget = &gtk::Box {
                     set_orientation: gtk::Orientation::Horizontal,
                     set_spacing: 0,
-                    set_margin_start: 8,
 
                     #[name = "workspace_box"]
                     gtk::Box {
@@ -92,6 +93,12 @@ impl SimpleComponent for App {
         wifi_lbl.set_max_width_chars(12);
         let wifi_img = gtk4::Image::from_paintable(Some(&svg_texture(asset!("WiFi Connecting.svg"))));
 
+        use bar::stats::{WIFI_OFF, WIFI_STRONG, WIFI_MEDIUM, WIFI_WEAK};
+        let wifi_textures = [WIFI_STRONG, WIFI_MEDIUM, WIFI_WEAK, WIFI_OFF]
+            .into_iter()
+            .map(|p| (p.as_ptr() as usize, svg_texture(p)))
+            .collect();
+
         let mut model = App {
             workspaces: vec![],
             active_ws: 1,
@@ -103,6 +110,7 @@ impl SimpleComponent for App {
             bat_lbl: bat_lbl.clone(),
             wifi_lbl: wifi_lbl.clone(),
             wifi_img: wifi_img.clone(),
+            wifi_textures,
         };
         let widgets = view_output!();
         model.workspace_box = widgets.workspace_box.clone();
@@ -149,7 +157,9 @@ impl SimpleComponent for App {
                 self.pwr_lbl.set_label(&stats.power);
                 self.bat_lbl.set_label(&stats.bat);
                 self.wifi_lbl.set_label(&stats.wifi_ssid);
-                self.wifi_img.set_paintable(Some(&svg_texture(stats.wifi_icon)));
+                if let Some(tex) = self.wifi_textures.get(&(stats.wifi_icon.as_ptr() as usize)) {
+                    self.wifi_img.set_paintable(Some(tex));
+                }
             }
         }
     }
