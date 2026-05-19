@@ -1,5 +1,11 @@
 use gtk4::CssProvider;
 use serde::Deserialize;
+use std::cell::RefCell;
+
+thread_local! {
+    static PROVIDER:      RefCell<Option<CssProvider>> = const { RefCell::new(None) };
+    static USER_PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
+}
 
 #[derive(Deserialize)]
 struct WalColors {
@@ -29,11 +35,16 @@ fn hex_to_rgba(hex: &str, alpha: f32) -> String {
 
 fn load_css() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    let text = std::fs::read_to_string(format!("{home}/.cache/wal/colors.json"))
-        .unwrap_or_default();
+    let text =
+        std::fs::read_to_string(format!("{home}/.cache/wal/colors.json")).unwrap_or_default();
 
     let (bg, surface, fg, accent) = if let Ok(wal) = serde_json::from_str::<WalColors>(&text) {
-        (wal.special.background, wal.colors.color0, wal.colors.color15, wal.colors.color1)
+        (
+            wal.special.background,
+            wal.colors.color0,
+            wal.colors.color15,
+            wal.colors.color1,
+        )
     } else {
         (
             "#1e1e2e".to_string(),
@@ -44,14 +55,18 @@ fn load_css() -> String {
     };
 
     format!(
-        "* {{ font-family: 'JetBrainsMono Nerd Font Mono', monospace; font-size: 12px; }}\
+        "* {{ font-family: 'JetBrainsMono Nerd Font Mono', monospace; font-size: 14px; }}\
          window.breadbar {{ background-color: {bg_rgba}; border-radius: 0; }}\
+         label {{ color: {fg}; }}\
          .workspace-btn {{ background: transparent; color: {fg}; opacity: 0.45;\
              border-radius: 0 0 8px 8px; border: none; outline: none; box-shadow: none;\
              min-width: 24px; padding: 2px 8px; }}\
          .workspace-btn:hover {{ opacity: 0.8; }}\
          .workspace-btn.active {{ background: {accent}; opacity: 1; }}\
-         label {{ color: {fg}; }}\
+         .stats-box {{ margin-right: 8px; }}\
+         .stat-pair {{ margin-right: 8px; }}\
+         .stat-icon {{ margin-right: 3px; }}\
+         .bt-icon {{ margin-right: 8px; }}\
          window.breadbar-notification {{ background-color: alpha({bg_plain}, 0.95); }}\
          .notification-card {{ background: {surface}; border-radius: 6px;\
              padding: 10px; margin-bottom: 4px; }}\
@@ -67,11 +82,50 @@ fn load_css() -> String {
 }
 
 pub fn apply() {
-    let provider = CssProvider::new();
-    provider.load_from_string(&load_css());
-    gtk4::style_context_add_provider_for_display(
-        &gtk4::gdk::Display::default().expect("no display"),
-        &provider,
-        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    let css = load_css();
+    let display = gtk4::gdk::Display::default().expect("no display");
+
+    PROVIDER.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if let Some(p) = guard.as_ref() {
+            p.load_from_string(&css);
+        } else {
+            let p = CssProvider::new();
+            p.load_from_string(&css);
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &p,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            *guard = Some(p);
+        }
+    });
+
+    // User override: ~/.config/breadbar/style.css — send SIGHUP to reload.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let user_path = format!("{home}/.config/breadbar/style.css");
+    USER_PROVIDER.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        match std::fs::read_to_string(&user_path) {
+            Ok(user_css) => {
+                if let Some(p) = guard.as_ref() {
+                    p.load_from_string(&user_css);
+                } else {
+                    let p = CssProvider::new();
+                    p.load_from_string(&user_css);
+                    gtk4::style_context_add_provider_for_display(
+                        &display,
+                        &p,
+                        gtk4::STYLE_PROVIDER_PRIORITY_USER,
+                    );
+                    *guard = Some(p);
+                }
+            }
+            Err(_) => {
+                if let Some(p) = guard.as_ref() {
+                    p.load_from_string("");
+                }
+            }
+        }
+    });
 }

@@ -19,13 +19,19 @@ pub struct App {
     active_ws: WorkspaceId,
     time_str: String,
     workspace_box: gtk4::Box,
+    button_map: std::collections::HashMap<WorkspaceId, gtk4::Button>,
     cpu_lbl: gtk4::Label,
     mem_lbl: gtk4::Label,
     pwr_lbl: gtk4::Label,
     bat_lbl: gtk4::Label,
+    bat_img: gtk4::Image,
+    bat_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
+    ac_img: gtk4::Image,
+    bt_img: gtk4::Image,
+    bt_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
     wifi_lbl: gtk4::Label,
     wifi_img: gtk4::Image,
-    // Pre-loaded textures indexed by the WIFI_* constant pointer values.
+    // Pre-loaded textures indexed by constant pointer values.
     wifi_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
 }
 
@@ -84,16 +90,45 @@ impl SimpleComponent for App {
         root.set_anchor(Edge::Right, true);
         root.set_exclusive_zone(32);
 
-        let cpu_lbl = stat_label(4);
-        let mem_lbl = stat_label(4);
-        let pwr_lbl = stat_label(5);
-        let bat_lbl = stat_label(4);
+        let cpu_lbl = stat_label();
+        let mem_lbl = stat_label();
+        let pwr_lbl = stat_label();
+        let bat_lbl = stat_label();
         let wifi_lbl = gtk4::Label::new(None);
+        wifi_lbl.add_css_class("stat-label");
+        wifi_lbl.add_css_class("wifi-label");
         wifi_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        wifi_lbl.set_max_width_chars(12);
-        let wifi_img = gtk4::Image::from_paintable(Some(&svg_texture(asset!("WiFi Connecting.svg"))));
+        wifi_lbl.set_max_width_chars(22);
+        wifi_lbl.set_xalign(0.0);
+        let wifi_img =
+            gtk4::Image::from_paintable(Some(&svg_texture(asset!("WiFi Connecting.svg"))));
 
-        use bar::stats::{WIFI_OFF, WIFI_STRONG, WIFI_MEDIUM, WIFI_WEAK};
+        use bar::stats::{
+            AC_POWER, BAT_HIGH, BAT_LOW, BAT_MID, BT_CONNECTED, BT_OFF, BT_ON, WIFI_MEDIUM,
+            WIFI_OFF, WIFI_STRONG, WIFI_WEAK,
+        };
+        let bat_textures: std::collections::HashMap<usize, gtk4::gdk::Texture> =
+            [BAT_HIGH, BAT_MID, BAT_LOW]
+                .into_iter()
+                .map(|p| (p.as_ptr() as usize, svg_texture(p)))
+                .collect();
+        // BAT_MID was just inserted into bat_textures above — key is always present.
+        let bat_img = gtk4::Image::from_paintable(Some(
+            bat_textures.get(&(BAT_MID.as_ptr() as usize)).unwrap(),
+        ));
+        let ac_img = gtk4::Image::from_paintable(Some(&svg_texture(AC_POWER)));
+        ac_img.set_visible(false);
+
+        let bt_textures: std::collections::HashMap<usize, gtk4::gdk::Texture> =
+            [BT_OFF, BT_ON, BT_CONNECTED]
+                .into_iter()
+                .map(|p| (p.as_ptr() as usize, svg_texture(p)))
+                .collect();
+        // BT_OFF was just inserted into bt_textures above — key is always present.
+        let bt_img = gtk4::Image::from_paintable(Some(
+            bt_textures.get(&(BT_OFF.as_ptr() as usize)).unwrap(),
+        ));
+
         let wifi_textures = [WIFI_STRONG, WIFI_MEDIUM, WIFI_WEAK, WIFI_OFF]
             .into_iter()
             .map(|p| (p.as_ptr() as usize, svg_texture(p)))
@@ -104,10 +139,16 @@ impl SimpleComponent for App {
             active_ws: 1,
             time_str: bar::clock::current(),
             workspace_box: gtk4::Box::new(gtk4::Orientation::Horizontal, 4),
+            button_map: std::collections::HashMap::new(),
             cpu_lbl: cpu_lbl.clone(),
             mem_lbl: mem_lbl.clone(),
             pwr_lbl: pwr_lbl.clone(),
             bat_lbl: bat_lbl.clone(),
+            bat_img: bat_img.clone(),
+            bat_textures,
+            ac_img: ac_img.clone(),
+            bt_img: bt_img.clone(),
+            bt_textures,
             wifi_lbl: wifi_lbl.clone(),
             wifi_img: wifi_img.clone(),
             wifi_textures,
@@ -115,13 +156,25 @@ impl SimpleComponent for App {
         let widgets = view_output!();
         model.workspace_box = widgets.workspace_box.clone();
 
-        let stats_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        stats_box.set_margin_end(8);
+        let stats_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        stats_box.add_css_class("stats-box");
         stats_box.append(&stat_pair(asset!("CPU.svg"), &cpu_lbl));
         stats_box.append(&stat_pair(asset!("RAM Usage.svg"), &mem_lbl));
         stats_box.append(&stat_pair(asset!("Power Draw.svg"), &pwr_lbl));
-        stats_box.append(&stat_pair(asset!("Battery.svg"), &bat_lbl));
-        let wifi_pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        let bat_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        bat_box.add_css_class("stat-pair");
+        bat_img.add_css_class("stat-icon");
+        bat_lbl.add_css_class("stat-label");
+        ac_img.add_css_class("stat-icon");
+        bat_box.append(&bat_img);
+        bat_box.append(&bat_lbl);
+        bat_box.append(&ac_img);
+        stats_box.append(&bat_box);
+        bt_img.add_css_class("bt-icon");
+        stats_box.append(&bt_img);
+        let wifi_pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        wifi_pair.add_css_class("stat-pair");
+        wifi_img.add_css_class("stat-icon");
         wifi_pair.append(&wifi_img);
         wifi_pair.append(&wifi_lbl);
         stats_box.append(&wifi_pair);
@@ -145,8 +198,13 @@ impl SimpleComponent for App {
                 self.rebuild_buttons();
             }
             AppInput::ActiveWorkspace(id) => {
+                if let Some(old) = self.button_map.get(&self.active_ws) {
+                    old.remove_css_class("active");
+                }
                 self.active_ws = id;
-                self.rebuild_buttons();
+                if let Some(btn) = self.button_map.get(&self.active_ws) {
+                    btn.add_css_class("active");
+                }
             }
             AppInput::ClockTick => {
                 self.time_str = bar::clock::current();
@@ -156,6 +214,13 @@ impl SimpleComponent for App {
                 self.mem_lbl.set_label(&stats.mem);
                 self.pwr_lbl.set_label(&stats.power);
                 self.bat_lbl.set_label(&stats.bat);
+                if let Some(tex) = self.bat_textures.get(&(stats.bat_icon.as_ptr() as usize)) {
+                    self.bat_img.set_paintable(Some(tex));
+                }
+                self.ac_img.set_visible(stats.ac_connected);
+                if let Some(tex) = self.bt_textures.get(&(stats.bt_icon.as_ptr() as usize)) {
+                    self.bt_img.set_paintable(Some(tex));
+                }
                 self.wifi_lbl.set_label(&stats.wifi_ssid);
                 if let Some(tex) = self.wifi_textures.get(&(stats.wifi_icon.as_ptr() as usize)) {
                     self.wifi_img.set_paintable(Some(tex));
@@ -166,20 +231,25 @@ impl SimpleComponent for App {
 }
 
 impl App {
-    fn rebuild_buttons(&self) {
+    fn rebuild_buttons(&mut self) {
         while let Some(child) = self.workspace_box.first_child() {
             self.workspace_box.remove(&child);
         }
+        self.button_map.clear();
         for ws in &self.workspaces {
-            self.workspace_box
-                .append(&bar::workspaces::make_button(ws.id, &ws.name, self.active_ws));
+            let btn = bar::workspaces::make_button(ws.id, &ws.name, self.active_ws);
+            self.workspace_box.append(&btn);
+            self.button_map.insert(ws.id, btn);
         }
     }
 }
 
 fn stat_pair(icon_path: &str, label: &gtk4::Label) -> gtk4::Box {
-    let pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-    pair.append(&gtk4::Image::from_paintable(Some(&svg_texture(icon_path))));
+    let pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    pair.add_css_class("stat-pair");
+    let img = gtk4::Image::from_paintable(Some(&svg_texture(icon_path)));
+    img.add_css_class("stat-icon");
+    pair.append(&img);
     pair.append(label);
     pair
 }
@@ -187,15 +257,16 @@ fn stat_pair(icon_path: &str, label: &gtk4::Label) -> gtk4::Box {
 fn svg_texture(path: &str) -> gtk4::gdk::Texture {
     let svg = std::fs::read_to_string(path)
         .unwrap_or_default()
-        .replace("currentColor", "white");
+        .replace("currentColor", "white")
+        .replace(r#"width="24" height="24""#, r#"width="16" height="16""#);
     let bytes = gtk4::glib::Bytes::from_owned(svg.into_bytes());
     gtk4::gdk::Texture::from_bytes(&bytes).expect("svg load")
 }
 
-fn stat_label(width_chars: i32) -> gtk4::Label {
+fn stat_label() -> gtk4::Label {
     let lbl = gtk4::Label::new(None);
-    lbl.set_width_chars(width_chars);
-    lbl.set_xalign(1.0);
+    lbl.add_css_class("stat-label");
+    lbl.set_xalign(0.0);
     lbl
 }
 

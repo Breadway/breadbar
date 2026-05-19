@@ -5,7 +5,13 @@ use tokio::sync::mpsc;
 use zbus::zvariant::OwnedValue;
 
 pub enum NotifEvent {
-    Show { id: u32, app_name: String, summary: String, body: String, timeout_ms: u32 },
+    Show {
+        id: u32,
+        app_name: String,
+        summary: String,
+        body: String,
+        timeout_ms: u32,
+    },
     Close(u32),
 }
 
@@ -16,6 +22,8 @@ struct NotifServer {
 
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl NotifServer {
+    // The org.freedesktop.Notifications spec mandates exactly these 8 parameters.
+    #[allow(clippy::too_many_arguments)]
     async fn notify(
         &self,
         app_name: &str,
@@ -32,7 +40,11 @@ impl NotifServer {
         } else {
             self.next_id.fetch_add(1, Ordering::Relaxed)
         };
-        let timeout_ms = if expire_timeout <= 0 { 5000 } else { expire_timeout as u32 };
+        let timeout_ms = if expire_timeout <= 0 {
+            5000
+        } else {
+            expire_timeout as u32
+        };
         let _ = self
             .tx
             .send(NotifEvent::Show {
@@ -55,7 +67,12 @@ impl NotifServer {
     }
 
     fn get_server_information(&self) -> (String, String, String, String) {
-        ("breadbar".into(), "breadway".into(), "0.1.0".into(), "1.2".into())
+        (
+            "breadbar".into(),
+            "breadway".into(),
+            "0.1.0".into(),
+            "1.2".into(),
+        )
     }
 }
 
@@ -63,7 +80,11 @@ pub fn spawn() {
     let (tx, rx) = mpsc::channel(32);
 
     relm4::spawn(async move {
-        let server = NotifServer { tx, next_id: AtomicU32::new(1) };
+        let server = NotifServer {
+            tx,
+            next_id: AtomicU32::new(1),
+        };
+        // Builder failures here would only occur with invalid static strings — safe to unwrap.
         let _conn = zbus::connection::Builder::session()
             .unwrap()
             .name("org.freedesktop.Notifications")
@@ -72,7 +93,7 @@ pub fn spawn() {
             .unwrap()
             .build()
             .await
-            .expect("failed to claim org.freedesktop.Notifications");
+            .expect("failed to claim org.freedesktop.Notifications on D-Bus session bus");
         std::future::pending::<()>().await
     });
 

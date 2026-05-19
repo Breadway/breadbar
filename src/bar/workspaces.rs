@@ -44,7 +44,9 @@ pub fn make_button(id: WorkspaceId, name: &str, active: WorkspaceId) -> gtk4::Bu
     }
     btn.connect_clicked(move |_| {
         use hyprland::dispatch::{Dispatch, DispatchType, WorkspaceIdentifierWithSpecial};
-        let _ = Dispatch::call(DispatchType::Workspace(WorkspaceIdentifierWithSpecial::Id(id)));
+        let _ = Dispatch::call(DispatchType::Workspace(WorkspaceIdentifierWithSpecial::Id(
+            id,
+        )));
     });
     btn
 }

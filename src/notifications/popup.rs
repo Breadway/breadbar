@@ -21,7 +21,13 @@ pub async fn run(mut rx: Receiver<NotifEvent>) {
 
     while let Some(event) = rx.recv().await {
         match event {
-            NotifEvent::Show { id, app_name, summary, body, timeout_ms } => {
+            NotifEvent::Show {
+                id,
+                app_name,
+                summary,
+                body,
+                timeout_ms,
+            } => {
                 // Replace existing card with same id (replaces_id case)
                 if let Some(old) = cards.borrow_mut().remove(&id) {
                     cards_box.remove(&old);
