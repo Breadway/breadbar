@@ -1,2 +1,37 @@
-/target
+# Build artifacts
+/target/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment / secrets
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+secrets/
+
+# Log files
+*.log
+logs/
+
+# Runtime files
+*.sock
+*.pid
+
+# Claude Code session data
+.claude/
+
+# Internal design documents (not for distribution)
 aster-brief.md
