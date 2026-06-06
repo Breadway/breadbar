@@ -10,6 +10,9 @@ keywords = ["wayland", "hyprland", "bar", "status-bar", "gtk4"]
 categories = ["gui"]
 
 [dependencies]
+# Path dep for local dev; replace with git dep on first tag:
+# bread-theme = { git = "https://github.com/Breadway/bread-ecosystem", tag = "theme-v0.1.0", features = ["gtk"] }
+bread-theme = { path = "../bread-ecosystem/bread-theme", features = ["gtk"] }
 gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 relm4 = { version = "0.11", features = ["macros"] }

@@ -1,5 +1,5 @@
+use bread_theme::{gtk as bgtk, hex_to_rgba, load_palette};
 use gtk4::CssProvider;
-use serde::Deserialize;
 use std::cell::RefCell;
 
 thread_local! {
@@ -7,125 +7,53 @@ thread_local! {
     static USER_PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
 }
 
-#[derive(Deserialize)]
-struct WalColors {
-    special: Special,
-    colors: Colors,
-}
-
-#[derive(Deserialize)]
-struct Special {
-    background: String,
-}
-
-#[derive(Deserialize)]
-struct Colors {
-    color0: String,
-    color1: String,
-    color15: String,
-}
-
-fn hex_to_rgba(hex: &str, alpha: f32) -> String {
-    let h = hex.trim_start_matches('#');
-    let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(0);
-    let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(0);
-    let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(0);
-    format!("rgba({r},{g},{b},{alpha})")
-}
-
 fn load_css() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let text =
-        std::fs::read_to_string(format!("{home}/.cache/wal/colors.json")).unwrap_or_default();
-
-    let (bg, surface, fg, accent) = if let Ok(wal) = serde_json::from_str::<WalColors>(&text) {
-        (
-            wal.special.background,
-            wal.colors.color0,
-            wal.colors.color15,
-            wal.colors.color1,
-        )
-    } else {
-        (
-            "#1e1e2e".to_string(),
-            "#181825".to_string(),
-            "#cdd6f4".to_string(),
-            "#89b4fa".to_string(),
-        )
-    };
-
+    let p = load_palette();
     format!(
-        "* {{ font-family: 'JetBrainsMono Nerd Font Mono', monospace; font-size: 14px; }}\
+        "* {{ font-family: 'Varela Round', sans-serif; font-size: 14px; }}\
          window.breadbar {{ background-color: {bg_rgba}; border-radius: 0; }}\
          label {{ color: {fg}; }}\
          .workspace-btn {{ background: transparent; color: {fg}; opacity: 0.45;\
              border-radius: 0 0 8px 8px; border: none; outline: none; box-shadow: none;\
-             min-width: 24px; padding: 2px 8px; }}\
+             min-width: 24px; padding: 4px 8px; }}\
          .workspace-btn:hover {{ opacity: 0.8; }}\
          .workspace-btn.active {{ background: {accent}; opacity: 1; }}\
          .stats-box {{ margin-right: 8px; }}\
-         .stat-pair {{ margin-right: 8px; }}\
-         .stat-icon {{ margin-right: 3px; }}\
-         .bt-icon {{ margin-right: 8px; }}\
+         .stat-pair {{ margin-right: 12px; }}\
+         .stat-icon {{ margin-right: 5px; }}\
+         .bt-icon {{ margin-right: 12px; }}\
          window.breadbar-notification {{ background-color: alpha({bg_plain}, 0.95); }}\
-         .notification-card {{ background: {surface}; border-radius: 6px;\
-             padding: 10px; margin-bottom: 4px; }}\
+         .notification-card {{ background: {surface}; border-radius: 8px;\
+             padding: 12px; margin-bottom: 8px; }}\
          .notification-summary {{ font-weight: bold; color: {fg}; }}\
          .notification-app {{ color: {fg}; opacity: 0.6; }}\
-         .notification-body {{ color: {fg}; }}",
-        bg_plain = bg,
-        bg_rgba = hex_to_rgba(&bg, 0.92),
-        surface = surface,
-        fg = fg,
-        accent = accent,
+         .notification-body {{ color: {fg}; }}\
+         window.breadbar-osd {{ background-color: alpha({bg_plain}, 0.95); border-radius: 8px; }}\
+         .osd-kind {{ color: {fg}; opacity: 0.75; font-size: 12px; }}\
+         .osd-pct {{ color: {fg}; font-weight: bold; font-size: 12px; }}\
+         progressbar.osd-bar {{ min-height: 8px; }}\
+         progressbar.osd-bar trough {{ background-image: none; background-color: {trough}; border-radius: 4px; min-height: 8px; }}\
+         progressbar.osd-bar trough progress {{ background-image: none; background-color: {accent}; border-radius: 4px; min-height: 8px; }}",
+        bg_plain = p.background,
+        bg_rgba  = hex_to_rgba(&p.background, 0.92),
+        surface  = p.color0,
+        fg       = p.foreground,
+        accent   = p.color4,
+        trough   = hex_to_rgba(&p.color4, 0.25),
     )
 }
 
+/// Returns the current foreground colour (used for icon tinting in the stats bar).
+pub fn fg_color() -> String {
+    load_palette().foreground
+}
+
+/// Apply (or reload) the theme CSS. Safe to call from `glib::MainContext::invoke`.
 pub fn apply() {
     let css = load_css();
-    let display = gtk4::gdk::Display::default().expect("no display");
+    PROVIDER.with(|cell| bgtk::apply_css(&css, cell));
 
-    PROVIDER.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        if let Some(p) = guard.as_ref() {
-            p.load_from_string(&css);
-        } else {
-            let p = CssProvider::new();
-            p.load_from_string(&css);
-            gtk4::style_context_add_provider_for_display(
-                &display,
-                &p,
-                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-            *guard = Some(p);
-        }
-    });
-
-    // User override: ~/.config/breadbar/style.css — send SIGHUP to reload.
     let home = std::env::var("HOME").unwrap_or_default();
-    let user_path = format!("{home}/.config/breadbar/style.css");
-    USER_PROVIDER.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        match std::fs::read_to_string(&user_path) {
-            Ok(user_css) => {
-                if let Some(p) = guard.as_ref() {
-                    p.load_from_string(&user_css);
-                } else {
-                    let p = CssProvider::new();
-                    p.load_from_string(&user_css);
-                    gtk4::style_context_add_provider_for_display(
-                        &display,
-                        &p,
-                        gtk4::STYLE_PROVIDER_PRIORITY_USER,
-                    );
-                    *guard = Some(p);
-                }
-            }
-            Err(_) => {
-                if let Some(p) = guard.as_ref() {
-                    p.load_from_string("");
-                }
-            }
-        }
-    });
+    let user_path = std::path::PathBuf::from(format!("{home}/.config/breadbar/style.css"));
+    USER_PROVIDER.with(|cell| bgtk::apply_user_css(&user_path, cell));
 }

@@ -6,6 +6,7 @@ macro_rules! asset {
 
 mod bar;
 mod notifications;
+mod osd;
 mod theme;
 
 use gtk4::prelude::*;
@@ -185,6 +186,7 @@ impl SimpleComponent for App {
         bar::clock::spawn_ticker(sender.clone());
         bar::stats::spawn_poller(sender);
         notifications::spawn();
+        osd::spawn();
 
         ComponentParts { model, widgets }
     }
@@ -255,9 +257,10 @@ fn stat_pair(icon_path: &str, label: &gtk4::Label) -> gtk4::Box {
 }
 
 fn svg_texture(path: &str) -> gtk4::gdk::Texture {
+    let fg = theme::fg_color();
     let svg = std::fs::read_to_string(path)
         .unwrap_or_default()
-        .replace("currentColor", "white")
+        .replace("currentColor", &fg)
         .replace(r#"width="24" height="24""#, r#"width="16" height="16""#);
     let bytes = gtk4::glib::Bytes::from_owned(svg.into_bytes());
     gtk4::gdk::Texture::from_bytes(&bytes).expect("svg load")

@@ -3,7 +3,9 @@ use relm4::ComponentSender;
 
 pub fn current() -> String {
     let dt = gtk4::glib::DateTime::now_local().expect("local time");
-    format!("{:02}:{:02}", dt.hour(), dt.minute())
+    let date = dt.format("%a %d/%m").expect("date format");
+    let time = format!("{:02}:{:02}", dt.hour(), dt.minute());
+    format!("{} {}", date, time)
 }
 
 pub fn spawn_ticker(sender: ComponentSender<App>) {

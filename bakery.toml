@@ -1,0 +1,11 @@
+name = "breadbar"
+description = "Minimal status bar and notification daemon for Hyprland"
+binaries = ["breadbar"]
+system_deps = ["gtk4", "gtk4-layer-shell", "iw"]
+bread_deps = []
+
+[config]
+dir = "~/.config/breadbar"
+
+[install]
+post_install = []
