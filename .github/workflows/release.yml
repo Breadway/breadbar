@@ -14,8 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: install system deps
-        run: sudo apt-get install -y libgtk-4-dev iw 2>/dev/null || true
+      - name: install build deps
+        run: sudo apt-get install -y libgtk-4-dev libdbus-1-dev pkg-config iw 2>/dev/null || true
 
       - name: build
         run: cargo build --release --locked
