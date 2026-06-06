@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: install system deps
-        run: sudo pacman -S --noconfirm gtk4 gtk4-layer-shell iw 2>/dev/null || true
+        run: sudo apt-get install -y libgtk-4-dev iw 2>/dev/null || true
 
       - name: build
         run: cargo build --release --locked
