@@ -1,7 +1,8 @@
 name = "breadbar"
 description = "Minimal status bar and notification daemon for Hyprland"
 binaries = ["breadbar"]
-system_deps = ["gtk4", "gtk4-layer-shell", "iw"]
+system_deps = ["gtk4", "gtk4-layer-shell", "iw", "libpulse"]
+optional_system_deps = ["hyprland"]
 bread_deps = []
 
 [config]
