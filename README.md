@@ -2,7 +2,7 @@
 
 Minimal status bar and notification daemon for [Hyprland](https://hyprland.org/) on Wayland.
 
-A single Rust binary that provides a full-width top bar and a standards-compliant D-Bus notification daemon, with no system tray, no launcher, and no wallpaper logic.
+A single Rust binary that provides a full-width top bar, a system tray, and a standards-compliant D-Bus notification daemon. No launcher, no wallpaper logic.
 
 ## Features
 
@@ -10,7 +10,7 @@ A single Rust binary that provides a full-width top bar and a standards-complian
 
 - Left: live workspace buttons sourced from Hyprland IPC, active workspace highlighted
 - Centre: clock (`HH:MM`, updates at the top of each minute)
-- Right: CPU%, RAM, power draw (W), battery level + AC indicator, Bluetooth state, WiFi SSID with signal strength
+- Right: CPU%, RAM, power draw (W), battery level + AC indicator, Bluetooth state, WiFi SSID with signal strength, system tray (SNI)
 
 **Notification daemon**:
 
@@ -105,6 +105,7 @@ Example — change the font size:
 | `src/bar/workspaces.rs` | Hyprland IPC event stream, workspace buttons |
 | `src/bar/clock.rs` | Minute-tick clock |
 | `src/bar/stats.rs` | Polling loop: CPU, RAM, power, battery, Bluetooth, WiFi |
+| `src/bar/tray.rs` | `org.kde.StatusNotifierWatcher` D-Bus service, SNI item rendering |
 | `src/notifications/mod.rs` | `org.freedesktop.Notifications` zbus service |
 | `src/notifications/popup.rs` | Layer-shell popup window and card stack |
 | `src/theme.rs` | pywal reader, GTK CSS provider injection |

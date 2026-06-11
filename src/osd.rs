@@ -35,7 +35,7 @@ fn volume_watcher(tx: mpsc::Sender<OsdEvent>) {
     let stdout = child.stdout.take().unwrap();
     let reader = BufReader::new(stdout);
 
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         if line.contains("'change' on sink") {
             if let Some(evt) = query_volume() {
                 let _ = tx.blocking_send(evt);

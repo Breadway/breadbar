@@ -34,6 +34,8 @@ pub struct App {
     wifi_img: gtk4::Image,
     // Pre-loaded textures indexed by constant pointer values.
     wifi_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
+    tray_box: gtk4::Box,
+    tray_items: std::collections::HashMap<String, gtk4::Button>,
 }
 
 #[derive(Debug)]
@@ -42,6 +44,7 @@ pub enum AppInput {
     ActiveWorkspace(WorkspaceId),
     ClockTick,
     StatsUpdate(bar::stats::Stats),
+    TrayUpdate(bar::tray::TrayUpdate),
 }
 
 #[relm4::component(pub)]
@@ -153,6 +156,8 @@ impl SimpleComponent for App {
             wifi_lbl: wifi_lbl.clone(),
             wifi_img: wifi_img.clone(),
             wifi_textures,
+            tray_box: gtk4::Box::new(gtk4::Orientation::Horizontal, 4),
+            tray_items: std::collections::HashMap::new(),
         };
         let widgets = view_output!();
         model.workspace_box = widgets.workspace_box.clone();
@@ -179,12 +184,15 @@ impl SimpleComponent for App {
         wifi_pair.append(&wifi_img);
         wifi_pair.append(&wifi_lbl);
         stats_box.append(&wifi_pair);
+        model.tray_box.add_css_class("tray-box");
+        stats_box.append(&model.tray_box);
         widgets.center_box.set_end_widget(Some(&stats_box));
 
         theme::apply();
         bar::workspaces::spawn_watcher(sender.clone());
         bar::clock::spawn_ticker(sender.clone());
-        bar::stats::spawn_poller(sender);
+        bar::stats::spawn_poller(sender.clone());
+        bar::tray::spawn_watcher(sender.clone());
         notifications::spawn();
         osd::spawn();
 
@@ -226,6 +234,26 @@ impl SimpleComponent for App {
                 self.wifi_lbl.set_label(&stats.wifi_ssid);
                 if let Some(tex) = self.wifi_textures.get(&(stats.wifi_icon.as_ptr() as usize)) {
                     self.wifi_img.set_paintable(Some(tex));
+                }
+            }
+            AppInput::TrayUpdate(bar::tray::TrayUpdate::Add { id, icon, title }) => {
+                if self.tray_items.contains_key(&id) {
+                    return;
+                }
+                let btn = gtk4::Button::new();
+                btn.add_css_class("tray-btn");
+                btn.set_child(Some(&bar::tray::make_tray_image(icon.as_ref())));
+                if !title.is_empty() {
+                    btn.set_tooltip_text(Some(&title));
+                }
+                let id_click = id.clone();
+                btn.connect_clicked(move |_| bar::tray::spawn_activate(id_click.clone()));
+                self.tray_box.append(&btn);
+                self.tray_items.insert(id, btn);
+            }
+            AppInput::TrayUpdate(bar::tray::TrayUpdate::Remove { id }) => {
+                if let Some(btn) = self.tray_items.remove(&id) {
+                    self.tray_box.remove(&btn);
                 }
             }
         }

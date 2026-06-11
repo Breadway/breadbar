@@ -70,7 +70,7 @@ impl NotifServer {
         (
             "breadbar".into(),
             "breadway".into(),
-            "0.1.0".into(),
+            env!("CARGO_PKG_VERSION").into(),
             "1.2".into(),
         )
     }
