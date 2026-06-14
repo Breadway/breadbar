@@ -1,6 +1,10 @@
+// Embed asset SVGs into the binary at compile time. Previously these were
+// referenced by their build-time filesystem path (CARGO_MANIFEST_DIR), which
+// does not exist on an installed system — so the packaged binary loaded empty
+// bytes and panicked. include_str! bakes the contents in instead.
 macro_rules! asset {
     ($n:literal) => {
-        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/", $n)
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/", $n))
     };
 }
 
@@ -274,24 +278,39 @@ impl App {
     }
 }
 
-fn stat_pair(icon_path: &str, label: &gtk4::Label) -> gtk4::Box {
+fn stat_pair(icon_svg: &str, label: &gtk4::Label) -> gtk4::Box {
     let pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     pair.add_css_class("stat-pair");
-    let img = gtk4::Image::from_paintable(Some(&svg_texture(icon_path)));
+    let img = gtk4::Image::from_paintable(Some(&svg_texture(icon_svg)));
     img.add_css_class("stat-icon");
     pair.append(&img);
     pair.append(label);
     pair
 }
 
-fn svg_texture(path: &str) -> gtk4::gdk::Texture {
+// Rasterise an (embedded) SVG to a texture. Done in pure Rust with resvg
+// because librsvg dropped its gdk-pixbuf SVG loader, so gdk::Texture::from_bytes
+// can no longer decode SVG on a stock system.
+fn svg_texture(svg_src: &str) -> gtk4::gdk::Texture {
+    use resvg::{tiny_skia, usvg};
     let fg = theme::fg_color();
-    let svg = std::fs::read_to_string(path)
-        .unwrap_or_default()
+    let svg = svg_src
         .replace("currentColor", &fg)
         .replace(r#"width="24" height="24""#, r#"width="16" height="16""#);
-    let bytes = gtk4::glib::Bytes::from_owned(svg.into_bytes());
-    gtk4::gdk::Texture::from_bytes(&bytes).expect("svg load")
+    let tree = usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("parse svg");
+    let size = tree.size().to_int_size();
+    let (w, h) = (size.width(), size.height());
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).expect("alloc pixmap");
+    resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+    let bytes = gtk4::glib::Bytes::from_owned(pixmap.take());
+    gtk4::gdk::MemoryTexture::new(
+        w as i32,
+        h as i32,
+        gtk4::gdk::MemoryFormat::R8g8b8a8Premultiplied,
+        &bytes,
+        (w * 4) as usize,
+    )
+    .upcast()
 }
 
 fn stat_label() -> gtk4::Label {

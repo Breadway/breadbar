@@ -15,22 +15,25 @@ static BT_CONN: AsyncOnce<zbus::Connection> = AsyncOnce::const_new();
 static BT_CACHE: LazyLock<Mutex<&'static str>> = LazyLock::new(|| Mutex::new(BT_OFF));
 static BT_TICK: AtomicU8 = AtomicU8::new(0);
 
-pub const WIFI_STRONG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Strong.svg");
-pub const WIFI_MEDIUM: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Medium.svg");
-pub const WIFI_WEAK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Weak.svg");
-pub const WIFI_OFF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Disconnect.svg");
+// Embedded SVG contents (not paths). These &str constants double as stable
+// HashMap keys via their .as_ptr(); include_str! keeps each one a single
+// 'static literal, so pointer identity still holds.
+pub const WIFI_STRONG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Strong.svg"));
+pub const WIFI_MEDIUM: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Medium.svg"));
+pub const WIFI_WEAK: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Weak.svg"));
+pub const WIFI_OFF: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Disconnect.svg"));
 
-pub const BAT_HIGH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 3 Bars.svg");
-pub const BAT_MID: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 2 Bars.svg");
-pub const BAT_LOW: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 1 Bar.svg");
-pub const AC_POWER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/AC Power.svg");
+pub const BAT_HIGH: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 3 Bars.svg"));
+pub const BAT_MID: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 2 Bars.svg"));
+pub const BAT_LOW: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 1 Bar.svg"));
+pub const AC_POWER: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/AC Power.svg"));
 
-pub const BT_OFF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Bluetooth Off.svg");
-pub const BT_ON: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Bluetooth.svg");
-pub const BT_CONNECTED: &str = concat!(
+pub const BT_OFF: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Bluetooth Off.svg"));
+pub const BT_ON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Bluetooth.svg"));
+pub const BT_CONNECTED: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/Bluetooth Connected.svg"
-);
+));
 
 #[derive(Debug)]
 pub struct Stats {
