@@ -14,7 +14,7 @@ fn load_css() -> String {
          window.breadbar {{ background-color: {bg_rgba}; border-radius: 0; }}\
          label {{ color: {fg}; }}\
          .workspace-btn {{ background: transparent; color: {fg}; opacity: 0.45;\
-             border-radius: 0 0 8px 8px; border: none; outline: none; box-shadow: none;\
+             border-radius: 0; border: none; outline: none; box-shadow: none;\
              min-width: 24px; padding: 4px 8px; }}\
          .workspace-btn:hover {{ opacity: 0.8; }}\
          .workspace-btn.active {{ background: {accent}; opacity: 1; }}\
