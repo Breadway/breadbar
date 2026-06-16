@@ -9,9 +9,10 @@ thread_local! {
 
 fn load_css() -> String {
     let p = load_palette();
+    // breadbar-specific rules only — fonts, base colours, and generic widgets
+    // come from the shared ecosystem stylesheet (applied first in `apply()`).
     format!(
-        "* {{ font-family: 'Varela Round', sans-serif; font-size: 14px; }}\
-         window.breadbar {{ background-color: {bg_rgba}; border-radius: 0; }}\
+        "window.breadbar {{ background-color: {bg_rgba}; border-radius: 0; }}\
          label {{ color: {fg}; }}\
          .workspace-btn {{ background: transparent; color: {fg}; opacity: 0.45;\
              border-radius: 0; border: none; outline: none; box-shadow: none;\
@@ -50,6 +51,10 @@ pub fn fg_color() -> String {
 
 /// Apply (or reload) the theme CSS. Safe to call from `glib::MainContext::invoke`.
 pub fn apply() {
+    // Shared ecosystem base (fonts, palette, generic widgets) — applied first
+    // so breadbar's own rules below layer on top.
+    bgtk::apply_shared();
+
     let css = load_css();
     PROVIDER.with(|cell| bgtk::apply_css(&css, cell));
 
