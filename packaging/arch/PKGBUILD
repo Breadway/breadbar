@@ -1,7 +1,7 @@
 # Maintainer: Breadway <rileyhorsham@gmail.com>
 
 pkgname=breadbar
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Minimal status bar and notification daemon for Hyprland"
 arch=('x86_64')
@@ -11,7 +11,7 @@ license=('MIT')
 # default -flto=auto emits GCC LTO bitcode the Rust (lld) link cannot read,
 # causing undefined-symbol errors. Disable LTO.
 options=(!lto !debug)
-depends=('gtk4' 'gtk4-layer-shell' 'libpulse' 'iw')
+depends=('gtk4' 'gtk4-layer-shell' 'wireplumber' 'pipewire-pulse' 'brightnessctl' 'iw')
 optdepends=(
   'hyprland: workspace and window data integration'
 )

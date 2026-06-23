@@ -32,7 +32,7 @@ fn volume_watcher(tx: mpsc::Sender<OsdEvent>) {
         return;
     };
 
-    let stdout = child.stdout.take().unwrap();
+    let Some(stdout) = child.stdout.take() else { return };
     let reader = BufReader::new(stdout);
 
     for line in reader.lines().map_while(Result::ok) {
