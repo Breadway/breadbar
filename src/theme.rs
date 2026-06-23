@@ -22,9 +22,9 @@ fn load_css() -> String {
          .workspace-btn:hover {{ opacity: 0.8; }}\
          .workspace-btn.active {{ background: {accent}; color: {on_accent}; opacity: 1; }}\
          .stats-box {{ margin-right: 8px; }}\
-         .stat-pair {{ margin-right: 12px; }}\
-         .stat-icon {{ margin-right: 5px; }}\
-         .bt-icon {{ margin-right: 12px; }}\
+         .stat-pair {{ margin-right: 14px; }}\
+         .stat-icon {{ margin-right: 2px; }}\
+         .bt-icon {{ margin-right: 14px; }}\
          window.breadbar-notification {{ background-color: alpha({bg_plain}, 0.95); color: {on_bg}; }}\
          .notification-card {{ background: {surface}; color: {on_surface}; border-radius: 8px;\
              padding: 12px; margin-bottom: 8px; }}\
@@ -35,7 +35,39 @@ fn load_css() -> String {
          .osd-pct {{ font-weight: bold; font-size: 12px; }}\
          progressbar.osd-bar {{ min-height: 8px; }}\
          progressbar.osd-bar trough {{ background-image: none; background-color: {trough}; border-radius: 4px; min-height: 8px; }}\
-         progressbar.osd-bar trough progress {{ background-image: none; background-color: {accent}; border-radius: 4px; min-height: 8px; }}",
+         progressbar.osd-bar trough progress {{ background-image: none; background-color: {accent}; border-radius: 4px; min-height: 8px; }}\
+         .clickable {{ cursor: pointer; }}\
+         .wifi-pair {{ border-radius: 4px; padding: 0 2px; }}\
+         .wifi-pair:hover {{ background: alpha({on_bg}, 0.12); }}\
+         .wifi-popover-inner {{ min-width: 180px; padding: 2px; }}\
+         .wifi-popover-ssid {{ font-weight: bold; font-size: 13px; }}\
+         .wifi-popover-ip {{ opacity: 0.6; font-size: 11px; }}\
+         .wifi-popover-status {{ font-size: 11px; margin-top: 2px; }}\
+         .wifi-popover-section {{ font-size: 10px; font-weight: bold; opacity: 0.5; letter-spacing: 0.08em; }}\
+         .wifi-popover-row {{ background: transparent; border: none; box-shadow: none;\
+             border-radius: 4px; padding: 2px 6px; }}\
+         .wifi-popover-row:hover {{ background: alpha({on_bg}, 0.08); }}\
+         .wifi-popover-row-active {{ color: {accent}; }}\
+         .wifi-popover-loading {{ opacity: 0.5; padding: 8px; }}\
+         .media-widget {{ border-radius: 4px; padding: 0 6px; cursor: pointer; }}\
+         .media-widget:hover {{ background: alpha({on_bg}, 0.10); }}\
+         .media-indicator {{ font-size: 11px; opacity: 0.7; margin-right: 2px; }}\
+         .media-track-lbl {{ font-size: 12px; }}\
+         .media-controls {{ padding: 2px; }}\
+         .media-btn {{ font-size: 16px; min-width: 36px; padding: 2px 8px; }}\
+         .control-panel-btn {{ font-size: 14px; padding: 0 6px; margin-left: 6px; border-radius: 4px; }}\
+         .control-panel {{ }}\
+         .control-panel-inner {{ min-width: 240px; padding: 8px; }}\
+         .control-panel-row {{ margin: 4px 0; }}\
+         .control-panel-row-icon {{ opacity: 0.75; }}\
+         .control-panel-slider {{ margin: 0; }}\
+         .control-panel-stats {{ margin: 8px 0; }}\
+         .control-panel-stat {{ font-size: 12px; opacity: 0.85; margin: 1px 0; }}\
+         .control-panel-section {{ margin: 6px 0; }}\
+         .control-panel-section-header {{ font-size: 10px; font-weight: bold; opacity: 0.5;\
+             letter-spacing: 0.08em; margin-bottom: 4px; }}\
+         .control-panel-sink-dropdown {{ }}\
+         separator {{ margin: 4px 0; }}",
         bg_plain   = p.background,
         bg_rgba    = hex_to_rgba(&p.background, 0.92),
         surface    = p.color0,
