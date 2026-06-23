@@ -11,6 +11,8 @@ use std::{
 use tokio::sync::OnceCell as AsyncOnce;
 
 static WIFI_IFACE: OnceLock<Option<String>> = OnceLock::new();
+static NET_PREV: LazyLock<Mutex<Option<(u64, u64, std::time::Instant)>>> =
+    LazyLock::new(|| Mutex::new(None));
 static BT_CONN: AsyncOnce<zbus::Connection> = AsyncOnce::const_new();
 static BT_CACHE: LazyLock<Mutex<&'static str>> = LazyLock::new(|| Mutex::new(BT_OFF));
 static BT_TICK: AtomicU8 = AtomicU8::new(0);
@@ -46,6 +48,11 @@ pub struct Stats {
     pub bt_icon: &'static str,
     pub wifi_ssid: String,
     pub wifi_icon: &'static str,
+    pub wifi_profile: Option<String>,
+    pub cpu_temp: Option<f32>,
+    pub gpu_usage: Option<u8>,
+    pub net_rx_kbs: f32,
+    pub net_tx_kbs: f32,
 }
 
 struct CpuSnapshot {
@@ -288,12 +295,97 @@ async fn read_wifi() -> (String, &'static str) {
     (ssid, icon)
 }
 
+fn read_cpu_temp() -> Option<f32> {
+    for entry in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
+        let path = entry.path();
+        let name = fs::read_to_string(path.join("name")).ok()?;
+        if name.trim() == "k10temp" {
+            let raw = fs::read_to_string(path.join("temp1_input")).ok()?;
+            return Some(raw.trim().parse::<f32>().ok()? / 1000.0);
+        }
+    }
+    None
+}
+
+fn read_gpu_usage() -> Option<u8> {
+    for entry in fs::read_dir("/sys/class/drm").ok()?.flatten() {
+        let path = entry.path().join("device/gpu_busy_percent");
+        if path.exists() {
+            return fs::read_to_string(&path).ok()?.trim().parse().ok();
+        }
+    }
+    None
+}
+
+fn read_net_throughput() -> (f32, f32) {
+    let text = match fs::read_to_string("/proc/net/dev") {
+        Ok(t) => t,
+        Err(_) => return (0.0, 0.0),
+    };
+    let mut total_rx = 0u64;
+    let mut total_tx = 0u64;
+    for line in text.lines().skip(2) {
+        let colon = match line.find(':') {
+            Some(i) => i,
+            None => continue,
+        };
+        let iface = line[..colon].trim();
+        if matches!(iface, "lo")
+            || iface.starts_with("docker")
+            || iface.starts_with("veth")
+            || iface.starts_with("br-")
+            || iface.starts_with("virbr")
+        {
+            continue;
+        }
+        let fields: Vec<&str> = line[colon + 1..].split_whitespace().collect();
+        if fields.len() >= 9 {
+            total_rx += fields[0].parse::<u64>().unwrap_or(0);
+            total_tx += fields[8].parse::<u64>().unwrap_or(0);
+        }
+    }
+    let now = std::time::Instant::now();
+    let mut guard = NET_PREV.lock().unwrap();
+    let result = if let Some((last_rx, last_tx, last_t)) = *guard {
+        let dt = now.duration_since(last_t).as_secs_f32().max(0.001);
+        let rx = total_rx.saturating_sub(last_rx) as f32 / 1024.0 / dt;
+        let tx = total_tx.saturating_sub(last_tx) as f32 / 1024.0 / dt;
+        (rx, tx)
+    } else {
+        (0.0, 0.0)
+    };
+    *guard = Some((total_rx, total_tx, now));
+    result
+}
+
+fn read_crumbs_profile() -> Option<String> {
+    let state_home = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(|h| PathBuf::from(h).join(".local/state"))
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+        });
+    let text = fs::read_to_string(state_home.join("breadcrumbs/state.toml")).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("profile") {
+            let val = rest
+                .trim_start_matches(|c: char| c == ' ' || c == '=')
+                .trim_matches('"');
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub async fn poll() -> Stats {
     let cpu = read_cpu();
     let mem = read_ram();
-    let power = read_power().map_or_else(|| "  —W".into(), |w| format!("{w:4.1}W"));
+    let power = read_power().map_or_else(|| "—W".into(), |w| format!("{w:.1}W"));
     let pct = read_battery();
-    let bat = pct.map_or_else(|| " —".into(), |p| format!("{p:3}%"));
+    let bat = pct.map_or_else(|| "—".into(), |p| format!("{p}%"));
     let bat_icon = pct.map_or(BAT_MID, bat_level_icon);
     let ac_connected = read_ac();
     // BT and WiFi both refresh every 8 cycles (~16 s); cache in between.
@@ -317,8 +409,12 @@ pub async fn poll() -> Stats {
             WIFI_CACHE.lock().unwrap().clone()
         }
     };
+    let wifi_profile = read_crumbs_profile();
+    let cpu_temp = read_cpu_temp();
+    let gpu_usage = read_gpu_usage();
+    let (net_rx_kbs, net_tx_kbs) = read_net_throughput();
     Stats {
-        cpu: format!("{cpu:3.0}%"),
+        cpu: format!("{cpu:.0}%"),
         mem: if mem >= 1024 * 1024 {
             format!("{:.1}G", mem as f32 / (1024.0 * 1024.0))
         } else {
@@ -331,6 +427,11 @@ pub async fn poll() -> Stats {
         bt_icon,
         wifi_ssid,
         wifi_icon,
+        wifi_profile,
+        cpu_temp,
+        gpu_usage,
+        net_rx_kbs,
+        net_tx_kbs,
     }
 }
 
