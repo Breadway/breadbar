@@ -298,7 +298,7 @@ async fn read_wifi() -> (String, &'static str) {
 fn read_cpu_temp() -> Option<f32> {
     for entry in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
         let path = entry.path();
-        let name = fs::read_to_string(path.join("name")).ok()?;
+        let Ok(name) = fs::read_to_string(path.join("name")) else { continue };
         if name.trim() == "k10temp" {
             let raw = fs::read_to_string(path.join("temp1_input")).ok()?;
             return Some(raw.trim().parse::<f32>().ok()? / 1000.0);

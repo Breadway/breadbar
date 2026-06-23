@@ -48,6 +48,7 @@ fn load_css() -> String {
              border-radius: 4px; padding: 2px 6px; }}\
          .wifi-popover-row:hover {{ background: alpha({on_bg}, 0.08); }}\
          .wifi-popover-row-active {{ color: {accent}; }}\
+         .wifi-popover-row-unsaved {{ opacity: 0.4; }}\
          .wifi-popover-loading {{ opacity: 0.5; padding: 8px; }}\
          .media-widget {{ border-radius: 4px; padding: 0 6px; cursor: pointer; }}\
          .media-widget:hover {{ background: alpha({on_bg}, 0.10); }}\
