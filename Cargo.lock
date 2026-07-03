@@ -109,7 +109,7 @@ checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 [[package]]
 name = "bread-theme"
 version = "0.2.3"
-source = "git+https://github.com/Breadway/bread-ecosystem?tag=v0.2.8#77417d552130281ff787e07d52541eb25e9d533b"
+source = "git+https://github.com/Breadway/bread-ecosystem?tag=v0.2.10#17d1bb85801b9a8c195b64c02d288cd662c9c780"
 dependencies = [
  "dirs",
  "gtk4",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "breadbar"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bread-theme",
  "futures-lite",

@@ -1,6 +1,6 @@
 [package]
 name = "breadbar"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Minimal status bar and notification daemon for Hyprland on Wayland"
 license = "MIT"
@@ -10,7 +10,7 @@ keywords = ["wayland", "hyprland", "bar", "status-bar", "gtk4"]
 categories = ["gui"]
 
 [dependencies]
-bread-theme = { git = "https://github.com/Breadway/bread-ecosystem", tag = "v0.2.8", features = ["gtk"] }
+bread-theme = { git = "https://github.com/Breadway/bread-ecosystem", tag = "v0.2.10", features = ["gtk"] }
 gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 relm4 = { version = "0.11", features = ["macros"] }
