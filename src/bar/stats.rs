@@ -51,6 +51,7 @@ pub struct Stats {
     pub wifi_profile: Option<String>,
     pub cpu_temp: Option<f32>,
     pub gpu_usage: Option<u8>,
+    pub gpu_temp: Option<f32>,
     pub net_rx_kbs: f32,
     pub net_tx_kbs: f32,
 }
@@ -295,23 +296,32 @@ async fn read_wifi() -> (String, &'static str) {
     (ssid, icon)
 }
 
-fn read_cpu_temp() -> Option<f32> {
+fn read_hwmon_temp(driver_name: &str) -> Option<f32> {
     for entry in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
         let path = entry.path();
         let Ok(name) = fs::read_to_string(path.join("name")) else { continue };
-        if name.trim() == "k10temp" {
-            let raw = fs::read_to_string(path.join("temp1_input")).ok()?;
-            return Some(raw.trim().parse::<f32>().ok()? / 1000.0);
+        if name.trim() == driver_name {
+            let Ok(raw) = fs::read_to_string(path.join("temp1_input")) else { continue };
+            return raw.trim().parse::<f32>().ok().map(|v| v / 1000.0);
         }
     }
     None
+}
+
+fn read_cpu_temp() -> Option<f32> {
+    read_hwmon_temp("k10temp")
+}
+
+fn read_gpu_temp() -> Option<f32> {
+    read_hwmon_temp("amdgpu")
 }
 
 fn read_gpu_usage() -> Option<u8> {
     for entry in fs::read_dir("/sys/class/drm").ok()?.flatten() {
         let path = entry.path().join("device/gpu_busy_percent");
         if path.exists() {
-            return fs::read_to_string(&path).ok()?.trim().parse().ok();
+            let Ok(raw) = fs::read_to_string(&path) else { continue };
+            return raw.trim().parse().ok();
         }
     }
     None
@@ -412,6 +422,7 @@ pub async fn poll() -> Stats {
     let wifi_profile = read_crumbs_profile();
     let cpu_temp = read_cpu_temp();
     let gpu_usage = read_gpu_usage();
+    let gpu_temp = read_gpu_temp();
     let (net_rx_kbs, net_tx_kbs) = read_net_throughput();
     Stats {
         cpu: format!("{cpu:.0}%"),
@@ -430,6 +441,7 @@ pub async fn poll() -> Stats {
         wifi_profile,
         cpu_temp,
         gpu_usage,
+        gpu_temp,
         net_rx_kbs,
         net_tx_kbs,
     }

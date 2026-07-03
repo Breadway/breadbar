@@ -65,7 +65,7 @@ pub struct App {
     panel_sink_dropdown: gtk4::DropDown,
     panel_sink_signal: Option<gtk4::glib::SignalHandlerId>,
     panel_sinks: Vec<bar::control::AudioSink>,
-    panel_temp_lbl: gtk4::Label,
+    panel_cpu_lbl: gtk4::Label,
     panel_gpu_lbl: gtk4::Label,
     panel_net_lbl: gtk4::Label,
 
@@ -326,9 +326,9 @@ impl SimpleComponent for App {
         let stats_section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         stats_section.add_css_class("control-panel-stats");
 
-        let panel_temp_lbl = gtk4::Label::new(Some("CPU  —"));
-        panel_temp_lbl.add_css_class("control-panel-stat");
-        panel_temp_lbl.set_xalign(0.0);
+        let panel_cpu_lbl = gtk4::Label::new(Some("CPU  —"));
+        panel_cpu_lbl.add_css_class("control-panel-stat");
+        panel_cpu_lbl.set_xalign(0.0);
 
         let panel_gpu_lbl = gtk4::Label::new(Some("GPU  —"));
         panel_gpu_lbl.add_css_class("control-panel-stat");
@@ -338,7 +338,7 @@ impl SimpleComponent for App {
         panel_net_lbl.add_css_class("control-panel-stat");
         panel_net_lbl.set_xalign(0.0);
 
-        stats_section.append(&panel_temp_lbl);
+        stats_section.append(&panel_cpu_lbl);
         stats_section.append(&panel_gpu_lbl);
         stats_section.append(&panel_net_lbl);
         panel_inner.append(&stats_section);
@@ -377,6 +377,40 @@ impl SimpleComponent for App {
         tray_section.append(&tray_header);
         tray_section.append(&tray_box);
         panel_inner.append(&tray_section);
+
+        panel_inner.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+
+        // Power section
+        let power_section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        power_section.add_css_class("control-panel-section");
+        let power_header = gtk4::Label::new(Some("Power"));
+        power_header.add_css_class("control-panel-section-header");
+        power_header.set_xalign(0.0);
+        power_section.append(&power_header);
+
+        let power_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        power_row.add_css_class("power-row");
+        for (label, cmd) in [
+            ("🔒", vec!["hyprlock"]),
+            ("💤", vec!["systemctl", "suspend"]),
+            ("🔄", vec!["systemctl", "reboot"]),
+            ("⏻", vec!["systemctl", "poweroff"]),
+        ] {
+            let btn = gtk4::Button::with_label(label);
+            btn.add_css_class("flat");
+            btn.add_css_class("power-btn");
+            btn.connect_clicked(move |_| {
+                let args = cmd.to_vec();
+                relm4::spawn(async move {
+                    let _ = tokio::process::Command::new(args[0])
+                        .args(&args[1..])
+                        .spawn();
+                });
+            });
+            power_row.append(&btn);
+        }
+        power_section.append(&power_row);
+        panel_inner.append(&power_section);
 
         let control_popover = gtk4::Popover::new();
         control_popover.add_css_class("control-panel");
@@ -458,7 +492,7 @@ impl SimpleComponent for App {
             panel_sink_dropdown,
             panel_sink_signal: None,
             panel_sinks: vec![],
-            panel_temp_lbl,
+            panel_cpu_lbl,
             panel_gpu_lbl,
             panel_net_lbl,
             tray_box,
@@ -533,14 +567,20 @@ impl SimpleComponent for App {
 
                 // Live-update control panel stats while open
                 if self.control_popover.is_visible() {
-                    match stats.cpu_temp {
-                        Some(t) => self.panel_temp_lbl.set_label(&format!("CPU  {t:.0}°C")),
-                        None => self.panel_temp_lbl.set_label("CPU  —"),
-                    }
-                    match stats.gpu_usage {
-                        Some(g) => self.panel_gpu_lbl.set_label(&format!("GPU  {g}%")),
-                        None => self.panel_gpu_lbl.set_label("GPU  —"),
-                    }
+                    let cpu_str = match (stats.cpu_temp, stats.cpu.as_str()) {
+                        (Some(t), pct) => format!("CPU  {pct}  {t:.0}°C"),
+                        (None, pct) => format!("CPU  {pct}"),
+                    };
+                    self.panel_cpu_lbl.set_label(&cpu_str);
+
+                    let gpu_str = match (stats.gpu_usage, stats.gpu_temp) {
+                        (Some(u), Some(t)) => format!("GPU  {u}%  {t:.0}°C"),
+                        (Some(u), None) => format!("GPU  {u}%"),
+                        (None, Some(t)) => format!("GPU  {t:.0}°C"),
+                        (None, None) => "GPU  —".to_string(),
+                    };
+                    self.panel_gpu_lbl.set_label(&gpu_str);
+
                     self.panel_net_lbl.set_label(&format!(
                         "↓ {}  ↑ {}",
                         fmt_speed(stats.net_rx_kbs),

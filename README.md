@@ -2,40 +2,69 @@
 
 Minimal status bar and notification daemon for [Hyprland](https://hyprland.org/) on Wayland.
 
-A single Rust binary that provides a full-width top bar, a system tray, and a standards-compliant D-Bus notification daemon. No launcher, no wallpaper logic.
+A single Rust binary that provides a full-width top bar, a D-Bus notification daemon, a volume/brightness OSD, and an SNI system tray housed in a control panel popover.
 
 ## Features
 
 **Status bar** (anchored to the top of every monitor via `gtk4-layer-shell`):
 
 - Left: live workspace buttons sourced from Hyprland IPC, active workspace highlighted
-- Centre: clock (`HH:MM`, updates at the top of each minute)
-- Right: CPU%, RAM, power draw (W), battery level + AC indicator, Bluetooth state, WiFi SSID with signal strength, system tray (SNI)
+- Centre: media widget (track/artist from `playerctl`, click to open prev/play-pause/next controls; hidden when no player is active, lingers up to 30 minutes after the last pause) + clock (`HH:MM`, updates at the top of each minute)
+- Right: CPU%, RAM, power draw (W), battery level + AC indicator, Bluetooth icon (click to open `blueman-manager`), WiFi SSID with signal-strength icon (click for details popover), hamburger control panel button
+
+**WiFi popover** (click the WiFi area):
+
+- Shows current SSID, IP address, and internet/Tailscale connectivity status via `breadcrumbs status`
+- Lists saved `breadcrumbs` profiles for one-click switching
+- Shows nearby SSIDs from `breadcrumbs scan-list` (saved networks are clickable to join)
+- Degrades gracefully if `breadcrumbs` is not installed
+
+**Control panel** (hamburger button on the right):
+
+- Volume slider (reads/writes via `wpctl`, up to 150%)
+- Brightness slider (reads/writes via `brightnessctl`)
+- Live CPU%, GPU%, and network throughput (download/upload)
+- Audio output selector (lists PulseAudio sinks via `pactl`, switching takes effect immediately)
+- System tray (SNI): apps that register with `org.kde.StatusNotifierWatcher` appear as icon buttons
+- Power buttons: lock (`hyprlock`), suspend, reboot, poweroff
 
 **Notification daemon**:
 
-- Implements `org.freedesktop.Notifications` (D-Bus) — works with any standard notification sender (`notify-send`, etc.)
+- Implements `org.freedesktop.Notifications` (D-Bus) — works with any standard sender (`notify-send`, etc.)
 - Popups appear top-right, stack vertically, auto-dismiss after the sender-specified timeout (default 5 s)
-- Supports `CloseNotification`
+- Supports `CloseNotification` and `replaces_id`
+
+**Volume/brightness OSD**:
+
+- Overlay window at the bottom of the screen, auto-dismisses after 2 s
+- Appears automatically on any `pactl` sink-change event or `sysfs` backlight change
 
 **Theming**:
 
-- Reads `~/.cache/wal/colors.json` (pywal) on startup for a palette that matches your wallpaper
-- Falls back to a Catppuccin Mocha palette if pywal is not present
+- Uses `bread-theme` for palette loading; reads `~/.cache/wal/colors.json` (pywal) if present, falls back to a Catppuccin Mocha palette
 - User CSS override: `~/.config/breadbar/style.css`
 - Send `SIGHUP` to reload the theme at runtime (integrates with wallpaper-change hooks)
 
 ## Dependencies
 
-Runtime:
+Runtime (required):
 
 - GTK4 (≥ 4.12)
 - `gtk4-layer-shell`
 - `iw` — for WiFi SSID/signal (`iw dev <iface> link`)
+- `wpctl` (WirePlumber) — volume read/write
+- `pactl` (PipeWire-Pulse) — audio sink listing and OSD volume events
+- `brightnessctl` — brightness read/write
 - A running Hyprland compositor
 - D-Bus session bus
 
-Bluetooth status is read from `/sys/class/rfkill` and BlueZ D-Bus; it degrades gracefully if unavailable.
+Runtime (optional, degrade gracefully if absent):
+
+- `playerctl` — media widget; hidden if no player is found
+- `breadcrumbs` — WiFi popover enrichment (profiles, internet/Tailscale status); basic SSID/signal still shown without it
+- `blueman-manager` — opened when the Bluetooth icon is clicked; Bluetooth state still shown without it
+
+Bluetooth state is read from `/sys/class/rfkill` and BlueZ D-Bus and degrades gracefully if unavailable.
 
 ## Building
 
@@ -50,7 +79,7 @@ Requirements: Rust 1.77+ (uses `LazyLock`), a GTK4 development environment (`lib
 On Arch Linux:
 
 ```sh
-sudo pacman -S gtk4 gtk4-layer-shell iw
+sudo pacman -S gtk4 gtk4-layer-shell wireplumber pipewire-pulse brightnessctl iw
 cargo build --release
 ```
 
@@ -72,7 +101,7 @@ breadbar claims `org.freedesktop.Notifications` on the session D-Bus on startup.
 
 ### pywal integration
 
-breadbar reads `~/.cache/wal/colors.json` automatically. To reload after a wallpaper change:
+breadbar reads `~/.cache/wal/colors.json` automatically (via `bread-theme`). To reload after a wallpaper change:
 
 ```sh
 pkill -HUP breadbar
@@ -87,7 +116,7 @@ pkill -HUP breadbar
 
 ### Custom CSS
 
-Drop a `~/.config/breadbar/style.css` file and send `SIGHUP` to reload. This CSS is applied at a higher priority than the pywal palette so you can override anything.
+Drop a `~/.config/breadbar/style.css` file and send `SIGHUP` to reload. This CSS is applied at a higher priority than the generated palette so you can override anything.
 
 Example — change the font size:
 
@@ -105,10 +134,14 @@ Example — change the font size:
 | `src/bar/workspaces.rs` | Hyprland IPC event stream, workspace buttons |
 | `src/bar/clock.rs` | Minute-tick clock |
 | `src/bar/stats.rs` | Polling loop: CPU, RAM, power, battery, Bluetooth, WiFi |
+| `src/bar/media.rs` | `playerctl` polling, media widget and controls popover |
+| `src/bar/wifi.rs` | WiFi details popover, `breadcrumbs` profile/scan integration |
+| `src/bar/control.rs` | Control panel data: volume (`wpctl`), brightness (`brightnessctl`), sinks (`pactl`) |
 | `src/bar/tray.rs` | `org.kde.StatusNotifierWatcher` D-Bus service, SNI item rendering |
 | `src/notifications/mod.rs` | `org.freedesktop.Notifications` zbus service |
 | `src/notifications/popup.rs` | Layer-shell popup window and card stack |
-| `src/theme.rs` | pywal reader, GTK CSS provider injection |
+| `src/osd.rs` | Volume/brightness on-screen display |
+| `src/theme.rs` | `bread-theme` palette loading, GTK CSS provider injection |
 
 Stats are polled every 2 seconds. Bluetooth and WiFi are sampled every 16 seconds and cached in between to avoid hammering D-Bus and `iw`.
 

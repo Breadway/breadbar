@@ -68,6 +68,8 @@ fn load_css() -> String {
          .control-panel-section-header {{ font-size: 10px; font-weight: bold; opacity: 0.5;\
              letter-spacing: 0.08em; margin-bottom: 4px; }}\
          .control-panel-sink-dropdown {{ }}\
+         .power-row {{ margin-top: 2px; }}\
+         .power-btn {{ font-size: 16px; min-width: 44px; padding: 4px; border-radius: 6px; }}\
          separator {{ margin: 4px 0; }}",
         bg_plain   = p.background,
         bg_rgba    = hex_to_rgba(&p.background, 0.92),
