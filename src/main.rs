@@ -123,6 +123,7 @@ impl SimpleComponent for App {
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         root.init_layer_shell();
+        root.set_namespace(Some("breadbar"));
         root.set_layer(Layer::Top);
         root.set_anchor(Edge::Top, true);
         root.set_anchor(Edge::Left, true);
