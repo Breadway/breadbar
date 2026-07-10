@@ -1,6 +1,6 @@
 [package]
 name = "breadbar"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "Minimal status bar and notification daemon for Hyprland on Wayland"
 license = "MIT"

@@ -50,6 +50,7 @@ fn load_css() -> String {
          .wifi-popover-row-active {{ color: {accent}; }}\
          .wifi-popover-row-unsaved {{ opacity: 0.4; }}\
          .wifi-popover-loading {{ opacity: 0.5; padding: 8px; }}\
+         window.wifi-add-dialog {{ background-color: {bg_rgba}; color: {on_bg}; min-width: 240px; }}\
          .media-widget {{ border-radius: 4px; padding: 0 6px; cursor: pointer; }}\
          .media-widget:hover {{ background: alpha({on_bg}, 0.10); }}\
          .media-indicator {{ font-size: 11px; opacity: 0.7; margin-right: 2px; }}\

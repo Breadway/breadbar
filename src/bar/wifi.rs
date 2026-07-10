@@ -142,3 +142,19 @@ pub fn spawn_join(ssid: String) {
     });
 }
 
+/// Fire-and-forget: save a new network with its password, then join it.
+pub fn spawn_add_and_join(ssid: String, password: String) {
+    relm4::spawn(async move {
+        let added = tokio::process::Command::new("breadcrumbs")
+            .args(["add", &ssid, &password])
+            .output()
+            .await;
+        if matches!(added, Ok(o) if o.status.success()) {
+            let _ = tokio::process::Command::new("breadcrumbs")
+                .args(["join", &ssid])
+                .output()
+                .await;
+        }
+    });
+}
+

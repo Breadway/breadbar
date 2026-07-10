@@ -814,7 +814,6 @@ impl App {
                 row.add_css_class("wifi-popover-row");
                 if !entry.saved {
                     row.add_css_class("wifi-popover-row-unsaved");
-                    row.set_sensitive(false);
                 }
                 let is_current = entry.ssid == self.current_ssid;
                 if is_current {
@@ -837,13 +836,16 @@ impl App {
                 row_box.append(&lbl);
                 row.set_child(Some(&row_box));
 
-                if entry.saved {
-                    let ssid_clone = entry.ssid.clone();
-                    row.connect_clicked(move |btn| {
+                let ssid_clone = entry.ssid.clone();
+                let saved = entry.saved;
+                row.connect_clicked(move |btn| {
+                    if saved {
                         bar::wifi::spawn_join(ssid_clone.clone());
-                        close_parent_popover(btn);
-                    });
-                }
+                    } else {
+                        show_add_network_dialog(btn, ssid_clone.clone());
+                    }
+                    close_parent_popover(btn);
+                });
                 self.wifi_popover_box.append(&row);
             }
         }
@@ -899,6 +901,76 @@ fn close_parent_popover(widget: &gtk4::Button) {
             p.popdown();
         }
     }
+}
+
+/// Small modal prompting for a password, then saves + joins the network via
+/// `breadcrumbs add` + `breadcrumbs join`.
+fn show_add_network_dialog(anchor: &gtk4::Button, ssid: String) {
+    let dialog = gtk4::Window::new();
+    dialog.set_title(Some(&format!("Add “{ssid}”")));
+    dialog.set_resizable(false);
+    dialog.add_css_class("wifi-add-dialog");
+    if let Some(root) = anchor.root() {
+        if let Ok(win) = root.downcast::<gtk4::Window>() {
+            dialog.set_transient_for(Some(&win));
+            dialog.set_modal(true);
+        }
+    }
+
+    let body = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    body.set_margin_top(12);
+    body.set_margin_bottom(12);
+    body.set_margin_start(12);
+    body.set_margin_end(12);
+
+    let lbl = gtk4::Label::new(Some(&format!("Password for {ssid}")));
+    lbl.set_xalign(0.0);
+    body.append(&lbl);
+
+    let entry = gtk4::PasswordEntry::new();
+    entry.set_show_peek_icon(true);
+    body.append(&entry);
+
+    let btn_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    btn_row.set_halign(gtk4::Align::End);
+    let cancel_btn = gtk4::Button::with_label("Cancel");
+    let connect_btn = gtk4::Button::with_label("Connect");
+    connect_btn.add_css_class("suggested-action");
+    btn_row.append(&cancel_btn);
+    btn_row.append(&connect_btn);
+    body.append(&btn_row);
+
+    dialog.set_child(Some(&body));
+
+    let d = dialog.clone();
+    cancel_btn.connect_clicked(move |_| d.close());
+
+    let dialog_for_connect = dialog.clone();
+    let entry_for_connect = entry.clone();
+    let ssid_for_connect = ssid.clone();
+    connect_btn.connect_clicked(move |_| {
+        let password = entry_for_connect.text().to_string();
+        if password.is_empty() {
+            return;
+        }
+        bar::wifi::spawn_add_and_join(ssid_for_connect.clone(), password);
+        dialog_for_connect.close();
+    });
+
+    let dialog_for_activate = dialog.clone();
+    let entry_for_activate = entry.clone();
+    let ssid_for_activate = ssid.clone();
+    entry.connect_activate(move |_| {
+        let password = entry_for_activate.text().to_string();
+        if password.is_empty() {
+            return;
+        }
+        bar::wifi::spawn_add_and_join(ssid_for_activate.clone(), password);
+        dialog_for_activate.close();
+    });
+
+    dialog.present();
+    entry.grab_focus();
 }
 
 fn stat_pair(icon_svg: &str, label: &gtk4::Label) -> gtk4::Box {
