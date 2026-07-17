@@ -37,11 +37,22 @@ pub const BT_CONNECTED: &str = include_str!(concat!(
     "/assets/Bluetooth Connected.svg"
 ));
 
+pub const ICON_VOLUME: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Volume.svg"));
+pub const ICON_BRIGHTNESS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Brightness.svg"));
+pub const ICON_LOCK: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Lock.svg"));
+pub const ICON_SLEEP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Sleep.svg"));
+pub const ICON_RESTART: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Restart.svg"));
+pub const ICON_SHUTDOWN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Shutdown.svg"));
+pub const ICON_BT_SETTINGS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Bluetooth Settings.svg"));
+
 #[derive(Debug)]
 pub struct Stats {
     pub cpu: String,
+    pub cpu_pct: f32,
     pub mem: String,
+    pub mem_pct: f32,
     pub power: String,
+    pub power_watts: f32,
     pub bat: String,
     pub bat_icon: &'static str,
     pub ac_connected: bool,
@@ -99,7 +110,8 @@ fn read_cpu() -> f32 {
     (dtotal - didle) as f32 / dtotal as f32 * 100.0
 }
 
-fn read_ram() -> u64 {
+/// Returns (used_kb, total_kb).
+fn read_ram() -> (u64, u64) {
     let text = fs::read_to_string("/proc/meminfo").unwrap_or_default();
     let mut total = 0u64;
     let mut avail = 0u64;
@@ -121,7 +133,7 @@ fn read_ram() -> u64 {
             break;
         }
     }
-    total.saturating_sub(avail)
+    (total.saturating_sub(avail), total)
 }
 
 fn bat_path() -> Option<&'static PathBuf> {
@@ -392,8 +404,14 @@ fn read_crumbs_profile() -> Option<String> {
 
 pub async fn poll() -> Stats {
     let cpu = read_cpu();
-    let mem = read_ram();
-    let power = read_power().map_or_else(|| "—W".into(), |w| format!("{w:.1}W"));
+    let (mem, mem_total) = read_ram();
+    let mem_pct = if mem_total > 0 {
+        mem as f32 / mem_total as f32 * 100.0
+    } else {
+        0.0
+    };
+    let power_watts = read_power();
+    let power = power_watts.map_or_else(|| "—W".into(), |w| format!("{w:.1}W"));
     let pct = read_battery();
     let bat = pct.map_or_else(|| "—".into(), |p| format!("{p}%"));
     let bat_icon = pct.map_or(BAT_MID, bat_level_icon);
@@ -426,12 +444,15 @@ pub async fn poll() -> Stats {
     let (net_rx_kbs, net_tx_kbs) = read_net_throughput();
     Stats {
         cpu: format!("{cpu:.0}%"),
+        cpu_pct: cpu,
         mem: if mem >= 1024 * 1024 {
             format!("{:.1}G", mem as f32 / (1024.0 * 1024.0))
         } else {
             format!("{}M", mem / 1024)
         },
+        mem_pct,
         power,
+        power_watts: power_watts.unwrap_or(0.0),
         bat,
         bat_icon,
         ac_connected,

@@ -4,8 +4,8 @@ version = "0.2.4"
 edition = "2021"
 description = "Minimal status bar and notification daemon for Hyprland on Wayland"
 license = "MIT"
-authors = ["Breadway <rileyhorsham@gmail.com>"]
-repository = "https://github.com/Breadway/breadbar"
+authors = ["Breadway <plasticbread849@gmail.com>"]
+repository = "https://git.breadway.dev/Breadway/breadbar"
 keywords = ["wayland", "hyprland", "bar", "status-bar", "gtk4"]
 categories = ["gui"]
 

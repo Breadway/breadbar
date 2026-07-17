@@ -1,11 +1,11 @@
-# Maintainer: Breadway <rileyhorsham@gmail.com>
+# Maintainer: Breadway <plasticbread849@gmail.com>
 
 pkgname=breadbar
 pkgver=0.2.0
 pkgrel=1
 pkgdesc="Minimal status bar and notification daemon for Hyprland"
 arch=('x86_64')
-url="https://github.com/Breadway/breadbar"
+url="https://git.breadway.dev/Breadway/breadbar"
 license=('MIT')
 # Some Rust deps (ring/mlua) build vendored C/asm into static archives; makepkg's
 # default -flto=auto emits GCC LTO bitcode the Rust (lld) link cannot read,

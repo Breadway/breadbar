@@ -11,8 +11,27 @@ pub enum NotifEvent {
         summary: String,
         body: String,
         timeout_ms: u32,
+        urgency: Urgency,
     },
     Close(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Urgency {
+    Low,
+    Normal,
+    Critical,
+}
+
+impl Urgency {
+    /// CSS class suffix for `.notification-card.urgency-<kind>`.
+    pub fn css_class(self) -> Option<&'static str> {
+        match self {
+            Urgency::Low => None,
+            Urgency::Normal => Some("urgency-normal"),
+            Urgency::Critical => Some("urgency-critical"),
+        }
+    }
 }
 
 struct NotifServer {
@@ -32,7 +51,7 @@ impl NotifServer {
         summary: &str,
         body: &str,
         _actions: Vec<String>,
-        _hints: std::collections::HashMap<String, OwnedValue>,
+        hints: std::collections::HashMap<String, OwnedValue>,
         expire_timeout: i32,
     ) -> u32 {
         let id = if replaces_id != 0 {
@@ -45,6 +64,12 @@ impl NotifServer {
         } else {
             expire_timeout as u32
         };
+        // Spec: hints["urgency"] is a byte, 0=low, 1=normal, 2=critical (default normal).
+        let urgency = match hints.get("urgency").and_then(|v| u8::try_from(v.clone()).ok()) {
+            Some(0) => Urgency::Low,
+            Some(2) => Urgency::Critical,
+            _ => Urgency::Normal,
+        };
         let _ = self
             .tx
             .send(NotifEvent::Show {
@@ -53,6 +78,7 @@ impl NotifServer {
                 summary: summary.to_string(),
                 body: body.to_string(),
                 timeout_ms,
+                urgency,
             })
             .await;
         id

@@ -1,3 +1,4 @@
+pub mod bluetooth;
 pub mod clock;
 pub mod control;
 pub mod media;

@@ -122,40 +122,39 @@ fn brightness_watcher(tx: mpsc::Sender<OsdEvent>) {
 async fn run_osd(mut rx: mpsc::Receiver<OsdEvent>) {
     let window = create_window();
 
-    let container = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-    container.set_margin_top(12);
-    container.set_margin_bottom(12);
-    container.set_margin_start(16);
-    container.set_margin_end(16);
+    let container = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    container.set_margin_top(10);
+    container.set_margin_bottom(10);
+    container.set_margin_start(14);
+    container.set_margin_end(14);
     window.set_child(Some(&container));
 
-    let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    let kind_lbl = gtk4::Label::new(Some("Volume"));
-    kind_lbl.add_css_class("osd-kind");
-    kind_lbl.set_hexpand(true);
-    kind_lbl.set_xalign(0.0);
-    let pct_lbl = gtk4::Label::new(Some("0%"));
-    pct_lbl.add_css_class("osd-pct");
-    header.append(&kind_lbl);
-    header.append(&pct_lbl);
-    container.append(&header);
+    let icon = gtk4::Image::from_paintable(Some(&crate::svg_texture(
+        crate::bar::stats::ICON_VOLUME,
+    )));
+    icon.add_css_class("osd-icon");
+    container.append(&icon);
 
     let pbar = gtk4::ProgressBar::new();
     pbar.add_css_class("osd-bar");
+    pbar.set_hexpand(true);
+    pbar.set_valign(gtk4::Align::Center);
     container.append(&pbar);
 
     let dismiss_token = Rc::new(Cell::new(0u32));
 
     while let Some(event) = rx.recv().await {
-        let (kind, pct) = match event {
-            OsdEvent::Volume { pct, muted } => {
-                (if muted { "Volume (Muted)" } else { "Volume" }, pct)
-            }
-            OsdEvent::Brightness { pct } => ("Brightness", pct),
+        let (icon_svg, pct, muted) = match event {
+            OsdEvent::Volume { pct, muted } => (crate::bar::stats::ICON_VOLUME, pct, muted),
+            OsdEvent::Brightness { pct } => (crate::bar::stats::ICON_BRIGHTNESS, pct, false),
         };
 
-        kind_lbl.set_label(kind);
-        pct_lbl.set_label(&format!("{pct}%"));
+        icon.set_paintable(Some(&crate::svg_texture(icon_svg)));
+        if muted {
+            icon.add_css_class("osd-icon-muted");
+        } else {
+            icon.remove_css_class("osd-icon-muted");
+        }
         pbar.set_fraction(pct as f64 / 100.0);
         window.set_visible(true);
 
@@ -179,6 +178,6 @@ fn create_window() -> gtk4::Window {
     window.set_layer(Layer::Overlay);
     window.set_anchor(Edge::Bottom, true);
     window.set_margin(Edge::Bottom, 80);
-    window.set_default_width(280);
+    window.set_default_width(180);
     window
 }

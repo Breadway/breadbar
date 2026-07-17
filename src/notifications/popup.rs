@@ -4,7 +4,7 @@ use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use tokio::sync::mpsc::Receiver;
 
-use super::NotifEvent;
+use super::{NotifEvent, Urgency};
 
 type Cards = Rc<RefCell<HashMap<u32, gtk4::Box>>>;
 
@@ -27,12 +27,13 @@ pub async fn run(mut rx: Receiver<NotifEvent>) {
                 summary,
                 body,
                 timeout_ms,
+                urgency,
             } => {
                 // Replace existing card with same id (replaces_id case)
                 if let Some(old) = cards.borrow_mut().remove(&id) {
                     cards_box.remove(&old);
                 }
-                let card = make_card(&app_name, &summary, &body);
+                let card = make_card(&app_name, &summary, &body, urgency);
                 cards_box.prepend(&card);
                 cards.borrow_mut().insert(id, card.clone());
                 window.set_visible(true);
@@ -75,11 +76,17 @@ fn create_window() -> gtk4::Window {
     window
 }
 
-fn make_card(app_name: &str, summary: &str, body: &str) -> gtk4::Box {
+fn make_card(app_name: &str, summary: &str, body: &str, urgency: Urgency) -> gtk4::Box {
     let card = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     card.add_css_class("notification-card");
+    if let Some(class) = urgency.css_class() {
+        card.add_css_class(class);
+    }
 
-    if !app_name.is_empty() {
+    // Senders often set the title/summary to their own app name (e.g. a bare
+    // "Spotify" notification) — showing app_name above an identical summary
+    // is pure repetition, so skip the app label in that case.
+    if !app_name.is_empty() && !app_name.eq_ignore_ascii_case(summary) {
         let lbl = gtk4::Label::new(Some(app_name));
         lbl.add_css_class("notification-app");
         lbl.set_xalign(0.0);

@@ -9,6 +9,12 @@ mod notifications;
 mod osd;
 mod theme;
 
+/// Thresholds above which the bar's CPU/RAM/power-draw readouts appear at
+/// all — see `AppInput::StatsUpdate`. Below these, the bar stays quiet.
+const CPU_ATTENTION_THRESHOLD: f32 = 70.0;
+const MEM_ATTENTION_THRESHOLD: f32 = 80.0;
+const POWER_ATTENTION_THRESHOLD: f32 = 30.0;
+
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use hyprland::data::Workspace;
@@ -29,6 +35,14 @@ pub struct App {
     clock_lbl: gtk4::Label,
 
     // ── Stats bar ─────────────────────────────────────────────────────────
+    // The system-stats trio (CPU/RAM/power draw) only shows up when a value
+    // crosses a "you probably want to know about this" threshold — otherwise
+    // the bar stays quiet. See AppInput::StatsUpdate.
+    system_stats_box: gtk4::Box,
+    system_sep: gtk4::Separator,
+    cpu_pair: gtk4::Box,
+    mem_pair: gtk4::Box,
+    pwr_pair: gtk4::Box,
     cpu_lbl: gtk4::Label,
     mem_lbl: gtk4::Label,
     pwr_lbl: gtk4::Label,
@@ -43,16 +57,20 @@ pub struct App {
     wifi_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
 
     // ── WiFi popover ──────────────────────────────────────────────────────
-    wifi_popover_box: gtk4::Box,
+    wifi_pane: gtk4::Box,
     crumbs_status: Option<bar::wifi::CrumbsStatus>,
     wifi_popover_data: Option<bar::wifi::WifiPopoverData>,
     wifi_profile: Option<String>,
     current_ssid: String,
 
+    // ── Bluetooth popover ────────────────────────────────────────────────
+    bt_pane: gtk4::Box,
+    bt_popover_data: Option<bar::bluetooth::BtPopoverData>,
+
     // ── Media ─────────────────────────────────────────────────────────────
     media_widget: gtk4::Box,
     media_track_lbl: gtk4::Label,
-    media_play_btn: gtk4::Button,
+    media_play_icon: gtk4::Image,
     media_last: Option<bar::media::MediaState>,
     media_paused_at: Option<std::time::Instant>,
 
@@ -66,10 +84,14 @@ pub struct App {
     panel_sink_signal: Option<gtk4::glib::SignalHandlerId>,
     panel_sinks: Vec<bar::control::AudioSink>,
     panel_cpu_lbl: gtk4::Label,
+    panel_mem_lbl: gtk4::Label,
+    panel_pwr_lbl: gtk4::Label,
     panel_gpu_lbl: gtk4::Label,
     panel_net_lbl: gtk4::Label,
 
     // ── Tray ──────────────────────────────────────────────────────────────
+    tray_section: gtk4::Box,
+    tray_sep: gtk4::Separator,
     tray_box: gtk4::Box,
     tray_items: std::collections::HashMap<String, gtk4::Button>,
 }
@@ -84,6 +106,7 @@ pub enum AppInput {
     CrumbsStatus(bar::wifi::CrumbsStatus),
     WifiPopoverData(bar::wifi::WifiPopoverData),
     SetProfile(String),
+    BtPopoverData(bar::bluetooth::BtPopoverData),
     MediaUpdate(bar::media::MediaState),
     ControlPanelData(bar::control::ControlPanelData),
 }
@@ -176,39 +199,15 @@ impl SimpleComponent for App {
         let wifi_img =
             gtk4::Image::from_paintable(Some(&svg_texture(asset!("WiFi Connecting.svg"))));
 
-        let wifi_pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        wifi_pair.add_css_class("stat-pair");
-        wifi_pair.add_css_class("wifi-pair");
         wifi_img.add_css_class("stat-icon");
-        wifi_pair.append(&wifi_img);
-        wifi_pair.append(&wifi_lbl);
 
-        let wifi_popover_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        wifi_popover_box.add_css_class("wifi-popover-inner");
-        wifi_popover_box.set_margin_top(4);
-        wifi_popover_box.set_margin_bottom(4);
-        wifi_popover_box.set_margin_start(4);
-        wifi_popover_box.set_margin_end(4);
+        // Content pane only — this becomes a tab inside the merged
+        // connectivity popover built alongside the Bluetooth pane below,
+        // once bt_img exists too. See "Connectivity popover" further down.
+        let wifi_pane = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         let loading_lbl = gtk4::Label::new(Some("Scanning…"));
         loading_lbl.add_css_class("wifi-popover-loading");
-        wifi_popover_box.append(&loading_lbl);
-
-        let wifi_popover = gtk4::Popover::new();
-        wifi_popover.add_css_class("wifi-popover");
-        wifi_popover.set_child(Some(&wifi_popover_box));
-        wifi_popover.set_parent(&wifi_pair);
-
-        let wpop = wifi_popover.clone();
-        let gesture = gtk4::GestureClick::new();
-        gesture.connect_released(move |_, _, _, _| {
-            if wpop.is_visible() { wpop.popdown(); } else { wpop.popup(); }
-        });
-        wifi_pair.add_controller(gesture);
-
-        let sender_wp = sender.clone();
-        wifi_popover.connect_show(move |_| {
-            bar::wifi::spawn_popover_load(sender_wp.clone());
-        });
+        wifi_pane.append(&loading_lbl);
 
         // ── Media widget (center) ────────────────────────────────────────
         let media_widget = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
@@ -235,18 +234,26 @@ impl SimpleComponent for App {
         media_controls_box.set_margin_start(4);
         media_controls_box.set_margin_end(4);
 
-        let prev_btn = gtk4::Button::with_label("⏮");
+        let prev_btn = gtk4::Button::new();
+        prev_btn.set_child(Some(&gtk4::Image::from_paintable(Some(&svg_texture(
+            asset!("Previous.svg"),
+        )))));
         prev_btn.add_css_class("flat");
         prev_btn.add_css_class("media-btn");
         prev_btn.connect_clicked(|_| bar::media::spawn_cmd("previous"));
 
-        let media_play_btn = gtk4::Button::with_label("⏸");
+        let media_play_icon = gtk4::Image::from_paintable(Some(&svg_texture(asset!("Pause.svg"))));
+        let media_play_btn = gtk4::Button::new();
+        media_play_btn.set_child(Some(&media_play_icon));
         media_play_btn.add_css_class("flat");
         media_play_btn.add_css_class("media-btn");
         media_play_btn.add_css_class("media-play-btn");
         media_play_btn.connect_clicked(|_| bar::media::spawn_cmd("play-pause"));
 
-        let next_btn = gtk4::Button::with_label("⏭");
+        let next_btn = gtk4::Button::new();
+        next_btn.set_child(Some(&gtk4::Image::from_paintable(Some(&svg_texture(
+            asset!("Next.svg"),
+        )))));
         next_btn.add_css_class("flat");
         next_btn.add_css_class("media-btn");
         next_btn.connect_clicked(|_| bar::media::spawn_cmd("next"));
@@ -280,9 +287,22 @@ impl SimpleComponent for App {
         // ── Stats box (right side) ───────────────────────────────────────
         let stats_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         stats_box.add_css_class("stats-box");
-        stats_box.append(&stat_pair(asset!("CPU.svg"), &cpu_lbl));
-        stats_box.append(&stat_pair(asset!("RAM Usage.svg"), &mem_lbl));
-        stats_box.append(&stat_pair(asset!("Power Draw.svg"), &pwr_lbl));
+
+        // CPU/RAM/power draw: hidden by default (see StatsUpdate), so this
+        // whole sub-group — plus its separator — collapses away when quiet.
+        let cpu_pair = stat_pair(asset!("CPU.svg"), &cpu_lbl);
+        let mem_pair = stat_pair(asset!("RAM Usage.svg"), &mem_lbl);
+        let pwr_pair = stat_pair(asset!("Power Draw.svg"), &pwr_lbl);
+        let system_stats_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        system_stats_box.append(&cpu_pair);
+        system_stats_box.append(&mem_pair);
+        system_stats_box.append(&pwr_pair);
+        system_stats_box.set_visible(false);
+        stats_box.append(&system_stats_box);
+        let system_sep = gtk4::Separator::new(gtk4::Orientation::Vertical);
+        system_sep.add_css_class("bar-sep");
+        system_sep.set_visible(false);
+        stats_box.append(&system_sep);
 
         let bat_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         bat_box.add_css_class("stat-pair");
@@ -296,28 +316,121 @@ impl SimpleComponent for App {
         stats_box.append(&bat_box);
 
         bt_img.add_css_class("bt-icon");
-        bt_img.add_css_class("clickable");
-        let bt_gesture = gtk4::GestureClick::new();
-        bt_gesture.connect_released(|_, _, _, _| {
-            relm4::spawn(async {
-                let _ = tokio::process::Command::new("blueman-manager").spawn();
-            });
+
+        // Content pane only — same deal as wifi_pane above.
+        let bt_pane = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        let bt_loading_lbl = gtk4::Label::new(Some("Loading…"));
+        bt_loading_lbl.add_css_class("wifi-popover-loading");
+        bt_pane.append(&bt_loading_lbl);
+
+        // ── Connectivity popover ─────────────────────────────────────────
+        // WiFi and Bluetooth share one popover with one anatomy (same CSS
+        // classes throughout the two panes) instead of two near-identical
+        // popups behind two separate icons. A small tab row switches between
+        // them; both fetches kick off on open so switching tabs afterward is
+        // instant. The two panes live in a Stack rather than plain sibling
+        // Boxes with manual visibility toggling, which left stale width
+        // behind on reopen.
+        //
+        // hhomogeneous/vhomogeneous are ON (GTK's default), even though that
+        // means the popover is always sized to the *larger* of the two panes
+        // (visible empty space under the shorter one) — the alternative,
+        // sizing to just the active pane, means the popup has to resize
+        // itself in place when you switch tabs while it's open. Under
+        // gtk4-layer-shell that in-place resize doesn't reliably reach the
+        // compositor as a proper xdg_popup reposition; switching from the
+        // shorter tab to the taller one after a close/reopen cycle made the
+        // whole popover silently vanish instead of growing. A constant
+        // footprint sidesteps the resize entirely.
+        let content_stack = gtk4::Stack::new();
+        content_stack.set_hhomogeneous(true);
+        content_stack.set_vhomogeneous(true);
+        // Reserve enough room up front for the tallest realistic content
+        // (WiFi tab with a handful of nearby networks). Homogeneous sizing
+        // alone still lets the *first* real data load (Scanning… → populated
+        // list) trigger a live resize while the popup is mapped, which hits
+        // the same reposition fragility as the tab-switch case — claiming
+        // the space before anything is shown avoids that resize too.
+        content_stack.set_size_request(220, 420);
+        content_stack.add_named(&wifi_pane, Some("wifi"));
+        content_stack.add_named(&bt_pane, Some("bluetooth"));
+        content_stack.set_visible_child_name("wifi");
+
+        let wifi_tab_btn = gtk4::ToggleButton::with_label("Wi-Fi");
+        wifi_tab_btn.add_css_class("popover-tab");
+        wifi_tab_btn.set_active(true);
+        let bt_tab_btn = gtk4::ToggleButton::with_label("Bluetooth");
+        bt_tab_btn.add_css_class("popover-tab");
+        bt_tab_btn.set_group(Some(&wifi_tab_btn));
+
+        let tab_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        tab_row.add_css_class("popover-tab-row");
+        tab_row.append(&wifi_tab_btn);
+        tab_row.append(&bt_tab_btn);
+
+        let stack_for_wifi = content_stack.clone();
+        wifi_tab_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                stack_for_wifi.set_visible_child_name("wifi");
+            }
         });
-        bt_img.add_controller(bt_gesture);
-        stats_box.append(&bt_img);
-        stats_box.append(&wifi_pair);
+        let stack_for_bt = content_stack.clone();
+        bt_tab_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                stack_for_bt.set_visible_child_name("bluetooth");
+            }
+        });
+
+        let connectivity_inner = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        connectivity_inner.add_css_class("wifi-popover-inner");
+        connectivity_inner.append(&tab_row);
+        connectivity_inner.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+        connectivity_inner.append(&content_stack);
+
+        let connectivity_popover = gtk4::Popover::new();
+        connectivity_popover.add_css_class("wifi-popover");
+        connectivity_popover.set_child(Some(&connectivity_inner));
+
+        let connectivity_pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        connectivity_pair.add_css_class("stat-pair");
+        connectivity_pair.add_css_class("wifi-pair");
+        connectivity_pair.append(&bt_img);
+        connectivity_pair.append(&wifi_img);
+        connectivity_pair.append(&wifi_lbl);
+        // Anchored to wifi_lbl specifically, not the connectivity_pair row —
+        // a Popover parented to a multi-child Box via set_parent() balloons
+        // that Box's own allocation after a popup→popdown→popup cycle (its
+        // width roughly quadrupled in testing, shoving every bar item to its
+        // left further left). Anchoring to a single leaf widget instead
+        // sidesteps whatever GTK4/gtk4-layer-shell interaction causes that;
+        // the click target below still covers the whole row regardless.
+        connectivity_popover.set_parent(&wifi_lbl);
+        stats_box.append(&connectivity_pair);
+
+        let cpop = connectivity_popover.clone();
+        let gesture = gtk4::GestureClick::new();
+        gesture.connect_released(move |_, _, _, _| {
+            if cpop.is_visible() { cpop.popdown(); } else { cpop.popup(); }
+        });
+        connectivity_pair.add_controller(gesture);
+
+        let sender_conn = sender.clone();
+        connectivity_popover.connect_show(move |_| {
+            bar::wifi::spawn_popover_load(sender_conn.clone());
+            bar::bluetooth::spawn_popover_load(sender_conn.clone());
+        });
 
         // ── Control panel popover ────────────────────────────────────────
         let panel_inner = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         panel_inner.add_css_class("control-panel-inner");
 
         // Volume row
-        let vol_row = build_slider_row("🔊", 0.0, 1.5, 0.02);
+        let vol_row = build_slider_row(bar::stats::ICON_VOLUME, 0.0, 1.5, 0.02);
         let panel_vol_slider = vol_row.1.clone();
         panel_inner.append(&vol_row.0);
 
         // Brightness row
-        let bright_row = build_slider_row("☀", 0.0, 1.0, 0.02);
+        let bright_row = build_slider_row(bar::stats::ICON_BRIGHTNESS, 0.0, 1.0, 0.02);
         let panel_bright_slider = bright_row.1.clone();
         panel_inner.append(&bright_row.0);
 
@@ -331,6 +444,14 @@ impl SimpleComponent for App {
         panel_cpu_lbl.add_css_class("control-panel-stat");
         panel_cpu_lbl.set_xalign(0.0);
 
+        let panel_mem_lbl = gtk4::Label::new(Some("RAM  —"));
+        panel_mem_lbl.add_css_class("control-panel-stat");
+        panel_mem_lbl.set_xalign(0.0);
+
+        let panel_pwr_lbl = gtk4::Label::new(Some("PWR  —"));
+        panel_pwr_lbl.add_css_class("control-panel-stat");
+        panel_pwr_lbl.set_xalign(0.0);
+
         let panel_gpu_lbl = gtk4::Label::new(Some("GPU  —"));
         panel_gpu_lbl.add_css_class("control-panel-stat");
         panel_gpu_lbl.set_xalign(0.0);
@@ -340,6 +461,8 @@ impl SimpleComponent for App {
         panel_net_lbl.set_xalign(0.0);
 
         stats_section.append(&panel_cpu_lbl);
+        stats_section.append(&panel_mem_lbl);
+        stats_section.append(&panel_pwr_lbl);
         stats_section.append(&panel_gpu_lbl);
         stats_section.append(&panel_net_lbl);
         panel_inner.append(&stats_section);
@@ -377,9 +500,14 @@ impl SimpleComponent for App {
         tray_box.add_css_class("tray-box");
         tray_section.append(&tray_header);
         tray_section.append(&tray_box);
+        // Collapsed (along with its separator) until an SNI app actually
+        // registers — an empty "Apps" section heading is dead weight.
+        tray_section.set_visible(false);
         panel_inner.append(&tray_section);
 
-        panel_inner.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+        let tray_sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+        tray_sep.set_visible(false);
+        panel_inner.append(&tray_sep);
 
         // Power section
         let power_section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
@@ -391,13 +519,14 @@ impl SimpleComponent for App {
 
         let power_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
         power_row.add_css_class("power-row");
-        for (label, cmd) in [
-            ("🔒", vec!["hyprlock"]),
-            ("💤", vec!["systemctl", "suspend"]),
-            ("🔄", vec!["systemctl", "reboot"]),
-            ("⏻", vec!["systemctl", "poweroff"]),
+        for (icon_svg, cmd) in [
+            (bar::stats::ICON_LOCK, vec!["hyprlock"]),
+            (bar::stats::ICON_SLEEP, vec!["systemctl", "suspend"]),
+            (bar::stats::ICON_RESTART, vec!["systemctl", "reboot"]),
+            (bar::stats::ICON_SHUTDOWN, vec!["systemctl", "poweroff"]),
         ] {
-            let btn = gtk4::Button::with_label(label);
+            let btn = gtk4::Button::new();
+            btn.set_child(Some(&gtk4::Image::from_paintable(Some(&svg_texture(icon_svg)))));
             btn.add_css_class("flat");
             btn.add_css_class("power-btn");
             btn.connect_clicked(move |_| {
@@ -463,6 +592,11 @@ impl SimpleComponent for App {
             button_map: std::collections::HashMap::new(),
             time_str: bar::clock::current(),
             clock_lbl,
+            system_stats_box,
+            system_sep,
+            cpu_pair,
+            mem_pair,
+            pwr_pair,
             cpu_lbl,
             mem_lbl,
             pwr_lbl,
@@ -475,14 +609,16 @@ impl SimpleComponent for App {
             wifi_lbl,
             wifi_img,
             wifi_textures,
-            wifi_popover_box,
+            wifi_pane,
             crumbs_status: None,
             wifi_popover_data: None,
             wifi_profile: None,
             current_ssid: "—".to_string(),
+            bt_pane,
+            bt_popover_data: None,
             media_widget,
             media_track_lbl,
-            media_play_btn,
+            media_play_icon,
             media_last: None,
             media_paused_at: None,
             control_popover,
@@ -494,8 +630,12 @@ impl SimpleComponent for App {
             panel_sink_signal: None,
             panel_sinks: vec![],
             panel_cpu_lbl,
+            panel_mem_lbl,
+            panel_pwr_lbl,
             panel_gpu_lbl,
             panel_net_lbl,
+            tray_section,
+            tray_sep,
             tray_box,
             tray_items: std::collections::HashMap::new(),
         };
@@ -539,6 +679,20 @@ impl SimpleComponent for App {
                 self.cpu_lbl.set_label(&stats.cpu);
                 self.mem_lbl.set_label(&stats.mem);
                 self.pwr_lbl.set_label(&stats.power);
+
+                // Bar information diet: CPU/RAM/power draw only surface once
+                // they're actually worth knowing about, individually, so a
+                // hot CPU doesn't drag an idle RAM/power reading along with it.
+                let cpu_hot = stats.cpu_pct > CPU_ATTENTION_THRESHOLD;
+                let mem_hot = stats.mem_pct > MEM_ATTENTION_THRESHOLD;
+                let pwr_hot = stats.power_watts > POWER_ATTENTION_THRESHOLD;
+                self.cpu_pair.set_visible(cpu_hot);
+                self.mem_pair.set_visible(mem_hot);
+                self.pwr_pair.set_visible(pwr_hot);
+                let any_hot = cpu_hot || mem_hot || pwr_hot;
+                self.system_stats_box.set_visible(any_hot);
+                self.system_sep.set_visible(any_hot);
+
                 self.bat_lbl.set_label(&stats.bat);
                 if let Some(tex) = self.bat_textures.get(&(stats.bat_icon.as_ptr() as usize)) {
                     self.bat_img.set_paintable(Some(tex));
@@ -574,6 +728,11 @@ impl SimpleComponent for App {
                     };
                     self.panel_cpu_lbl.set_label(&cpu_str);
 
+                    self.panel_mem_lbl
+                        .set_label(&format!("RAM  {:.0}%  {}", stats.mem_pct, stats.mem));
+                    self.panel_pwr_lbl
+                        .set_label(&format!("PWR  {}", stats.power));
+
                     let gpu_str = match (stats.gpu_usage, stats.gpu_temp) {
                         (Some(u), Some(t)) => format!("GPU  {u}%  {t:.0}°C"),
                         (Some(u), None) => format!("GPU  {u}%"),
@@ -603,18 +762,33 @@ impl SimpleComponent for App {
                 btn.connect_clicked(move |_| bar::tray::spawn_activate(id_click.clone()));
                 self.tray_box.append(&btn);
                 self.tray_items.insert(id, btn);
+                self.tray_section.set_visible(true);
+                self.tray_sep.set_visible(true);
             }
             AppInput::TrayUpdate(bar::tray::TrayUpdate::Remove { id }) => {
                 if let Some(btn) = self.tray_items.remove(&id) {
                     self.tray_box.remove(&btn);
                 }
+                let has_items = !self.tray_items.is_empty();
+                self.tray_section.set_visible(has_items);
+                self.tray_sep.set_visible(has_items);
             }
             AppInput::CrumbsStatus(status) => {
                 self.crumbs_status = Some(status);
+                // CrumbsStatus and WifiPopoverData arrive independently (different
+                // pollers); whichever lands second must still repaint the header —
+                // otherwise it only shows up if CrumbsStatus happens to win the race.
+                if self.wifi_popover_data.is_some() {
+                    self.rebuild_wifi_popover(&sender);
+                }
             }
             AppInput::WifiPopoverData(data) => {
                 self.wifi_popover_data = Some(data);
                 self.rebuild_wifi_popover(&sender);
+            }
+            AppInput::BtPopoverData(data) => {
+                self.bt_popover_data = Some(data);
+                self.rebuild_bt_popover();
             }
             AppInput::SetProfile(name) => {
                 self.wifi_profile = Some(name);
@@ -628,8 +802,12 @@ impl SimpleComponent for App {
                         format!("{} · {}", state.artist, state.title)
                     };
                     self.media_track_lbl.set_label(&label);
-                    self.media_play_btn
-                        .set_label(if state.playing { "⏸" } else { "▶" });
+                    let icon_svg = if state.playing {
+                        asset!("Pause.svg")
+                    } else {
+                        asset!("Play.svg")
+                    };
+                    self.media_play_icon.set_paintable(Some(&svg_texture(icon_svg)));
 
                     if state.playing {
                         self.media_paused_at = None;
@@ -717,8 +895,8 @@ impl App {
     }
 
     fn rebuild_wifi_popover(&mut self, sender: &ComponentSender<Self>) {
-        while let Some(child) = self.wifi_popover_box.first_child() {
-            self.wifi_popover_box.remove(&child);
+        while let Some(child) = self.wifi_pane.first_child() {
+            self.wifi_pane.remove(&child);
         }
 
         if let Some(st) = &self.crumbs_status {
@@ -755,15 +933,15 @@ impl App {
             status_lbl.set_xalign(0.0);
             header.append(&status_lbl);
 
-            self.wifi_popover_box.append(&header);
-            self.wifi_popover_box
+            self.wifi_pane.append(&header);
+            self.wifi_pane
                 .append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
         }
 
         let Some(data) = &self.wifi_popover_data else {
             let lbl = gtk4::Label::new(Some("Scanning…"));
             lbl.add_css_class("wifi-popover-loading");
-            self.wifi_popover_box.append(&lbl);
+            self.wifi_pane.append(&lbl);
             return;
         };
 
@@ -772,7 +950,7 @@ impl App {
         ph.set_xalign(0.0);
         ph.set_margin_top(6);
         ph.set_margin_bottom(2);
-        self.wifi_popover_box.append(&ph);
+        self.wifi_pane.append(&ph);
 
         for (name, active) in &data.profiles {
             let row = gtk4::Button::new();
@@ -796,18 +974,18 @@ impl App {
                 bar::wifi::spawn_profile_set(name_clone.clone());
                 close_parent_popover(btn);
             });
-            self.wifi_popover_box.append(&row);
+            self.wifi_pane.append(&row);
         }
 
         if !data.scan.is_empty() {
-            self.wifi_popover_box
+            self.wifi_pane
                 .append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
             let nh = gtk4::Label::new(Some("Nearby"));
             nh.add_css_class("wifi-popover-section");
             nh.set_xalign(0.0);
             nh.set_margin_top(6);
             nh.set_margin_bottom(2);
-            self.wifi_popover_box.append(&nh);
+            self.wifi_pane.append(&nh);
 
             for entry in &data.scan {
                 let row = gtk4::Button::new();
@@ -847,25 +1025,120 @@ impl App {
                     }
                     close_parent_popover(btn);
                 });
-                self.wifi_popover_box.append(&row);
+                self.wifi_pane.append(&row);
+            }
+        }
+    }
+
+    fn rebuild_bt_popover(&mut self) {
+        while let Some(child) = self.bt_pane.first_child() {
+            self.bt_pane.remove(&child);
+        }
+
+        let Some(data) = &self.bt_popover_data else {
+            let lbl = gtk4::Label::new(Some("Loading…"));
+            lbl.add_css_class("wifi-popover-loading");
+            self.bt_pane.append(&lbl);
+            return;
+        };
+
+        // Power toggle row
+        let toggle_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        toggle_row.set_margin_bottom(4);
+        let toggle_lbl = gtk4::Label::new(Some("Bluetooth"));
+        toggle_lbl.add_css_class("wifi-popover-ssid");
+        toggle_lbl.set_hexpand(true);
+        toggle_lbl.set_xalign(0.0);
+        let toggle_switch = gtk4::Switch::new();
+        toggle_switch.set_active(data.powered);
+        toggle_switch.set_valign(gtk4::Align::Center);
+        toggle_switch.connect_state_set(|_, on| {
+            bar::bluetooth::spawn_set_powered(on);
+            gtk4::glib::Propagation::Proceed
+        });
+        toggle_row.append(&toggle_lbl);
+        toggle_row.append(&toggle_switch);
+        self.bt_pane.append(&toggle_row);
+        self.bt_pane
+            .append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+
+        if !data.powered {
+            let lbl = gtk4::Label::new(Some("Bluetooth is off"));
+            lbl.add_css_class("wifi-popover-loading");
+            self.bt_pane.append(&lbl);
+        } else if data.devices.is_empty() {
+            let lbl = gtk4::Label::new(Some("No paired devices"));
+            lbl.add_css_class("wifi-popover-loading");
+            self.bt_pane.append(&lbl);
+        } else {
+            let dh = gtk4::Label::new(Some("Paired"));
+            dh.add_css_class("wifi-popover-section");
+            dh.set_xalign(0.0);
+            dh.set_margin_top(2);
+            dh.set_margin_bottom(2);
+            self.bt_pane.append(&dh);
+
+            for dev in &data.devices {
+                let row = gtk4::Button::new();
+                row.add_css_class("flat");
+                row.add_css_class("wifi-popover-row");
+                if dev.connected {
+                    row.add_css_class("wifi-popover-row-active");
+                }
+                let lbl = gtk4::Label::new(Some(&format!(
+                    "{}{}",
+                    if dev.connected { "● " } else { "  " },
+                    dev.name,
+                )));
+                lbl.set_xalign(0.0);
+                row.set_child(Some(&lbl));
+
+                let address = dev.address.clone();
+                let connected = dev.connected;
+                row.connect_clicked(move |_| {
+                    if connected {
+                        bar::bluetooth::spawn_disconnect(address.clone());
+                    } else {
+                        bar::bluetooth::spawn_connect(address.clone());
+                    }
+                });
+                self.bt_pane.append(&row);
             }
         }
 
-        self.wifi_popover_box.set_visible(true);
+        self.bt_pane
+            .append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+        let settings_row = gtk4::Button::new();
+        settings_row.add_css_class("flat");
+        settings_row.add_css_class("wifi-popover-row");
+        let settings_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        let settings_icon = gtk4::Image::from_paintable(Some(&svg_texture(bar::stats::ICON_BT_SETTINGS)));
+        settings_icon.add_css_class("stat-icon");
+        settings_box.append(&settings_icon);
+        settings_box.append(&gtk4::Label::new(Some("Bluetooth settings")));
+        settings_row.set_child(Some(&settings_box));
+        settings_row.connect_clicked(|_| {
+            relm4::spawn(async {
+                let _ = tokio::process::Command::new("blueman-manager").spawn();
+            });
+        });
+        self.bt_pane.append(&settings_row);
     }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn build_slider_row(icon: &str, min: f64, max: f64, step: f64) -> (gtk4::Box, gtk4::Scale) {
+fn build_slider_row(icon_svg: &str, min: f64, max: f64, step: f64) -> (gtk4::Box, gtk4::Scale) {
     let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     row.add_css_class("control-panel-row");
     row.set_margin_top(2);
     row.set_margin_bottom(2);
 
-    let icon_lbl = gtk4::Label::new(Some(icon));
-    icon_lbl.add_css_class("control-panel-row-icon");
-    icon_lbl.set_width_chars(2);
+    // Rendered larger than the standard 16px stat/section icons: these are
+    // the two things in the panel you actually drag, so they should read as
+    // primary controls rather than blend in with passive readouts.
+    let icon = gtk4::Image::from_paintable(Some(&svg_texture_sized(icon_svg, 20)));
+    icon.add_css_class("control-panel-row-icon");
 
     let slider = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, min, max, step);
     slider.set_draw_value(false);
@@ -873,7 +1146,7 @@ fn build_slider_row(icon: &str, min: f64, max: f64, step: f64) -> (gtk4::Box, gt
     slider.set_width_request(180);
     slider.add_css_class("control-panel-slider");
 
-    row.append(&icon_lbl);
+    row.append(&icon);
     row.append(&slider);
     (row, slider)
 }
@@ -984,12 +1257,21 @@ fn stat_pair(icon_svg: &str, label: &gtk4::Label) -> gtk4::Box {
     pair
 }
 
-fn svg_texture(svg_src: &str) -> gtk4::gdk::Texture {
+pub(crate) fn svg_texture(svg_src: &str) -> gtk4::gdk::Texture {
+    svg_texture_sized(svg_src, 16)
+}
+
+/// Same as `svg_texture` but rendered at an explicit pixel size — used to give
+/// primary/interactive icons (e.g. sliders you actually drag) more visual
+/// weight than passive informational ones, which otherwise all read as the
+/// same flat 16px stroke glyph once emoji stopped providing accidental variety.
+pub(crate) fn svg_texture_sized(svg_src: &str, px: u32) -> gtk4::gdk::Texture {
     use resvg::{tiny_skia, usvg};
     let fg = theme::fg_color();
+    let dim = format!(r#"width="{px}" height="{px}""#);
     let svg = svg_src
         .replace("currentColor", &fg)
-        .replace(r#"width="24" height="24""#, r#"width="16" height="16""#);
+        .replace(r#"width="24" height="24""#, &dim);
     let tree = usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("parse svg");
     let size = tree.size().to_int_size();
     let (w, h) = (size.width(), size.height());
