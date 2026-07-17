@@ -20,7 +20,7 @@ Brightness.svg
 Power section buttons
 -----------------------
 Lock.svg
-    Padlock icon — triggers hyprlock (lock screen).
+    Padlock icon — triggers breadlock (lock screen).
     Currently placeholder: 🔒
 
 Sleep.svg

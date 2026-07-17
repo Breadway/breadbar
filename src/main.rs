@@ -392,7 +392,10 @@ impl SimpleComponent for App {
         let power_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
         power_row.add_css_class("power-row");
         for (label, cmd) in [
-            ("🔒", vec!["hyprlock"]),
+            // breadlock is the ecosystem's own screen locker — hyprlock is
+            // the thing it was built to replace; the bar shouldn't still
+            // be pointing at it.
+            ("🔒", vec!["breadlock"]),
             ("💤", vec!["systemctl", "suspend"]),
             ("🔄", vec!["systemctl", "reboot"]),
             ("⏻", vec!["systemctl", "poweroff"]),

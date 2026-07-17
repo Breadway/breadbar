@@ -26,7 +26,7 @@ A single Rust binary that provides a full-width top bar, a D-Bus notification da
 - Live CPU%, GPU%, and network throughput (download/upload)
 - Audio output selector (lists PulseAudio sinks via `pactl`, switching takes effect immediately)
 - System tray (SNI): apps that register with `org.kde.StatusNotifierWatcher` appear as icon buttons
-- Power buttons: lock (`hyprlock`), suspend, reboot, poweroff
+- Power buttons: lock (`breadlock`), suspend, reboot, poweroff
 
 **Notification daemon**:
 
