@@ -19,7 +19,7 @@ fn load_css() -> String {
     // popover/card/OSD surface so they read as one design system rather than
     // four different ones. `radius_pill` is only for the tiny transient OSD.
     let radius = "10px";
-    let radius_sm = "6px";
+    let radius_sm = "0px";
     let radius_pill = "20px";
     let pad = "10px";
 
