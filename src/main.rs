@@ -8,6 +8,7 @@ mod bar;
 mod notifications;
 mod osd;
 mod theme;
+mod widgets;
 
 /// Thresholds above which the bar's CPU/RAM/power-draw readouts appear at
 /// all — see `AppInput::StatsUpdate`. Below these, the bar stays quiet.
@@ -94,6 +95,15 @@ pub struct App {
     tray_sep: gtk4::Separator,
     tray_box: gtk4::Box,
     tray_items: std::collections::HashMap<String, gtk4::Button>,
+
+    // ── Lua-declared widgets ─────────────────────────────────────────────
+    // One container per WidgetPlacement (see bread_shared::widget), fully
+    // rebuilt on every AppInput::WidgetsUpdate — see widgets::client's
+    // module doc for why that's simpler than incremental patching here.
+    widget_containers:
+        std::collections::HashMap<bread_shared::widget::WidgetPlacement, gtk4::Box>,
+    widget_tray_section: gtk4::Box,
+    widget_tray_sep: gtk4::Separator,
 }
 
 #[derive(Debug)]
@@ -109,6 +119,7 @@ pub enum AppInput {
     BtPopoverData(bar::bluetooth::BtPopoverData),
     MediaUpdate(bar::media::MediaState),
     ControlPanelData(bar::control::ControlPanelData),
+    WidgetsUpdate(Vec<bread_shared::widget::WidgetSpec>),
 }
 
 #[relm4::component(pub)]
@@ -125,17 +136,6 @@ impl SimpleComponent for App {
 
             #[name = "center_box"]
             gtk::CenterBox {
-                #[wrap(Some)]
-                set_start_widget = &gtk::Box {
-                    set_orientation: gtk::Orientation::Horizontal,
-                    set_spacing: 0,
-
-                    #[name = "workspace_box"]
-                    gtk::Box {
-                        set_orientation: gtk::Orientation::Horizontal,
-                        set_spacing: 4,
-                    }
-                },
             }
         }
     }
@@ -152,6 +152,32 @@ impl SimpleComponent for App {
         root.set_anchor(Edge::Left, true);
         root.set_anchor(Edge::Right, true);
         root.set_exclusive_zone(32);
+
+        // ── Workspace row (left) ────────────────────────────────────────
+        // Built imperatively (not via the view! macro) so a widget
+        // container can sit as a plain sibling of workspace_box — see
+        // WidgetPlacement::RightOfWorkspaces below.
+        let workspace_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        let workspace_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        workspace_row.append(&workspace_box);
+
+        // ── Lua-declared widget containers ──────────────────────────────
+        // One per WidgetPlacement; positioned into the layout below as each
+        // surrounding section (workspace row / center area / stats box /
+        // control popover) is built. Populated by widgets::client's
+        // events.subscribe-driven refresh loop, started at the end of init.
+        use bread_shared::widget::WidgetPlacement;
+        let widget_right_of_workspaces = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        widget_right_of_workspaces.add_css_class("bread-widget-slot");
+        workspace_row.append(&widget_right_of_workspaces);
+
+        let widget_left_of_clock = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        widget_left_of_clock.add_css_class("bread-widget-slot");
+        let widget_right_of_clock = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        widget_right_of_clock.add_css_class("bread-widget-slot");
+
+        let widget_left_of_stats = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        widget_left_of_stats.add_css_class("bread-widget-slot");
 
         // ── SVG icon sets ────────────────────────────────────────────────
         use bar::stats::{
@@ -278,15 +304,18 @@ impl SimpleComponent for App {
         let clock_lbl = gtk4::Label::new(Some(&bar::clock::current()));
         clock_lbl.add_css_class("clock-label");
 
-        // Center area: [media_widget · clock]
+        // Center area: [media_widget · widgets · clock · widgets]
         let center_area = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
         center_area.add_css_class("center-area");
         center_area.append(&media_widget);
+        center_area.append(&widget_left_of_clock);
         center_area.append(&clock_lbl);
+        center_area.append(&widget_right_of_clock);
 
         // ── Stats box (right side) ───────────────────────────────────────
         let stats_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         stats_box.add_css_class("stats-box");
+        stats_box.append(&widget_left_of_stats);
 
         // CPU/RAM/power draw: hidden by default (see StatsUpdate), so this
         // whole sub-group — plus its separator — collapses away when quiet.
@@ -509,6 +538,24 @@ impl SimpleComponent for App {
         tray_sep.set_visible(false);
         panel_inner.append(&tray_sep);
 
+        // Widgets section — Lua-declared widgets with placement = "tray".
+        // Same collapse-when-empty idiom as the Apps section above.
+        let widget_tray_section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        widget_tray_section.add_css_class("control-panel-section");
+        let widget_tray_header = gtk4::Label::new(Some("Widgets"));
+        widget_tray_header.add_css_class("control-panel-section-header");
+        widget_tray_header.set_xalign(0.0);
+        let widget_tray_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        widget_tray_box.add_css_class("tray-box");
+        widget_tray_section.append(&widget_tray_header);
+        widget_tray_section.append(&widget_tray_box);
+        widget_tray_section.set_visible(false);
+        panel_inner.append(&widget_tray_section);
+
+        let widget_tray_sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+        widget_tray_sep.set_visible(false);
+        panel_inner.append(&widget_tray_sep);
+
         // Power section
         let power_section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         power_section.add_css_class("control-panel-section");
@@ -583,15 +630,24 @@ impl SimpleComponent for App {
 
         stats_box.append(&hamburger_btn);
 
+        let widget_containers = std::collections::HashMap::from([
+            (WidgetPlacement::RightOfWorkspaces, widget_right_of_workspaces),
+            (WidgetPlacement::LeftOfClock, widget_left_of_clock),
+            (WidgetPlacement::RightOfClock, widget_right_of_clock),
+            (WidgetPlacement::LeftOfStats, widget_left_of_stats),
+            (WidgetPlacement::Tray, widget_tray_box),
+        ]);
+
         // ── Assemble ─────────────────────────────────────────────────────
         let widgets = view_output!();
+        widgets.center_box.set_start_widget(Some(&workspace_row));
         widgets.center_box.set_center_widget(Some(&center_area));
         widgets.center_box.set_end_widget(Some(&stats_box));
 
-        let mut model = App {
+        let model = App {
             workspaces: vec![],
             active_ws: 1,
-            workspace_box: gtk4::Box::new(gtk4::Orientation::Horizontal, 4),
+            workspace_box,
             button_map: std::collections::HashMap::new(),
             time_str: bar::clock::current(),
             clock_lbl,
@@ -641,8 +697,10 @@ impl SimpleComponent for App {
             tray_sep,
             tray_box,
             tray_items: std::collections::HashMap::new(),
+            widget_containers,
+            widget_tray_section,
+            widget_tray_sep,
         };
-        model.workspace_box = widgets.workspace_box.clone();
 
         theme::apply();
         bar::workspaces::spawn_watcher(sender.clone());
@@ -651,6 +709,7 @@ impl SimpleComponent for App {
         bar::tray::spawn_watcher(sender.clone());
         bar::wifi::spawn_status_poller(sender.clone());
         bar::media::spawn_poller(sender.clone());
+        widgets::client::spawn(sender.clone());
         notifications::spawn();
         osd::spawn();
 
@@ -872,11 +931,64 @@ impl SimpleComponent for App {
                 });
                 self.panel_sink_signal = Some(id);
             }
+            AppInput::WidgetsUpdate(specs) => {
+                self.reconcile_widgets(specs);
+            }
         }
     }
 }
 
 impl App {
+    fn reconcile_widgets(&mut self, specs: Vec<bread_shared::widget::WidgetSpec>) {
+        for container in self.widget_containers.values() {
+            while let Some(child) = container.first_child() {
+                container.remove(&child);
+            }
+        }
+
+        let mut by_placement: std::collections::HashMap<
+            bread_shared::widget::WidgetPlacement,
+            Vec<&bread_shared::widget::WidgetSpec>,
+        > = std::collections::HashMap::new();
+        for spec in &specs {
+            by_placement.entry(spec.placement).or_default().push(spec);
+        }
+
+        for (placement, mut group) in by_placement {
+            let Some(container) = self.widget_containers.get(&placement) else {
+                continue;
+            };
+            group.sort_by_key(|s| s.order);
+            for spec in group {
+                if !spec.visible {
+                    continue;
+                }
+                let node = widgets::build_node(&spec.root, &spec.id);
+                if let Some(tooltip) = &spec.tooltip {
+                    node.set_tooltip_text(Some(tooltip));
+                }
+                container.append(&node);
+            }
+        }
+
+        // The Tray placement has its own section/separator (handled below,
+        // same as the existing SNI tray items) — an empty inline slot has no
+        // such wrapper, so it must hide itself to stop contributing to
+        // center_area's `spacing` gap.
+        for (placement, container) in &self.widget_containers {
+            if *placement == bread_shared::widget::WidgetPlacement::Tray {
+                continue;
+            }
+            container.set_visible(container.first_child().is_some());
+        }
+
+        let has_tray_widgets = specs.iter().any(|s| {
+            s.visible && s.placement == bread_shared::widget::WidgetPlacement::Tray
+        });
+        self.widget_tray_section.set_visible(has_tray_widgets);
+        self.widget_tray_sep.set_visible(has_tray_widgets);
+    }
+
     fn apply_wifi_label(&self) {
         let label = match &self.wifi_profile {
             Some(p) => format!("{p} · {}", self.current_ssid),

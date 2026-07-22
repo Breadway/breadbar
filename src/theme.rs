@@ -89,7 +89,57 @@ fn load_css() -> String {
          .control-panel-sink-dropdown {{ }}\
          .power-row {{ margin-top: 2px; }}\
          .power-btn {{ min-width: 40px; padding: 8px; border-radius: {radius_sm}; }}\
-         separator {{ margin: 4px 0; }}",
+         separator {{ margin: 4px 0; }}\
+         /* Lua-declared widgets (see Documentation.md's Widgets §style): the\
+            slot rule below is what the four inline `.bread-widget-slot`\
+            containers in main.rs rely on for the same 12px stat-pair rhythm\
+            everything else in the bar uses (they carried the class with no\
+            rule defining it until now). Everything after that is the fixed,\
+            closed `style` vocabulary a `WidgetNode` can opt into — one class\
+            per enum variant, so a module can only ever pick from this set,\
+            never inject arbitrary CSS. The progress-bar rules give an\
+            unstyled Progress node an intentional accent-colored fill instead\
+            of Adwaita's default blue-on-gray, and let `style.color` retint\
+            that fill the same way it retints label/icon text. */\
+         .bread-widget-slot {{ margin-right: 12px; }}\
+         progressbar.bread-widget-node trough {{ background-image: none; background-color: alpha(@accent, 0.25); border-radius: 3px; min-height: 6px; }}\
+         progressbar.bread-widget-node trough progress {{ background-image: none; background-color: @accent; border-radius: 3px; min-height: 6px; }}\
+         progressbar.bread-widget-node.bread-color-fg trough progress {{ background-color: @fg; }}\
+         progressbar.bread-widget-node.bread-color-dim trough progress {{ background-color: alpha(@fg, 0.6); }}\
+         progressbar.bread-widget-node.bread-color-accent trough progress {{ background-color: @accent; }}\
+         progressbar.bread-widget-node.bread-color-red trough progress {{ background-color: @red; }}\
+         progressbar.bread-widget-node.bread-color-green trough progress {{ background-color: @green; }}\
+         progressbar.bread-widget-node.bread-color-yellow trough progress {{ background-color: @yellow; }}\
+         progressbar.bread-widget-node.bread-color-blue trough progress {{ background-color: @blue; }}\
+         progressbar.bread-widget-node.bread-color-pink trough progress {{ background-color: @pink; }}\
+         progressbar.bread-widget-node.bread-color-teal trough progress {{ background-color: @teal; }}\
+         .bread-color-fg {{ color: @fg; }}\
+         .bread-color-dim {{ color: @fg; opacity: 0.6; }}\
+         .bread-color-accent {{ color: @accent; }}\
+         .bread-color-red {{ color: @red; }}\
+         .bread-color-green {{ color: @green; }}\
+         .bread-color-yellow {{ color: @yellow; }}\
+         .bread-color-blue {{ color: @blue; }}\
+         .bread-color-pink {{ color: @pink; }}\
+         .bread-color-teal {{ color: @teal; }}\
+         .bread-weight-normal {{ font-weight: normal; }}\
+         .bread-weight-bold {{ font-weight: bold; }}\
+         .bread-size-xs {{ font-size: 10px; }}\
+         .bread-size-sm {{ font-size: 12px; }}\
+         .bread-size-md {{ font-size: 14px; }}\
+         .bread-size-lg {{ font-size: 16px; }}\
+         .bread-size-xl {{ font-size: 20px; }}\
+         .bread-bg-none {{ background-color: transparent; }}\
+         .bread-bg-surface {{ background-color: @surface; color: @on-surface; }}\
+         .bread-bg-card {{ background-color: @surface; color: @on-surface; border-radius: 8px; padding: 12px; }}\
+         .bread-radius-none {{ border-radius: 0; }}\
+         .bread-radius-sm {{ border-radius: 4px; }}\
+         .bread-radius-md {{ border-radius: 8px; }}\
+         .bread-radius-full {{ border-radius: 999px; }}\
+         .bread-padding-none {{ padding: 0; }}\
+         .bread-padding-xs {{ padding: 4px; }}\
+         .bread-padding-sm {{ padding: 8px; }}\
+         .bread-padding-md {{ padding: 12px; }}",
         bg_plain   = p.background,
         bg_rgba    = hex_to_rgba(&p.background, 0.92),
         surface    = p.color0,
