@@ -28,7 +28,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Pure-Rust SVG rasteriser (default features off → no text/font deps; the icons
 # are vector-only). Needed because librsvg dropped its gdk-pixbuf SVG loader.
-resvg = { version = "0.44", default-features = false }
+resvg = { version = "0.47", default-features = false }
 
 [profile.release]
 lto = "thin"
