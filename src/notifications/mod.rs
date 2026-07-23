@@ -1,9 +1,20 @@
 pub mod popup;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use zbus::zvariant::OwnedValue;
+
+/// Hint key used by `notify-send` and honored by notify-osd/dunst: senders
+/// that fire off a new process per notification (so `replaces_id` is always
+/// 0) tag related notifications with the same `(app_name, tag)` pair to mean
+/// "replace whatever from this app is already showing." Without honoring
+/// this, a fire-and-forget sender can never supersede an earlier
+/// `Expire::Never` notification from itself (e.g. a critical hardware
+/// warning) — it just piles up a new card next to it forever.
+const SYNCHRONOUS_HINT: &str = "x-canonical-private-synchronous";
 
 /// How long a shown notification should stay up before auto-dismissing.
 /// Distinct from `Option<Duration>` mainly for readability at call sites —
@@ -79,6 +90,9 @@ fn compute_expire(expire_timeout: i32, urgency_critical: bool) -> Expire {
 struct NotifServer {
     tx: mpsc::Sender<NotifEvent>,
     next_id: AtomicU32,
+    /// (app_name, synchronous-hint tag) -> id, for senders relying on
+    /// `SYNCHRONOUS_HINT` instead of an explicit `replaces_id`.
+    sync_tags: Mutex<HashMap<(String, String), u32>>,
 }
 
 #[zbus::interface(name = "org.freedesktop.Notifications")]
@@ -96,8 +110,24 @@ impl NotifServer {
         hints: std::collections::HashMap<String, OwnedValue>,
         expire_timeout: i32,
     ) -> u32 {
+        let sync_tag = hints
+            .get(SYNCHRONOUS_HINT)
+            .and_then(|v| String::try_from(v.clone()).ok());
+
         let id = if replaces_id != 0 {
+            if let Some(tag) = &sync_tag {
+                self.sync_tags
+                    .lock()
+                    .unwrap()
+                    .insert((app_name.to_string(), tag.clone()), replaces_id);
+            }
             replaces_id
+        } else if let Some(tag) = &sync_tag {
+            let key = (app_name.to_string(), tag.clone());
+            let mut sync_tags = self.sync_tags.lock().unwrap();
+            *sync_tags
+                .entry(key)
+                .or_insert_with(|| self.next_id.fetch_add(1, Ordering::Relaxed))
         } else {
             self.next_id.fetch_add(1, Ordering::Relaxed)
         };
@@ -150,6 +180,7 @@ pub fn spawn() {
         let server = NotifServer {
             tx,
             next_id: AtomicU32::new(1),
+            sync_tags: Mutex::new(HashMap::new()),
         };
         // Builder failures here would only occur with invalid static strings — safe to unwrap.
         let conn = zbus::connection::Builder::session()
@@ -211,5 +242,104 @@ mod tests {
             Expire::After(d) => assert_eq!(d, Duration::from_millis(1500)),
             Expire::Never => panic!("expected 1500ms, got Never"),
         }
+    }
+
+    fn test_server() -> (NotifServer, mpsc::Receiver<NotifEvent>) {
+        let (tx, rx) = mpsc::channel(32);
+        (
+            NotifServer {
+                tx,
+                next_id: AtomicU32::new(1),
+                sync_tags: Mutex::new(HashMap::new()),
+            },
+            rx,
+        )
+    }
+
+    fn sync_hints(tag: &str) -> HashMap<String, OwnedValue> {
+        let mut hints = HashMap::new();
+        hints.insert(
+            SYNCHRONOUS_HINT.to_string(),
+            OwnedValue::try_from(zbus::zvariant::Value::from(tag)).unwrap(),
+        );
+        hints
+    }
+
+    #[tokio::test]
+    async fn synchronous_hint_reuses_id_for_same_app_and_tag() {
+        let (server, _rx) = test_server();
+        let first = server
+            .notify(
+                "breadcrumbs",
+                0,
+                "",
+                "no Wi-Fi adapter",
+                "",
+                vec![],
+                sync_hints("breadcrumbs"),
+                -1,
+            )
+            .await;
+        let second = server
+            .notify(
+                "breadcrumbs",
+                0,
+                "",
+                "back online",
+                "",
+                vec![],
+                sync_hints("breadcrumbs"),
+                -1,
+            )
+            .await;
+        assert_eq!(
+            first, second,
+            "same app+tag should replace, not stack, a prior notification"
+        );
+    }
+
+    #[tokio::test]
+    async fn synchronous_hint_is_scoped_per_app_name() {
+        let (server, _rx) = test_server();
+        let first = server
+            .notify(
+                "breadcrumbs",
+                0,
+                "",
+                "no Wi-Fi adapter",
+                "",
+                vec![],
+                sync_hints("breadcrumbs"),
+                -1,
+            )
+            .await;
+        let second = server
+            .notify(
+                "other-app",
+                0,
+                "",
+                "unrelated",
+                "",
+                vec![],
+                sync_hints("breadcrumbs"),
+                -1,
+            )
+            .await;
+        assert_ne!(
+            first, second,
+            "same tag from a different app must not collide"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_synchronous_hint_always_allocates_a_new_id() {
+        let (server, _rx) = test_server();
+        let first = server
+            .notify("breadcrumbs", 0, "", "one", "", vec![], HashMap::new(), -1)
+            .await;
+        let second = server
+            .notify("breadcrumbs", 0, "", "two", "", vec![], HashMap::new(), -1)
+            .await;
+        assert_ne!(first, second);
     }
 }
