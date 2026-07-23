@@ -10,13 +10,13 @@ keywords = ["wayland", "hyprland", "bar", "status-bar", "gtk4"]
 categories = ["gui"]
 
 [dependencies]
-bread-theme = { git = "https://github.com/Breadway/bread-ecosystem", tag = "v0.2.10", features = ["gtk"] }
+bread-theme = { git = "https://github.com/Breadway/bread-ecosystem", branch = "dev", features = ["gtk"] }
 # Widget rendering client: bread-utils::BreadClient (emit/request/subscribe)
 # for talking to breadd's IPC socket, and bread-shared purely for the
 # WidgetSpec/WidgetNode wire types so we deserialize into real structs
 # instead of hand-parsing serde_json::Value. See src/widgets/.
-bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.3.1", features = ["bread-client"] }
-bread-shared = { git = "https://git.breadway.dev/Breadway/bread", tag = "v0.7.0" }
+bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", branch = "dev", features = ["bread-client"] }
+bread-shared = { git = "https://git.breadway.dev/Breadway/bread", branch = "dev" }
 gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 relm4 = { version = "0.11", features = ["macros"] }
@@ -29,15 +29,6 @@ serde_json = "1"
 # Pure-Rust SVG rasteriser (default features off → no text/font deps; the icons
 # are vector-only). Needed because librsvg dropped its gdk-pixbuf SVG loader.
 resvg = { version = "0.44", default-features = false }
-
-# TEMPORARY local-dev override: the widget feature's bread-shared/bread-utils
-# changes aren't tagged/released yet, so point the git deps above at the
-# local checkouts instead. Remove this section (and bump the tags above)
-# once bread-ecosystem and bread have real release tags for this work.
-[patch."https://git.breadway.dev/Breadway/bread-ecosystem"]
-bread-utils = { path = "../bread-ecosystem/bread-utils" }
-[patch."https://git.breadway.dev/Breadway/bread"]
-bread-shared = { path = "../bread/bread-shared" }
 
 [profile.release]
 lto = "thin"

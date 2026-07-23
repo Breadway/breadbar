@@ -103,6 +103,18 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 [[package]]
 name = "bread-shared"
 version = "0.7.0"
+source = "git+https://git.breadway.dev/Breadway/bread?tag=v0.7.0#22e34e2cf2202305d7960759dfccb54dc79f948b"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "bread-shared"
+version = "0.7.0"
+source = "git+https://git.breadway.dev/Breadway/bread?branch=dev#8a794c03bfc7f2f294ff89d92494ad324afc30f5"
 dependencies = [
  "dirs",
  "serde",
@@ -112,8 +124,8 @@ dependencies = [
 
 [[package]]
 name = "bread-theme"
-version = "0.2.3"
-source = "git+https://github.com/Breadway/bread-ecosystem?tag=v0.2.10#17d1bb85801b9a8c195b64c02d288cd662c9c780"
+version = "0.3.1"
+source = "git+https://github.com/Breadway/bread-ecosystem?branch=dev#77bca8a1cf90d7fd38745270d2deb291b8b22bfe"
 dependencies = [
  "dirs",
  "gtk4",
@@ -124,8 +136,9 @@ dependencies = [
 [[package]]
 name = "bread-utils"
 version = "0.3.1"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?branch=dev#77bca8a1cf90d7fd38745270d2deb291b8b22bfe"
 dependencies = [
- "bread-shared",
+ "bread-shared 0.7.0 (git+https://git.breadway.dev/Breadway/bread?tag=v0.7.0)",
  "dirs",
  "serde",
  "serde_json",
@@ -135,7 +148,7 @@ dependencies = [
 name = "breadbar"
 version = "0.3.0"
 dependencies = [
- "bread-shared",
+ "bread-shared 0.7.0 (git+https://git.breadway.dev/Breadway/bread?branch=dev)",
  "bread-theme",
  "bread-utils",
  "futures-lite",
