@@ -53,6 +53,7 @@ jobs:
           strip "${PKG_DIR}/breadbar-x86_64"
           sha256sum "${PKG_DIR}/breadbar-x86_64" | awk '{print $1}' \
             > "${PKG_DIR}/breadbar-x86_64.sha256"
+          cp src/LICENSE "${PKG_DIR}/"
           cp src/bakery.toml "${PKG_DIR}/bakery.toml"
           ln -sfn "${VERSION}" "/srv/breadway-dl/beta/breadbar/latest"
 

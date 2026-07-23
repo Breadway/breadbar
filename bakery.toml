@@ -4,6 +4,7 @@ binaries = ["breadbar"]
 system_deps = ["gtk4", "gtk4-layer-shell", "wireplumber", "pipewire-pulse", "brightnessctl", "iw"]
 optional_system_deps = ["hyprland"]
 bread_deps = []
+license_file = "LICENSE"
 
 [config]
 dir = "~/.config/breadbar"
