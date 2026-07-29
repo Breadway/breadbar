@@ -23,7 +23,11 @@ mod close_reason {
     pub const CLOSE_NOTIFICATION_CALL: u32 = 3;
 }
 
-pub async fn run(mut rx: Receiver<NotifEvent>, conn: zbus::Connection) {
+/// Builds the notification window synchronously — so a caller (screenshot
+/// mode in particular) has a real window to hook `connect_map` on before
+/// `run`'s event loop, which needs an async `zbus::Connection` handshake in
+/// the real path, ever starts.
+pub fn build_window() -> (gtk4::Window, gtk4::Box) {
     let window = create_window();
     let cards_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     cards_box.set_margin_top(8);
@@ -31,7 +35,21 @@ pub async fn run(mut rx: Receiver<NotifEvent>, conn: zbus::Connection) {
     cards_box.set_margin_start(8);
     cards_box.set_margin_end(8);
     window.set_child(Some(&cards_box));
+    (window, cards_box)
+}
 
+/// `conn`: `None` in screenshot mode, which skips real D-Bus registration
+/// entirely (see `super::spawn`) — there's no external client that needs to
+/// reach a screenshot-only instance, and registering the well-known name
+/// would just race the real breadbar for it. `NotificationClosed` is a
+/// spec-mandated signal for real clients only, so it's simply not emitted
+/// when there's no real connection to emit it on.
+pub async fn run(
+    window: gtk4::Window,
+    cards_box: gtk4::Box,
+    mut rx: Receiver<NotifEvent>,
+    conn: Option<zbus::Connection>,
+) {
     let cards: Cards = Rc::new(RefCell::new(HashMap::new()));
     let generations: Generations = Rc::new(RefCell::new(HashMap::new()));
 
@@ -109,8 +127,10 @@ fn dismiss(cards_box: &gtk4::Box, window: &gtk4::Window, cards: &Cards, id: u32)
 /// Emits the spec-mandated `NotificationClosed(id, reason)` signal. Sent
 /// directly over the connection rather than through the zbus interface
 /// macro's generated helper, since the dismiss decision happens here in the
-/// popup task, not inside `NotifServer`'s own method bodies.
-async fn emit_closed(conn: &zbus::Connection, id: u32, reason: u32) {
+/// popup task, not inside `NotifServer`'s own method bodies. No-op when
+/// `conn` is `None` (screenshot mode — see `run`'s doc comment).
+async fn emit_closed(conn: &Option<zbus::Connection>, id: u32, reason: u32) {
+    let Some(conn) = conn else { return };
     let result = conn
         .emit_signal(
             None::<&str>,

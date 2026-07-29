@@ -172,38 +172,90 @@ impl NotifServer {
     }
 }
 
-pub fn spawn() {
-    let (tx, rx) = mpsc::channel(32);
-    let (conn_tx, conn_rx) = tokio::sync::oneshot::channel();
+/// A fixed sample notification for `--screenshot notification`/
+/// `notification-critical` — substitutes for a real `Notify` D-Bus call so a
+/// capture doesn't depend on some external sender firing one at just the
+/// right moment.
+pub enum SampleKind {
+    Normal,
+    Critical,
+}
 
-    relm4::spawn(async move {
-        let server = NotifServer {
-            tx,
-            next_id: AtomicU32::new(1),
-            sync_tags: Mutex::new(HashMap::new()),
+impl SampleKind {
+    fn sample_event(&self) -> NotifEvent {
+        let urgency = match self {
+            SampleKind::Normal => Urgency::Normal,
+            SampleKind::Critical => Urgency::Critical,
         };
-        // Builder failures here would only occur with invalid static strings — safe to unwrap.
-        let conn = zbus::connection::Builder::session()
-            .unwrap()
-            .name("org.freedesktop.Notifications")
-            .unwrap()
-            .serve_at("/org/freedesktop/Notifications", server)
-            .unwrap()
-            .build()
-            .await
-            .expect("failed to claim org.freedesktop.Notifications on D-Bus session bus");
-        // Hand the connection to popup::run so it can emit `NotificationClosed`
-        // (spec-mandated whenever a notification actually goes away) — the
-        // dismiss decisions all happen over there, not in this interface impl.
-        let _ = conn_tx.send(conn);
-        std::future::pending::<()>().await
-    });
-
-    relm4::spawn_local(async move {
-        if let Ok(conn) = conn_rx.await {
-            popup::run(rx, conn).await;
+        NotifEvent::Show {
+            id: 1,
+            app_name: "Sample App".into(),
+            summary: "Sample notification".into(),
+            body: "This is what a notification card looks like.".into(),
+            urgency,
+            expire: Expire::Never,
         }
-    });
+    }
+}
+
+/// Builds the notification window synchronously (see
+/// `popup::build_window`'s doc comment) and spawns the event loop that
+/// shows/updates/hides it.
+///
+/// `sample`: `Some` skips real D-Bus registration entirely and seeds the
+/// loop with one fixed sample event instead — screenshot mode only. Doing
+/// the real `org.freedesktop.Notifications` registration in every
+/// screenshot run would race the real breadbar (if running) for the same
+/// well-known name for no benefit, since nothing needs to reach this
+/// instance externally.
+pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
+    let (window, cards_box) = popup::build_window();
+    let (tx, rx) = mpsc::channel(32);
+
+    match sample {
+        Some(kind) => {
+            let _ = tx.try_send(kind.sample_event());
+            let window_for_loop = window.clone();
+            relm4::spawn_local(async move {
+                popup::run(window_for_loop, cards_box, rx, None).await;
+            });
+        }
+        None => {
+            let (conn_tx, conn_rx) = tokio::sync::oneshot::channel();
+
+            relm4::spawn(async move {
+                let server = NotifServer {
+                    tx,
+                    next_id: AtomicU32::new(1),
+                    sync_tags: Mutex::new(HashMap::new()),
+                };
+                // Builder failures here would only occur with invalid static strings — safe to unwrap.
+                let conn = zbus::connection::Builder::session()
+                    .unwrap()
+                    .name("org.freedesktop.Notifications")
+                    .unwrap()
+                    .serve_at("/org/freedesktop/Notifications", server)
+                    .unwrap()
+                    .build()
+                    .await
+                    .expect("failed to claim org.freedesktop.Notifications on D-Bus session bus");
+                // Hand the connection to popup::run so it can emit `NotificationClosed`
+                // (spec-mandated whenever a notification actually goes away) — the
+                // dismiss decisions all happen over there, not in this interface impl.
+                let _ = conn_tx.send(conn);
+                std::future::pending::<()>().await
+            });
+
+            let window_for_loop = window.clone();
+            relm4::spawn_local(async move {
+                if let Ok(conn) = conn_rx.await {
+                    popup::run(window_for_loop, cards_box, rx, Some(conn)).await;
+                }
+            });
+        }
+    }
+
+    window
 }
 
 #[cfg(test)]

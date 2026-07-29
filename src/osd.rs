@@ -9,14 +9,50 @@ enum OsdEvent {
     Brightness { pct: u8 },
 }
 
-pub fn spawn() {
+/// A fixed sample event for `--screenshot osd-volume`/`osd-brightness` —
+/// substitutes for the real `pactl subscribe`/backlight-sysfs watchers so a
+/// capture doesn't depend on this machine's actual volume/brightness at
+/// capture time.
+pub enum SampleKind {
+    Volume,
+    Brightness,
+}
+
+impl SampleKind {
+    fn sample_event(&self) -> OsdEvent {
+        match self {
+            SampleKind::Volume => OsdEvent::Volume { pct: 65, muted: false },
+            SampleKind::Brightness => OsdEvent::Brightness { pct: 80 },
+        }
+    }
+}
+
+/// Builds the OSD window synchronously (so a caller — screenshot mode, via
+/// `sample`, in particular — has a real window to hook `connect_map` on
+/// before the async event loop below ever runs) and spawns the event loop
+/// that shows/updates/hides it.
+///
+/// `sample`: `Some` skips the real volume/brightness watchers entirely and
+/// seeds the loop with one fixed sample event instead — screenshot mode
+/// only, so a capture never depends on (or is disrupted by) this machine's
+/// actual audio/backlight state.
+pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
     let (tx, rx) = mpsc::channel::<OsdEvent>(8);
 
-    let tx1 = tx.clone();
-    std::thread::spawn(move || volume_watcher(tx1));
-    std::thread::spawn(move || brightness_watcher(tx));
+    match sample {
+        Some(kind) => {
+            let _ = tx.try_send(kind.sample_event());
+        }
+        None => {
+            let tx1 = tx.clone();
+            std::thread::spawn(move || volume_watcher(tx1));
+            std::thread::spawn(move || brightness_watcher(tx));
+        }
+    }
 
-    relm4::spawn_local(run_osd(rx));
+    let window = create_window();
+    relm4::spawn_local(run_osd(window.clone(), rx));
+    window
 }
 
 fn volume_watcher(tx: mpsc::Sender<OsdEvent>) {
@@ -119,9 +155,7 @@ fn brightness_watcher(tx: mpsc::Sender<OsdEvent>) {
     }
 }
 
-async fn run_osd(mut rx: mpsc::Receiver<OsdEvent>) {
-    let window = create_window();
-
+async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
     let container = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     container.set_margin_top(10);
     container.set_margin_bottom(10);
