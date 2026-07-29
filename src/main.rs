@@ -645,9 +645,16 @@ impl SimpleComponent for App {
         widgets.center_box.set_center_widget(Some(&center_area));
         widgets.center_box.set_end_widget(Some(&stats_box));
 
-        // Captured before `control_popover` moves into `model` below — needed
-        // by the screenshot dispatch just before this function returns.
+        // Captured before these move into `model` (or are otherwise dropped
+        // as bare locals, never stored on `App` at all) — needed by the
+        // screenshot dispatch just before this function returns.
         let control_popover_for_screenshot = control_popover.clone();
+        let connectivity_popover_for_screenshot = connectivity_popover.clone();
+        let wifi_tab_btn_for_screenshot = wifi_tab_btn.clone();
+        let bt_tab_btn_for_screenshot = bt_tab_btn.clone();
+        let media_popover_for_screenshot = media_popover.clone();
+        let media_widget_for_screenshot = media_widget.clone();
+        let media_track_lbl_for_screenshot = media_track_lbl.clone();
 
         let model = App {
             workspaces: vec![],
@@ -715,11 +722,43 @@ impl SimpleComponent for App {
         bar::wifi::spawn_status_poller(sender.clone());
         bar::media::spawn_poller(sender.clone());
         widgets::client::spawn(sender.clone());
-        notifications::spawn();
-        osd::spawn();
+
+        // Screenshot mode primes these with sample content instead of the
+        // real D-Bus/pactl/backlight sources — see notifications::SampleKind
+        // and osd::SampleKind's doc comments.
+        let notif_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
+            "notification" => Some(notifications::SampleKind::Normal),
+            "notification-critical" => Some(notifications::SampleKind::Critical),
+            _ => None,
+        });
+        let notification_window = notifications::spawn(notif_sample);
+        let osd_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
+            "osd-volume" => Some(osd::SampleKind::Volume),
+            "osd-brightness" => Some(osd::SampleKind::Brightness),
+            _ => None,
+        });
+        let osd_window = osd::spawn(osd_sample);
 
         if let Some(req) = screenshot_req {
-            screenshot::dispatch(&root, req, control_popover_for_screenshot);
+            let notification_window = matches!(req.view.as_str(), "notification" | "notification-critical")
+                .then_some(notification_window);
+            let osd_window = matches!(req.view.as_str(), "osd-volume" | "osd-brightness")
+                .then_some(osd_window);
+            screenshot::dispatch(
+                &root,
+                req,
+                screenshot::Handles {
+                    control_popover: control_popover_for_screenshot,
+                    connectivity_popover: connectivity_popover_for_screenshot,
+                    wifi_tab_btn: wifi_tab_btn_for_screenshot,
+                    bt_tab_btn: bt_tab_btn_for_screenshot,
+                    media_popover: media_popover_for_screenshot,
+                    media_widget: media_widget_for_screenshot,
+                    media_track_lbl: media_track_lbl_for_screenshot,
+                    notification_window,
+                    osd_window,
+                },
+            );
         }
 
         ComponentParts { model, widgets }
@@ -1145,7 +1184,7 @@ impl App {
                     if saved {
                         bar::wifi::spawn_join(ssid_clone.clone());
                     } else {
-                        show_add_network_dialog(btn, ssid_clone.clone());
+                        show_add_network_dialog(btn, ssid_clone.clone(), |_| {});
                     }
                     close_parent_popover(btn);
                 });
@@ -1302,8 +1341,11 @@ fn close_parent_popover(widget: &gtk4::Button) {
 }
 
 /// Small modal prompting for a password, then saves + joins the network via
-/// `breadcrumbs add` + `breadcrumbs join`.
-fn show_add_network_dialog(anchor: &gtk4::Button, ssid: String) {
+/// `breadcrumbs add` + `breadcrumbs join`. `on_build` runs on the freshly
+/// built dialog *before* it's presented — screenshot mode's only hook point,
+/// since `connect_map` registered any later would miss a map that already
+/// happened. The real call site passes a no-op.
+fn show_add_network_dialog(anchor: &impl IsA<gtk4::Widget>, ssid: String, on_build: impl FnOnce(&gtk4::Window)) {
     let dialog = gtk4::Window::new();
     dialog.set_title(Some(&format!("Add “{ssid}”")));
     dialog.set_resizable(false);
@@ -1367,6 +1409,7 @@ fn show_add_network_dialog(anchor: &gtk4::Button, ssid: String) {
         dialog_for_activate.close();
     });
 
+    on_build(&dialog);
     dialog.present();
     entry.grab_focus();
 }
