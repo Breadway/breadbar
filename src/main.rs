@@ -7,6 +7,7 @@ macro_rules! asset {
 mod bar;
 mod notifications;
 mod osd;
+mod screenshot;
 mod theme;
 mod widgets;
 
@@ -124,7 +125,7 @@ pub enum AppInput {
 
 #[relm4::component(pub)]
 impl SimpleComponent for App {
-    type Init = ();
+    type Init = Option<screenshot::ScreenshotRequest>;
     type Input = AppInput;
     type Output = ();
 
@@ -141,7 +142,7 @@ impl SimpleComponent for App {
     }
 
     fn init(
-        _: Self::Init,
+        screenshot_req: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
@@ -644,6 +645,10 @@ impl SimpleComponent for App {
         widgets.center_box.set_center_widget(Some(&center_area));
         widgets.center_box.set_end_widget(Some(&stats_box));
 
+        // Captured before `control_popover` moves into `model` below — needed
+        // by the screenshot dispatch just before this function returns.
+        let control_popover_for_screenshot = control_popover.clone();
+
         let model = App {
             workspaces: vec![],
             active_ws: 1,
@@ -712,6 +717,10 @@ impl SimpleComponent for App {
         widgets::client::spawn(sender.clone());
         notifications::spawn();
         osd::spawn();
+
+        if let Some(req) = screenshot_req {
+            screenshot::dispatch(&root, req, control_popover_for_screenshot);
+        }
 
         ComponentParts { model, widgets }
     }
@@ -1411,6 +1420,10 @@ fn stat_label() -> gtk4::Label {
 }
 
 fn main() {
+    use clap::Parser;
+    let cli = screenshot::Cli::parse();
+    let screenshot_req = cli.screenshot_request();
+
     relm4::spawn(async {
         use tokio::signal::unix::{signal, SignalKind};
         let mut stream = signal(SignalKind::hangup()).expect("SIGHUP handler");
@@ -1420,6 +1433,17 @@ fn main() {
         }
     });
 
-    let app = RelmApp::new("sh.breadway.breadbar");
-    app.run::<App>(());
+    // `with_args(vec![])` stops relm4 from handing our own --screenshot/
+    // --output flags to GLib's option parser (`app.run()`'s default), which
+    // would otherwise reject them as unrecognized before Cli::parse() above
+    // ever sees argv. allow_multiple_instances is needed for screenshot runs
+    // specifically: GApplication is single-instance by default, and a normal
+    // breadbar is typically already running, so without this a screenshot
+    // invocation would just activate that existing instance instead of
+    // starting a fresh one whose `init()` receives the request at all.
+    let app = RelmApp::new("sh.breadway.breadbar").with_args(vec![]);
+    if screenshot_req.is_some() {
+        app.allow_multiple_instances(true);
+    }
+    app.run::<App>(screenshot_req);
 }
