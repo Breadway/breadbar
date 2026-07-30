@@ -48,7 +48,6 @@ fn load_css() -> String {
          progressbar.osd-bar {{ min-height: 6px; }}\
          progressbar.osd-bar trough {{ background-image: none; background-color: {trough}; border-radius: 3px; min-height: 6px; }}\
          progressbar.osd-bar trough progress {{ background-image: none; background-color: {accent}; border-radius: 3px; min-height: 6px; }}\
-         .clickable {{ cursor: pointer; }}\
          .wifi-pair {{ border-radius: {radius_sm}; padding: 0 2px; }}\
          .wifi-pair:hover {{ background: alpha({on_bg}, 0.12); }}\
          .wifi-popover-inner {{ min-width: 200px; padding: {pad}; }}\
@@ -68,8 +67,14 @@ fn load_css() -> String {
          .wifi-popover-row-active {{ color: {accent}; }}\
          .wifi-popover-row-unsaved {{ opacity: 0.4; }}\
          .wifi-popover-loading {{ opacity: 0.5; padding: 8px; }}\
-         window.wifi-add-dialog {{ background-color: {bg_rgba}; color: {on_bg}; min-width: 240px; }}\
-         .media-widget {{ border-radius: {radius_sm}; padding: 0 6px; cursor: pointer; }}\
+         window.wifi-add-dialog {{ background-color: {bg_rgba}; color: {on_bg}; min-width: 240px;\
+             border-radius: {radius}; }}\
+         window.wifi-add-dialog headerbar {{ background-color: {bg_rgba}; color: {on_bg};\
+             border-top-left-radius: {radius}; border-top-right-radius: {radius};\
+             border-bottom: 1px solid alpha({on_bg}, 0.08); box-shadow: none; }}\
+         .confirm-button {{ background-color: @accent; color: @on-accent; }}\
+         .confirm-button:hover {{ background-color: alpha(@accent, 0.85); }}\
+         .media-widget {{ border-radius: {radius_sm}; padding: 0 6px; }}\
          .media-widget:hover {{ background: alpha({on_bg}, 0.10); }}\
          .media-indicator {{ font-size: 11px; opacity: 0.7; margin-right: 2px; }}\
          .media-track-lbl {{ font-size: 12px; }}\

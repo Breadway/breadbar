@@ -1350,6 +1350,15 @@ fn show_add_network_dialog(anchor: &impl IsA<gtk4::Widget>, ssid: String, on_bui
     dialog.set_title(Some(&format!("Add “{ssid}”")));
     dialog.set_resizable(false);
     dialog.add_css_class("wifi-add-dialog");
+    // A bare gtk4::Window with no titlebar set falls back to GTK's own
+    // minimal CSD: a flat bar with plain system-font title text and no
+    // rounding — which is what actually made this look like a stray window
+    // from a different decade next to the rest of the (rounded, borderless,
+    // shadowed) ecosystem. A real HeaderBar picks up the window's own title
+    // automatically and gets the same `.wifi-add-dialog` theming below.
+    let header = gtk4::HeaderBar::new();
+    header.set_show_title_buttons(true);
+    dialog.set_titlebar(Some(&header));
     if let Some(root) = anchor.root() {
         if let Ok(win) = root.downcast::<gtk4::Window>() {
             dialog.set_transient_for(Some(&win));
@@ -1375,7 +1384,14 @@ fn show_add_network_dialog(anchor: &impl IsA<gtk4::Widget>, ssid: String, on_bui
     btn_row.set_halign(gtk4::Align::End);
     let cancel_btn = gtk4::Button::with_label("Cancel");
     let connect_btn = gtk4::Button::with_label("Connect");
-    connect_btn.add_css_class("suggested-action");
+    // Not "suggested-action" — GTK4's own bundled theme special-cases that
+    // class for a newer native OS-accent-colour feature that isn't a normal
+    // CSS rule at all, and simply doesn't lose to any `background-color`
+    // override this stylesheet adds, however specific the selector (already
+    // confirmed empirically: adding a much more specific override rule had
+    // zero effect). "confirm-button" is the same ecosystem-wide accent
+    // button convention breadman/breadpad already use successfully.
+    connect_btn.add_css_class("confirm-button");
     btn_row.append(&cancel_btn);
     btn_row.append(&connect_btn);
     body.append(&btn_row);
