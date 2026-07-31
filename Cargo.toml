@@ -10,15 +10,15 @@ keywords = ["wayland", "hyprland", "bar", "status-bar", "gtk4"]
 categories = ["gui"]
 
 [dependencies]
-bread-theme = { git = "https://github.com/Breadway/bread-ecosystem", branch = "dev", features = ["gtk"] }
+bread-theme = { git = "https://github.com/Breadway/bread-ecosystem", branch = "main", features = ["gtk"] }
 # Widget rendering client: bread-utils::BreadClient (emit/request/subscribe)
 # for talking to breadd's IPC socket, and bread-shared purely for the
 # WidgetSpec/WidgetNode wire types so we deserialize into real structs
 # instead of hand-parsing serde_json::Value. See src/widgets/.
-bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", branch = "dev", features = ["bread-client"] }
-bread-shared = { git = "https://git.breadway.dev/Breadway/bread", branch = "dev" }
+bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", branch = "main", features = ["bread-client"] }
+bread-shared = { git = "https://git.breadway.dev/Breadway/bread", branch = "main" }
 # Capture primitives for `--screenshot` mode — see src/screenshot.rs.
-bread-screenshots = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", branch = "dev" }
+bread-screenshots = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", branch = "main" }
 gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 relm4 = { version = "0.11", features = ["macros"] }
