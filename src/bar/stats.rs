@@ -402,7 +402,7 @@ fn read_crumbs_profile() -> Option<String> {
     for line in text.lines() {
         if let Some(rest) = line.trim().strip_prefix("profile") {
             let val = rest
-                .trim_start_matches(|c: char| c == ' ' || c == '=')
+                .trim_start_matches([' ', '='])
                 .trim_matches('"');
             if !val.is_empty() {
                 return Some(val.to_string());

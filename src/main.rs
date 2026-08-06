@@ -1023,7 +1023,7 @@ impl SimpleComponent for App {
 
                     let within_linger = self
                         .media_paused_at
-                        .map_or(true, |t| t.elapsed().as_secs() < 30 * 60);
+                        .is_none_or(|t| t.elapsed().as_secs() < 30 * 60);
                     self.media_last = Some(state);
                     reveal_media(&self.media_widget, within_linger);
                 } else {
