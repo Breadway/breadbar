@@ -44,6 +44,10 @@ fn load_css() -> String {
          .notification-card.urgency-normal {{ border-left-color: {accent}; }}\
          .notification-summary {{ font-weight: bold; }}\
          .notification-app {{ opacity: 0.6; }}\
+         .notification-actions {{ margin-top: 6px; }}\
+         .notification-action {{ padding: 2px 8px; font-size: 11px; }}\
+         .notification-reply {{ margin-top: 6px; }}\
+         .notification-reply-entry {{ min-width: 0; }}\
          .history-title {{ font-weight: bold; font-size: 13px; }}\
          .history-close {{ padding: 2px 8px; }}\
          .history-empty {{ opacity: 0.5; padding: 8px 0; }}\

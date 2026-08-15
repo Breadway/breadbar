@@ -1,10 +1,10 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gtk4::prelude::*;
-use gtk4_layer_shell::{Edge, Layer, LayerShell};
+use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use tokio::sync::mpsc::Receiver;
 
-use super::{history, Expire, NotifEvent, Urgency};
+use super::{history, Action, Expire, NotifEvent, Urgency, INLINE_REPLY_KEY};
 
 type Cards = Rc<RefCell<HashMap<u32, gtk4::Box>>>;
 // Bumped every time an id gets a (re)placed card — an auto-dismiss timer
@@ -18,7 +18,6 @@ type Generations = Rc<RefCell<HashMap<u32, u64>>>;
 /// NotificationClosed reason codes per the freedesktop spec.
 mod close_reason {
     pub const EXPIRED: u32 = 1;
-    #[allow(dead_code)] // no in-app dismiss button exists yet (see make_card)
     pub const DISMISSED_BY_USER: u32 = 2;
     pub const CLOSE_NOTIFICATION_CALL: u32 = 3;
 }
@@ -63,12 +62,26 @@ pub async fn run(
                 body,
                 urgency,
                 expire,
+                actions,
+                inline_reply,
             } => {
                 // Replace existing card with same id (replaces_id case)
                 if let Some(old) = cards.borrow_mut().remove(&id) {
                     cards_box.remove(&old);
                 }
-                let card = make_card(&app_name, &summary, &body, urgency);
+                let card = make_card(CardSpec {
+                    id,
+                    app_name: &app_name,
+                    summary: &summary,
+                    body: &body,
+                    urgency,
+                    actions: &actions,
+                    inline_reply: inline_reply.as_deref(),
+                    conn: conn.clone(),
+                    cards: cards.clone(),
+                    cards_box: cards_box.clone(),
+                    window: window.clone(),
+                });
                 cards_box.prepend(&card);
                 cards.borrow_mut().insert(id, card.clone());
                 window.set_visible(true);
@@ -96,8 +109,7 @@ pub async fn run(
                         gtk4::glib::timeout_future(duration).await;
                         let still_current =
                             generations_clone.borrow().get(&id) == Some(&my_generation);
-                        if still_current
-                            && dismiss(&cards_box_clone, &win_clone, &cards_clone, id)
+                        if still_current && dismiss(&cards_box_clone, &win_clone, &cards_clone, id)
                         {
                             emit_closed(&conn_clone, id, close_reason::EXPIRED).await;
                         }
@@ -164,39 +176,226 @@ fn create_window() -> gtk4::Window {
     window.set_margin(Edge::Top, 20);
     window.set_margin(Edge::Right, 20);
     window.set_default_width(320);
+    // OnDemand so an inline-reply GtkEntry can take keys without the popup
+    // stealing every keystroke the rest of the time.
+    window.set_keyboard_mode(KeyboardMode::OnDemand);
     window
 }
 
-fn make_card(app_name: &str, summary: &str, body: &str, urgency: Urgency) -> gtk4::Box {
+struct CardSpec<'a> {
+    id: u32,
+    app_name: &'a str,
+    summary: &'a str,
+    body: &'a str,
+    urgency: Urgency,
+    actions: &'a [Action],
+    inline_reply: Option<&'a str>,
+    conn: Option<zbus::Connection>,
+    cards: Cards,
+    cards_box: gtk4::Box,
+    window: gtk4::Window,
+}
+
+fn make_card(spec: CardSpec<'_>) -> gtk4::Box {
     let card = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     card.add_css_class("notification-card");
-    if let Some(class) = urgency.css_class() {
+    if let Some(class) = spec.urgency.css_class() {
         card.add_css_class(class);
     }
+
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     // Senders often set the title/summary to their own app name (e.g. a bare
     // "Spotify" notification) — showing app_name above an identical summary
     // is pure repetition, so skip the app label in that case.
-    if !app_name.is_empty() && !app_name.eq_ignore_ascii_case(summary) {
-        let lbl = gtk4::Label::new(Some(app_name));
+    if !spec.app_name.is_empty() && !spec.app_name.eq_ignore_ascii_case(spec.summary) {
+        let lbl = gtk4::Label::new(Some(spec.app_name));
         lbl.add_css_class("notification-app");
         lbl.set_xalign(0.0);
-        card.append(&lbl);
+        content.append(&lbl);
     }
 
-    let summary_lbl = gtk4::Label::new(Some(summary));
+    let summary_lbl = gtk4::Label::new(Some(spec.summary));
     summary_lbl.add_css_class("notification-summary");
     summary_lbl.set_xalign(0.0);
     summary_lbl.set_wrap(true);
-    card.append(&summary_lbl);
+    content.append(&summary_lbl);
 
-    if !body.is_empty() {
-        let body_lbl = gtk4::Label::new(Some(body));
+    if !spec.body.is_empty() {
+        let body_lbl = gtk4::Label::new(None);
         body_lbl.add_css_class("notification-body");
         body_lbl.set_xalign(0.0);
         body_lbl.set_wrap(true);
-        card.append(&body_lbl);
+        apply_body_text(&body_lbl, spec.body);
+        content.append(&body_lbl);
+    }
+
+    if spec.actions.iter().any(|a| a.key == "default") {
+        content.add_css_class("notification-default");
+        let gesture = gtk4::GestureClick::new();
+        let invoke = Invoke {
+            conn: spec.conn.clone(),
+            cards: spec.cards.clone(),
+            cards_box: spec.cards_box.clone(),
+            window: spec.window.clone(),
+            id: spec.id,
+        };
+        gesture.connect_released(move |_, _, _, _| {
+            invoke_action(invoke.clone(), "default");
+        });
+        content.add_controller(gesture);
+    }
+
+    card.append(&content);
+
+    let visible: Vec<&Action> = spec
+        .actions
+        .iter()
+        .filter(|a| a.key != "default" && a.key != INLINE_REPLY_KEY)
+        .collect();
+    if !visible.is_empty() {
+        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        row.add_css_class("notification-actions");
+        row.set_halign(gtk4::Align::End);
+        for action in visible {
+            let btn = gtk4::Button::with_label(&action.label);
+            btn.add_css_class("notification-action");
+            let invoke = Invoke {
+                conn: spec.conn.clone(),
+                cards: spec.cards.clone(),
+                cards_box: spec.cards_box.clone(),
+                window: spec.window.clone(),
+                id: spec.id,
+            };
+            let key = action.key.clone();
+            btn.connect_clicked(move |_| {
+                invoke_action(invoke.clone(), &key);
+            });
+            row.append(&btn);
+        }
+        card.append(&row);
+    }
+
+    if let Some(placeholder) = spec.inline_reply {
+        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        row.add_css_class("notification-reply");
+
+        let entry = gtk4::Entry::new();
+        entry.add_css_class("notification-reply-entry");
+        entry.set_placeholder_text(Some(placeholder));
+        entry.set_hexpand(true);
+
+        let send_label = spec
+            .actions
+            .iter()
+            .find(|a| a.key == INLINE_REPLY_KEY)
+            .map(|a| a.label.as_str())
+            .filter(|l| !l.is_empty())
+            .unwrap_or("Send");
+        let send = gtk4::Button::with_label(send_label);
+        send.add_css_class("notification-action");
+
+        let invoke = Invoke {
+            conn: spec.conn.clone(),
+            cards: spec.cards.clone(),
+            cards_box: spec.cards_box.clone(),
+            window: spec.window.clone(),
+            id: spec.id,
+        };
+        let entry_for_btn = entry.clone();
+        let invoke_btn = invoke.clone();
+        send.connect_clicked(move |_| {
+            submit_reply(&entry_for_btn, invoke_btn.clone());
+        });
+        entry.connect_activate(move |e| {
+            submit_reply(e, invoke.clone());
+        });
+
+        row.append(&entry);
+        row.append(&send);
+        card.append(&row);
     }
 
     card
+}
+
+/// FDO `body-markup` is a small Pango-ish subset (`<b>`, `<i>`, `<u>`,
+/// `<a href>`). Invalid markup falls back to plain text so a bad sender
+/// doesn't blank the card.
+fn apply_body_text(label: &gtk4::Label, body: &str) {
+    if body.contains('<') && gtk4::pango::parse_markup(body, '\0').is_ok() {
+        label.set_markup(body);
+        return;
+    }
+    label.set_text(body);
+}
+
+#[derive(Clone)]
+struct Invoke {
+    conn: Option<zbus::Connection>,
+    cards: Cards,
+    cards_box: gtk4::Box,
+    window: gtk4::Window,
+    id: u32,
+}
+
+fn invoke_action(invoke: Invoke, key: &str) {
+    let key = key.to_string();
+    relm4::spawn_local(async move {
+        emit_action(&invoke.conn, invoke.id, &key).await;
+        if dismiss(&invoke.cards_box, &invoke.window, &invoke.cards, invoke.id) {
+            emit_closed(&invoke.conn, invoke.id, close_reason::DISMISSED_BY_USER).await;
+        }
+    });
+}
+
+fn submit_reply(entry: &gtk4::Entry, invoke: Invoke) {
+    let text = entry.text().to_string();
+    if text.trim().is_empty() {
+        return;
+    }
+    relm4::spawn_local(async move {
+        emit_replied(&invoke.conn, invoke.id, &text).await;
+        emit_action(&invoke.conn, invoke.id, INLINE_REPLY_KEY).await;
+        if dismiss(&invoke.cards_box, &invoke.window, &invoke.cards, invoke.id) {
+            emit_closed(&invoke.conn, invoke.id, close_reason::DISMISSED_BY_USER).await;
+        }
+    });
+}
+
+async fn emit_action(conn: &Option<zbus::Connection>, id: u32, action_key: &str) {
+    let Some(conn) = conn else { return };
+    let result = conn
+        .emit_signal(
+            None::<&str>,
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "ActionInvoked",
+            &(id, action_key),
+        )
+        .await;
+    if let Err(e) = result {
+        eprintln!("breadbar: failed to emit ActionInvoked for {id}: {e}");
+    }
+}
+
+/// GNOME/KDE (and clients such as Discord/Telegram) listen for this
+/// non-spec signal on `org.freedesktop.Notifications` when the user
+/// submits an inline reply. Signature: `NotificationReplied(u32 id, s text)`.
+/// We also emit `ActionInvoked(id, "inline-reply")` so senders that only
+/// watch the spec signal still see the send.
+async fn emit_replied(conn: &Option<zbus::Connection>, id: u32, text: &str) {
+    let Some(conn) = conn else { return };
+    let result = conn
+        .emit_signal(
+            None::<&str>,
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "NotificationReplied",
+            &(id, text),
+        )
+        .await;
+    if let Err(e) = result {
+        eprintln!("breadbar: failed to emit NotificationReplied for {id}: {e}");
+    }
 }

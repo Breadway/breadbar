@@ -17,6 +17,28 @@ use zbus::zvariant::OwnedValue;
 /// warning) — it just piles up a new card next to it forever.
 const SYNCHRONOUS_HINT: &str = "x-canonical-private-synchronous";
 
+/// Spec + GNOME/KDE reserved action id for an inline reply field. Hidden
+/// from the button row; submitting the field emits `NotificationReplied`
+/// (and `ActionInvoked` with this key). See `popup::emit_replied`.
+pub const INLINE_REPLY_KEY: &str = "inline-reply";
+
+/// KDE placeholder hint. Presence (or an `inline-reply` action) is enough
+/// to show the reply field — Discord/Telegram use the action, Plasma often
+/// only the hint.
+const KDE_REPLY_PLACEHOLDER: &str = "x-kde-reply-placeholder";
+
+/// Advertised `GetCapabilities` strings. `body` is the original set;
+/// `actions` / `inline-reply` are this change; `body-markup` is the usual
+/// companion so senders can ship `<b>`/`<i>` instead of stripping tags.
+const CAPABILITIES: &[&str] = &["body", "body-markup", "actions", "inline-reply"];
+
+/// One `(id, localized label)` pair from the Notify `actions` array.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Action {
+    pub key: String,
+    pub label: String,
+}
+
 /// How long a shown notification should stay up before auto-dismissing.
 /// Distinct from `Option<Duration>` mainly for readability at call sites —
 /// `Never` covers both the spec's `expire_timeout == 0` ("never expire")
@@ -36,6 +58,9 @@ pub enum NotifEvent {
         body: String,
         urgency: Urgency,
         expire: Expire,
+        actions: Vec<Action>,
+        /// Placeholder for the inline-reply field, if one should be shown.
+        inline_reply: Option<String>,
     },
     Close(u32),
     ToggleHistory,
@@ -65,6 +90,36 @@ impl Urgency {
             Urgency::Normal => Some("urgency-normal"),
             Urgency::Critical => Some("urgency-critical"),
         }
+    }
+}
+
+/// Spec: `actions` is a flat list of pairs `(id, localized label)`. An
+/// unpaired trailing id is ignored. Empty keys are dropped.
+fn parse_actions(raw: &[String]) -> Vec<Action> {
+    raw.chunks_exact(2)
+        .filter(|c| !c[0].is_empty())
+        .map(|c| Action {
+            key: c[0].clone(),
+            label: c[1].clone(),
+        })
+        .collect()
+}
+
+/// Show an inline reply field when the sender asked for `inline-reply` or
+/// sent the KDE placeholder hint. Placeholder text prefers the hint.
+fn inline_reply_placeholder(
+    actions: &[Action],
+    hints: &HashMap<String, OwnedValue>,
+) -> Option<String> {
+    let from_hint = hints
+        .get(KDE_REPLY_PLACEHOLDER)
+        .and_then(|v| String::try_from(v.clone()).ok())
+        .filter(|s| !s.is_empty());
+    let has_action = actions.iter().any(|a| a.key == INLINE_REPLY_KEY);
+    if has_action || from_hint.is_some() {
+        Some(from_hint.unwrap_or_else(|| "Reply".into()))
+    } else {
+        None
     }
 }
 
@@ -122,8 +177,14 @@ const BAR_IFACE: &str = "dev.breadway.Bar";
 /// `breadbar --history`; does not start a second bar.
 pub async fn toggle_history_remote() -> zbus::Result<()> {
     let conn = zbus::Connection::session().await?;
-    conn.call_method(Some(BAR_DEST), BAR_PATH, Some(BAR_IFACE), "ToggleHistory", &())
-        .await?;
+    conn.call_method(
+        Some(BAR_DEST),
+        BAR_PATH,
+        Some(BAR_IFACE),
+        "ToggleHistory",
+        &(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -138,7 +199,7 @@ impl NotifServer {
         _app_icon: &str,
         summary: &str,
         body: &str,
-        _actions: Vec<String>,
+        actions: Vec<String>,
         hints: std::collections::HashMap<String, OwnedValue>,
         expire_timeout: i32,
     ) -> u32 {
@@ -171,6 +232,8 @@ impl NotifServer {
         // when the sender left expire_timeout at the server-default (-1).
         let urgency = Urgency::from_hint(hints.get("urgency"));
         let expire = compute_expire(expire_timeout, urgency == Urgency::Critical);
+        let actions = parse_actions(&actions);
+        let inline_reply = inline_reply_placeholder(&actions, &hints);
 
         history::record(
             &self.history,
@@ -196,6 +259,8 @@ impl NotifServer {
                 body: body.to_string(),
                 urgency,
                 expire,
+                actions,
+                inline_reply,
             })
             .await;
         id
@@ -206,7 +271,7 @@ impl NotifServer {
     }
 
     fn get_capabilities(&self) -> Vec<String> {
-        vec!["body".to_string()]
+        CAPABILITIES.iter().map(|s| (*s).to_string()).collect()
     }
 
     fn get_server_information(&self) -> (String, String, String, String) {
@@ -241,6 +306,8 @@ impl SampleKind {
             body: "This is what a notification card looks like.".into(),
             urgency,
             expire: Expire::Never,
+            actions: vec![],
+            inline_reply: None,
         }
     }
 }
@@ -304,8 +371,7 @@ pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
             let window_for_loop = window.clone();
             relm4::spawn_local(async move {
                 if let Ok(conn) = conn_rx.await {
-                    popup::run(window_for_loop, cards_box, rx, Some(conn), Some(history_ui))
-                        .await;
+                    popup::run(window_for_loop, cards_box, rx, Some(conn), Some(history_ui)).await;
                 }
             });
         }
@@ -457,10 +523,28 @@ mod tests {
     async fn notify_records_history_newest_first() {
         let (server, _rx) = test_server();
         server
-            .notify("app-a", 0, "", "first", "body-a", vec![], HashMap::new(), -1)
+            .notify(
+                "app-a",
+                0,
+                "",
+                "first",
+                "body-a",
+                vec![],
+                HashMap::new(),
+                -1,
+            )
             .await;
         server
-            .notify("app-b", 0, "", "second", "body-b", vec![], HashMap::new(), -1)
+            .notify(
+                "app-b",
+                0,
+                "",
+                "second",
+                "body-b",
+                vec![],
+                HashMap::new(),
+                -1,
+            )
             .await;
         let hist = server.history.lock().unwrap();
         assert_eq!(hist.len(), 2);
@@ -468,5 +552,116 @@ mod tests {
         assert_eq!(hist[0].app_name, "app-b");
         assert_eq!(hist[0].body, "body-b");
         assert_eq!(hist[1].summary, "first");
+    }
+
+    #[test]
+    fn parse_actions_pairs_and_drops_trailing_id() {
+        let parsed = parse_actions(&[
+            "default".into(),
+            "Open".into(),
+            "snooze".into(),
+            "Snooze".into(),
+            "orphan".into(),
+        ]);
+        assert_eq!(
+            parsed,
+            vec![
+                Action {
+                    key: "default".into(),
+                    label: "Open".into(),
+                },
+                Action {
+                    key: "snooze".into(),
+                    label: "Snooze".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_actions_skips_empty_keys() {
+        assert!(parse_actions(&["", "Nope"].map(String::from)).is_empty());
+    }
+
+    #[test]
+    fn inline_reply_from_action_or_kde_hint() {
+        let reply_action = vec![Action {
+            key: INLINE_REPLY_KEY.into(),
+            label: "Reply".into(),
+        }];
+        assert_eq!(
+            inline_reply_placeholder(&reply_action, &HashMap::new()).as_deref(),
+            Some("Reply")
+        );
+        assert!(inline_reply_placeholder(&[], &HashMap::new()).is_none());
+
+        let mut hints = HashMap::new();
+        hints.insert(
+            KDE_REPLY_PLACEHOLDER.to_string(),
+            OwnedValue::try_from(zbus::zvariant::Value::from("Write a reply…")).unwrap(),
+        );
+        assert_eq!(
+            inline_reply_placeholder(&[], &hints).as_deref(),
+            Some("Write a reply…")
+        );
+        // Hint wins over the generic default when both are present.
+        assert_eq!(
+            inline_reply_placeholder(&reply_action, &hints).as_deref(),
+            Some("Write a reply…")
+        );
+    }
+
+    #[test]
+    fn get_capabilities_includes_actions_and_inline_reply() {
+        let (server, _rx) = test_server();
+        let caps = server.get_capabilities();
+        for wanted in ["body", "body-markup", "actions", "inline-reply"] {
+            assert!(
+                caps.iter().any(|c| c == wanted),
+                "missing capability {wanted}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn notify_forwards_actions_and_inline_reply() {
+        let (server, mut rx) = test_server();
+        server
+            .notify(
+                "chat",
+                0,
+                "",
+                "Alice",
+                "hello",
+                vec![
+                    "default".into(),
+                    "Open".into(),
+                    INLINE_REPLY_KEY.into(),
+                    "Reply".into(),
+                ],
+                HashMap::new(),
+                -1,
+            )
+            .await;
+        match rx.recv().await.expect("Show event") {
+            NotifEvent::Show {
+                actions,
+                inline_reply,
+                summary,
+                ..
+            } => {
+                assert_eq!(summary, "Alice");
+                assert_eq!(actions.len(), 2);
+                assert_eq!(actions[0].key, "default");
+                assert_eq!(actions[1].key, INLINE_REPLY_KEY);
+                assert_eq!(inline_reply.as_deref(), Some("Reply"));
+            }
+            _ => panic!("expected Show, got a different event"),
+        }
+        // History persist path is unchanged: actions are UI-only, not stored.
+        let hist = server.history.lock().unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].summary, "Alice");
+        assert_eq!(hist[0].body, "hello");
     }
 }
