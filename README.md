@@ -141,6 +141,7 @@ Example — change the font size:
 | `src/notifications/mod.rs` | `org.freedesktop.Notifications` zbus service |
 | `src/notifications/popup.rs` | Layer-shell popup window and card stack |
 | `src/osd.rs` | Volume/brightness on-screen display |
+| `src/widgets/` | Live Lua widgets from breadd (`BreadClient` + `WidgetSpec`) |
 | `src/theme.rs` | `bread-theme` palette loading, GTK CSS provider injection |
 
 Stats are polled every 2 seconds. Bluetooth and WiFi are sampled every 16 seconds and cached in between to avoid hammering D-Bus and `iw`.

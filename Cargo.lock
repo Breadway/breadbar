@@ -153,7 +153,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 [[package]]
 name = "bread-screenshots"
 version = "0.3.1"
-source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?branch=main#f86e299f4a0ea73ff485cd84923b986ddcc8242e"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?rev=69ce2d67a8de8a09c064aa9d7ff99b46656f0b1d#69ce2d67a8de8a09c064aa9d7ff99b46656f0b1d"
 dependencies = [
  "anyhow",
  "bread-utils",
@@ -173,19 +173,20 @@ dependencies = [
 
 [[package]]
 name = "bread-shared"
-version = "0.7.0"
-source = "git+https://git.breadway.dev/Breadway/bread?branch=main#b9e253074355c5f00f80e757ee8b5d2c5ac19328"
+version = "0.8.0"
+source = "git+https://git.breadway.dev/Breadway/bread?tag=v0.8.0-rc.1#2485e1af1f941c724461c0d59416c829ded638fe"
 dependencies = [
  "dirs 6.0.0",
  "serde",
  "serde_json",
  "toml 0.8.23",
+ "uuid",
 ]
 
 [[package]]
 name = "bread-theme"
 version = "0.3.1"
-source = "git+https://github.com/Breadway/bread-ecosystem?branch=main#f86e299f4a0ea73ff485cd84923b986ddcc8242e"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.1#db2fa3c4b4c1e6933bc5cf62a236d05972fdc886"
 dependencies = [
  "dirs 5.0.1",
  "gtk4",
@@ -196,9 +197,9 @@ dependencies = [
 [[package]]
 name = "bread-utils"
 version = "0.3.1"
-source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?branch=main#f86e299f4a0ea73ff485cd84923b986ddcc8242e"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?rev=69ce2d67a8de8a09c064aa9d7ff99b46656f0b1d#69ce2d67a8de8a09c064aa9d7ff99b46656f0b1d"
 dependencies = [
- "bread-shared 0.7.0 (git+https://git.breadway.dev/Breadway/bread?tag=v0.7.0)",
+ "bread-shared 0.7.0",
  "dirs 5.0.1",
  "serde",
  "serde_json",
@@ -210,7 +211,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "bread-screenshots",
- "bread-shared 0.7.0 (git+https://git.breadway.dev/Breadway/bread?branch=main)",
+ "bread-shared 0.8.0",
  "bread-theme",
  "bread-utils",
  "clap",
@@ -1922,6 +1923,7 @@ version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",

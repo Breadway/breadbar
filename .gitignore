@@ -35,6 +35,3 @@ logs/
 
 # Internal design documents (not for distribution)
 aster-brief.md
-
-# Local hygiene notes (not for commit)
-CLAUDE.md
