@@ -1481,6 +1481,17 @@ fn stat_label() -> gtk4::Label {
 fn main() {
     use clap::Parser;
     let cli = screenshot::Cli::parse();
+    if cli.history {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        if let Err(e) = rt.block_on(notifications::toggle_history_remote()) {
+            eprintln!("breadbar: could not toggle history (is breadbar running?): {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let screenshot_req = cli.screenshot_request();
 
     relm4::spawn(async {

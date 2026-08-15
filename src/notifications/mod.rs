@@ -1,9 +1,10 @@
+pub mod history;
 pub mod popup;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use zbus::zvariant::OwnedValue;
 
@@ -37,6 +38,7 @@ pub enum NotifEvent {
         expire: Expire,
     },
     Close(u32),
+    ToggleHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +95,34 @@ struct NotifServer {
     /// (app_name, synchronous-hint tag) -> id, for senders relying on
     /// `SYNCHRONOUS_HINT` instead of an explicit `replaces_id`.
     sync_tags: Mutex<HashMap<(String, String), u32>>,
+    history: history::Store,
+}
+
+/// Private breadbar control surface on the same connection as
+/// `org.freedesktop.Notifications`. `breadbar --history` is a one-shot
+/// client of `ToggleHistory` — there is no other IPC.
+struct BarService {
+    tx: mpsc::Sender<NotifEvent>,
+}
+
+#[zbus::interface(name = "dev.breadway.Bar")]
+impl BarService {
+    async fn toggle_history(&self) {
+        let _ = self.tx.send(NotifEvent::ToggleHistory).await;
+    }
+}
+
+const BAR_DEST: &str = "org.freedesktop.Notifications";
+const BAR_PATH: &str = "/dev/breadway/Bar";
+const BAR_IFACE: &str = "dev.breadway.Bar";
+
+/// Ask a running breadbar to toggle the history window. Used by
+/// `breadbar --history`; does not start a second bar.
+pub async fn toggle_history_remote() -> zbus::Result<()> {
+    let conn = zbus::Connection::session().await?;
+    conn.call_method(Some(BAR_DEST), BAR_PATH, Some(BAR_IFACE), "ToggleHistory", &())
+        .await?;
+    Ok(())
 }
 
 #[zbus::interface(name = "org.freedesktop.Notifications")]
@@ -139,6 +169,18 @@ impl NotifServer {
         // when the sender left expire_timeout at the server-default (-1).
         let urgency = Urgency::from_hint(hints.get("urgency"));
         let expire = compute_expire(expire_timeout, urgency == Urgency::Critical);
+
+        history::record(
+            &self.history,
+            history::Entry {
+                id,
+                app_name: app_name.to_string(),
+                summary: summary.to_string(),
+                body: body.to_string(),
+                urgency,
+                received: SystemTime::now(),
+            },
+        );
 
         let _ = self
             .tx
@@ -217,24 +259,30 @@ pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
             let _ = tx.try_send(kind.sample_event());
             let window_for_loop = window.clone();
             relm4::spawn_local(async move {
-                popup::run(window_for_loop, cards_box, rx, None).await;
+                popup::run(window_for_loop, cards_box, rx, None, None).await;
             });
         }
         None => {
             let (conn_tx, conn_rx) = tokio::sync::oneshot::channel();
+            let store = history::new_store();
+            let history_ui = history::build_window(store.clone());
 
             relm4::spawn(async move {
                 let server = NotifServer {
-                    tx,
+                    tx: tx.clone(),
                     next_id: AtomicU32::new(1),
                     sync_tags: Mutex::new(HashMap::new()),
+                    history: store,
                 };
+                let bar = BarService { tx };
                 // Builder failures here would only occur with invalid static strings — safe to unwrap.
                 let conn = zbus::connection::Builder::session()
                     .unwrap()
                     .name("org.freedesktop.Notifications")
                     .unwrap()
                     .serve_at("/org/freedesktop/Notifications", server)
+                    .unwrap()
+                    .serve_at(BAR_PATH, bar)
                     .unwrap()
                     .build()
                     .await
@@ -249,7 +297,8 @@ pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
             let window_for_loop = window.clone();
             relm4::spawn_local(async move {
                 if let Ok(conn) = conn_rx.await {
-                    popup::run(window_for_loop, cards_box, rx, Some(conn)).await;
+                    popup::run(window_for_loop, cards_box, rx, Some(conn), Some(history_ui))
+                        .await;
                 }
             });
         }
@@ -303,6 +352,7 @@ mod tests {
                 tx,
                 next_id: AtomicU32::new(1),
                 sync_tags: Mutex::new(HashMap::new()),
+                history: history::new_store(),
             },
             rx,
         )
@@ -393,5 +443,22 @@ mod tests {
             .notify("breadcrumbs", 0, "", "two", "", vec![], HashMap::new(), -1)
             .await;
         assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn notify_records_history_newest_first() {
+        let (server, _rx) = test_server();
+        server
+            .notify("app-a", 0, "", "first", "body-a", vec![], HashMap::new(), -1)
+            .await;
+        server
+            .notify("app-b", 0, "", "second", "body-b", vec![], HashMap::new(), -1)
+            .await;
+        let hist = server.history.lock().unwrap();
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].summary, "second");
+        assert_eq!(hist[0].app_name, "app-b");
+        assert_eq!(hist[0].body, "body-b");
+        assert_eq!(hist[1].summary, "first");
     }
 }

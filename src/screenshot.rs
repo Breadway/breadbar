@@ -74,6 +74,11 @@ pub struct Cli {
     /// Capture canvas height — see `width`.
     #[arg(long, default_value_t = 1080)]
     pub height: u32,
+
+    /// Toggle the in-memory notification history on a running breadbar, then
+    /// exit. Keybind-friendly; does not start a second instance.
+    #[arg(long)]
+    pub history: bool,
 }
 
 pub struct ScreenshotRequest {

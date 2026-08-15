@@ -36,7 +36,7 @@ One GTK4/`relm4` binary, four surfaces:
 | Area | Path | Role |
 |---|---|---|
 | Bar | `src/bar/` | Layer-shell top bar: workspaces, clock, media, stats, wifi, bluetooth, control panel + SNI tray |
-| Notifications | `src/notifications/` | `org.freedesktop.Notifications` daemon + stacked popups |
+| Notifications | `src/notifications/` | `org.freedesktop.Notifications` daemon + stacked popups + in-memory history (`breadbar --history`) |
 | OSD | `src/osd.rs` | Volume/brightness overlay |
 | Widgets | `src/widgets/` | Live Lua widgets from breadd via `BreadClient` / `WidgetSpec` |
 

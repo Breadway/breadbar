@@ -4,7 +4,7 @@ use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use tokio::sync::mpsc::Receiver;
 
-use super::{Expire, NotifEvent, Urgency};
+use super::{history, Expire, NotifEvent, Urgency};
 
 type Cards = Rc<RefCell<HashMap<u32, gtk4::Box>>>;
 // Bumped every time an id gets a (re)placed card — an auto-dismiss timer
@@ -49,6 +49,7 @@ pub async fn run(
     cards_box: gtk4::Box,
     mut rx: Receiver<NotifEvent>,
     conn: Option<zbus::Connection>,
+    history_ui: Option<history::Ui>,
 ) {
     let cards: Cards = Rc::new(RefCell::new(HashMap::new()));
     let generations: Generations = Rc::new(RefCell::new(HashMap::new()));
@@ -71,6 +72,9 @@ pub async fn run(
                 cards_box.prepend(&card);
                 cards.borrow_mut().insert(id, card.clone());
                 window.set_visible(true);
+                if let Some(ui) = &history_ui {
+                    history::refresh_if_visible(ui);
+                }
 
                 let my_generation = {
                     let mut gens = generations.borrow_mut();
@@ -103,6 +107,11 @@ pub async fn run(
             NotifEvent::Close(id) => {
                 if dismiss(&cards_box, &window, &cards, id) {
                     emit_closed(&conn, id, close_reason::CLOSE_NOTIFICATION_CALL).await;
+                }
+            }
+            NotifEvent::ToggleHistory => {
+                if let Some(ui) = &history_ui {
+                    history::toggle(ui);
                 }
             }
         }

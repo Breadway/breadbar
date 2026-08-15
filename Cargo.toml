@@ -10,20 +10,17 @@ keywords = ["wayland", "hyprland", "bar", "status-bar", "gtk4"]
 categories = ["gui"]
 
 [dependencies]
-bread-theme = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.1", features = ["gtk"] }
+bread-theme = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.2", features = ["gtk"] }
 # Widget rendering client: bread-utils::BreadClient (emit/request/subscribe)
 # for talking to breadd's IPC socket, and bread-shared purely for the
 # WidgetSpec/WidgetNode wire types so we deserialize into real structs
 # instead of hand-parsing serde_json::Value. See src/widgets/.
-# v0.7.1's BreadClient has no `request`; crate added after that tag too.
-# Pin origin/main rather than inventing a tag or floating on branch = "main".
-bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", rev = "69ce2d67a8de8a09c064aa9d7ff99b46656f0b1d", features = ["bread-client"] }
-# v0.7.0 has no `bread_shared::widget`; v0.8.0 was never cut. Latest
-# existing tag that carries the wire types breadbar deserializes.
+bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.2", features = ["bread-client"] }
+# v0.8.0-rc.1 carries bread_shared::widget; keep this bread tag even if
+# ecosystem crates move independently.
 bread-shared = { git = "https://git.breadway.dev/Breadway/bread", tag = "v0.8.0-rc.1" }
 # Capture primitives for `--screenshot` mode — see src/screenshot.rs.
-# Same rev as bread-utils: v0.7.1 predates this crate (added 2026-07-23).
-bread-screenshots = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", rev = "69ce2d67a8de8a09c064aa9d7ff99b46656f0b1d" }
+bread-screenshots = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.2" }
 gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 relm4 = { version = "0.11", features = ["macros"] }

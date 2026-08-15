@@ -36,12 +36,20 @@ fn load_css() -> String {
          .bt-icon {{ margin-right: 14px; }}\
          separator.bar-sep {{ min-height: 14px; margin: 0 8px 0 0; background: alpha({on_bg}, 0.14); }}\
          window.breadbar-notification {{ background-color: alpha({bg_plain}, 0.95); color: {on_bg}; }}\
+         window.breadbar-history {{ background-color: alpha({bg_plain}, 0.95); color: {on_bg};\
+             border-radius: {radius}; }}\
          .notification-card {{ background: {surface}; color: {on_surface}; border-radius: {radius};\
              padding: {pad}; margin-bottom: 8px; border-left: 3px solid transparent; }}\
          .notification-card.urgency-critical {{ border-left-color: {critical}; }}\
          .notification-card.urgency-normal {{ border-left-color: {accent}; }}\
          .notification-summary {{ font-weight: bold; }}\
          .notification-app {{ opacity: 0.6; }}\
+         .history-title {{ font-weight: bold; font-size: 13px; }}\
+         .history-close {{ padding: 2px 8px; }}\
+         .history-empty {{ opacity: 0.5; padding: 8px 0; }}\
+         .history-time {{ opacity: 0.5; font-size: 11px; }}\
+         .history-body {{ opacity: 0.75; }}\
+         .history-card {{ margin-bottom: 6px; }}\
          window.breadbar-osd {{ background-color: alpha({bg_plain}, 0.95); color: {on_bg}; border-radius: {radius_pill}; }}\
          .osd-icon {{ opacity: 0.85; margin-right: 8px; }}\
          .osd-icon-muted {{ opacity: 0.35; }}\
