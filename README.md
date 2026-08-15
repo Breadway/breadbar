@@ -33,7 +33,7 @@ A single Rust binary that provides a full-width top bar, a D-Bus notification da
 - Implements `org.freedesktop.Notifications` (D-Bus) — works with any standard sender (`notify-send`, etc.)
 - Popups appear top-right, stack vertically, auto-dismiss after the sender-specified timeout (default 5 s)
 - Supports `CloseNotification` and `replaces_id`
-- In-memory history of the last 50 notifications (app, summary, truncated body, time). Toggle with `breadbar --history` (Hyprland: `bind = SUPER, N, exec, breadbar --history`) or D-Bus `dev.breadway.Bar.ToggleHistory` on `org.freedesktop.Notifications` at `/dev/breadway/Bar`. Not persisted.
+- History of the last 50 notifications (app, summary, truncated body, time). Loaded from and saved to `$XDG_STATE_HOME/breadbar/history.json` (typically `~/.local/state/breadbar/history.json`). Toggle with `breadbar --history` (Hyprland: `bind = SUPER, N, exec, breadbar --history`) or D-Bus `dev.breadway.Bar.ToggleHistory` on `org.freedesktop.Notifications` at `/dev/breadway/Bar`.
 
 **Volume/brightness OSD**:
 
@@ -141,7 +141,7 @@ Example — change the font size:
 | `src/bar/tray.rs` | `org.kde.StatusNotifierWatcher` D-Bus service, SNI item rendering |
 | `src/notifications/mod.rs` | `org.freedesktop.Notifications` zbus service + `dev.breadway.Bar` history IPC |
 | `src/notifications/popup.rs` | Layer-shell popup window and card stack |
-| `src/notifications/history.rs` | Bounded in-memory history and layer-shell history window |
+| `src/notifications/history.rs` | Bounded history (last 50, persisted under XDG state) and layer-shell history window |
 | `src/osd.rs` | Volume/brightness on-screen display |
 | `src/widgets/` | Live Lua widgets from breadd (`BreadClient` + `WidgetSpec`) |
 | `src/theme.rs` | `bread-theme` palette loading, GTK CSS provider injection |

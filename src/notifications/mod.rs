@@ -96,6 +96,8 @@ struct NotifServer {
     /// `SYNCHRONOUS_HINT` instead of an explicit `replaces_id`.
     sync_tags: Mutex<HashMap<(String, String), u32>>,
     history: history::Store,
+    /// Unit tests leave this off so `Notify` does not write `$XDG_STATE_HOME`.
+    persist_history: bool,
 }
 
 /// Private breadbar control surface on the same connection as
@@ -181,6 +183,9 @@ impl NotifServer {
                 received: SystemTime::now(),
             },
         );
+        if self.persist_history {
+            history::persist(&self.history);
+        }
 
         let _ = self
             .tx
@@ -264,15 +269,17 @@ pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
         }
         None => {
             let (conn_tx, conn_rx) = tokio::sync::oneshot::channel();
-            let store = history::new_store();
+            let store = history::load_store();
+            let next_id = history::next_id(&store);
             let history_ui = history::build_window(store.clone());
 
             relm4::spawn(async move {
                 let server = NotifServer {
                     tx: tx.clone(),
-                    next_id: AtomicU32::new(1),
+                    next_id: AtomicU32::new(next_id),
                     sync_tags: Mutex::new(HashMap::new()),
                     history: store,
+                    persist_history: true,
                 };
                 let bar = BarService { tx };
                 // Builder failures here would only occur with invalid static strings — safe to unwrap.
@@ -353,6 +360,7 @@ mod tests {
                 next_id: AtomicU32::new(1),
                 sync_tags: Mutex::new(HashMap::new()),
                 history: history::new_store(),
+                persist_history: false,
             },
             rx,
         )

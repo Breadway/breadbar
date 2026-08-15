@@ -1,9 +1,12 @@
 use std::collections::VecDeque;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+use serde::{Deserialize, Serialize};
 
 use super::Urgency;
 
@@ -32,6 +35,30 @@ pub fn new_store() -> Store {
     Arc::new(Mutex::new(VecDeque::new()))
 }
 
+/// Load the last [`LIMIT`] entries from `$XDG_STATE_HOME/breadbar/history.json`
+/// (or `~/.local/state/breadbar/history.json`). Missing or corrupt files
+/// yield an empty store — never fail startup.
+pub fn load_store() -> Store {
+    let store = new_store();
+    if let Some(path) = history_path() {
+        load_into(&store, &path);
+    }
+    store
+}
+
+/// Next D-Bus notification id so persisted rows are not replaced on restart.
+pub fn next_id(store: &Store) -> u32 {
+    store
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .max(1)
+}
+
 /// Insert or replace by `id`, newest first. Drops anything past [`LIMIT`].
 pub fn record(store: &Store, entry: Entry) {
     let mut hist = store.lock().unwrap();
@@ -41,6 +68,106 @@ pub fn record(store: &Store, entry: Entry) {
     hist.push_front(entry);
     while hist.len() > LIMIT {
         hist.pop_back();
+    }
+}
+
+/// Best-effort write of the in-memory store (already bounded) to the
+/// XDG state file. Failures are silent — history stays in memory.
+pub fn persist(store: &Store) {
+    if let Some(path) = history_path() {
+        let _ = persist_to(store, &path);
+    }
+}
+
+fn history_path() -> Option<PathBuf> {
+    Some(state_dir()?.join("history.json"))
+}
+
+fn state_dir() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_STATE_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("breadbar"));
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".local/state/breadbar"))
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedEntry {
+    id: u32,
+    app_name: String,
+    summary: String,
+    body: String,
+    urgency: String,
+    received_unix: u64,
+}
+
+fn urgency_name(u: Urgency) -> &'static str {
+    match u {
+        Urgency::Low => "low",
+        Urgency::Normal => "normal",
+        Urgency::Critical => "critical",
+    }
+}
+
+fn urgency_from_name(s: &str) -> Urgency {
+    match s {
+        "low" => Urgency::Low,
+        "critical" => Urgency::Critical,
+        _ => Urgency::Normal,
+    }
+}
+
+fn to_persisted(entry: &Entry) -> PersistedEntry {
+    let received_unix = entry
+        .received
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    PersistedEntry {
+        id: entry.id,
+        app_name: entry.app_name.clone(),
+        summary: entry.summary.clone(),
+        body: entry.body.clone(),
+        urgency: urgency_name(entry.urgency).into(),
+        received_unix,
+    }
+}
+
+fn from_persisted(entry: PersistedEntry) -> Entry {
+    Entry {
+        id: entry.id,
+        app_name: entry.app_name,
+        summary: entry.summary,
+        body: entry.body,
+        urgency: urgency_from_name(&entry.urgency),
+        received: SystemTime::UNIX_EPOCH + Duration::from_secs(entry.received_unix),
+    }
+}
+
+fn persist_to(store: &Store, path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let payload: Vec<PersistedEntry> = store.lock().unwrap().iter().map(to_persisted).collect();
+    let bytes = serde_json::to_vec(&payload).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, path)
+}
+
+fn load_into(store: &Store, path: &Path) {
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    let Ok(parsed) = serde_json::from_slice::<Vec<PersistedEntry>>(&bytes) else {
+        return;
+    };
+    let mut hist = store.lock().unwrap();
+    hist.clear();
+    for entry in parsed.into_iter().take(LIMIT) {
+        hist.push_back(from_persisted(entry));
     }
 }
 
@@ -270,5 +397,56 @@ mod tests {
     fn truncate_adds_ellipsis_past_limit() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello world", 5), "hello…");
+    }
+
+    #[test]
+    fn persist_roundtrip_keeps_newest_first_and_bound() {
+        let dir = std::env::temp_dir().join(format!(
+            "breadbar-history-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        let store = new_store();
+        for i in 0..(LIMIT as u32 + 3) {
+            record(&store, entry(i, &format!("n{i}")));
+        }
+        persist_to(&store, &path).unwrap();
+
+        let loaded = new_store();
+        load_into(&loaded, &path);
+        assert_eq!(next_id(&loaded), LIMIT as u32 + 3);
+        let hist = loaded.lock().unwrap();
+        assert_eq!(hist.len(), LIMIT);
+        assert_eq!(hist.front().unwrap().id, LIMIT as u32 + 2);
+        assert_eq!(
+            hist.front().unwrap().summary,
+            format!("n{}", LIMIT as u32 + 2)
+        );
+        drop(hist);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_into_ignores_corrupt_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "breadbar-history-bad-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        fs::write(&path, "not-json").unwrap();
+        let store = new_store();
+        load_into(&store, &path);
+        assert!(store.lock().unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
