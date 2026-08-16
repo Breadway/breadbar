@@ -62,9 +62,11 @@ pub struct App {
     cpu_pair: gtk4::Box,
     mem_pair: gtk4::Box,
     pwr_pair: gtk4::Box,
+    gpu_pair: gtk4::Box,
     cpu_lbl: gtk4::Label,
     mem_lbl: gtk4::Label,
     pwr_lbl: gtk4::Label,
+    gpu_lbl: gtk4::Label,
     vol_lbl: gtk4::Label,
     bat_lbl: gtk4::Label,
     bat_img: gtk4::Image,
@@ -240,6 +242,7 @@ impl SimpleComponent for App {
         let cpu_lbl = stat_label();
         let mem_lbl = stat_label();
         let pwr_lbl = stat_label();
+        let gpu_lbl = stat_label();
         let vol_lbl = stat_label();
         let bat_lbl = stat_label();
 
@@ -380,11 +383,22 @@ impl SimpleComponent for App {
         let cpu_pair = stat_pair(asset!("CPU.svg"), &cpu_lbl);
         let mem_pair = stat_pair(asset!("RAM Usage.svg"), &mem_lbl);
         let pwr_pair = stat_pair(asset!("Power Draw.svg"), &pwr_lbl);
-        let system_stats_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        system_stats_box.append(&cpu_pair);
-        system_stats_box.append(&mem_pair);
-        system_stats_box.append(&pwr_pair);
-        system_stats_box.set_visible(false);
+        let gpu_pair = stat_pair(asset!("GPU.svg"), &gpu_lbl);
+        for pair in [&cpu_pair, &mem_pair, &pwr_pair, &gpu_pair] {
+            pair.add_css_class("sys-stat");
+            pair.set_hexpand(true);
+        }
+        gpu_pair.set_visible(false);
+        let system_stats_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        system_stats_box.add_css_class("sys-grid");
+        let sys_row1 = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        sys_row1.append(&cpu_pair);
+        sys_row1.append(&mem_pair);
+        let sys_row2 = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        sys_row2.append(&gpu_pair);
+        sys_row2.append(&pwr_pair);
+        system_stats_box.append(&sys_row1);
+        system_stats_box.append(&sys_row2);
         let system_sep = gtk4::Separator::new(gtk4::Orientation::Vertical);
         system_sep.add_css_class("bar-sep");
         system_sep.set_visible(false);
@@ -506,6 +520,13 @@ impl SimpleComponent for App {
         let bright_row = build_slider_row("bl", 0.0, 1.0, 0.02);
         let panel_bright_slider = bright_row.1.clone();
         panel_inner.append(&bright_row.0);
+
+        let sys_header = gtk4::Label::new(Some("SYSTEM"));
+        sys_header.add_css_class("control-panel-header");
+        sys_header.set_xalign(0.0);
+        sys_header.set_margin_top(10);
+        panel_inner.append(&sys_header);
+        panel_inner.append(&system_stats_box);
 
         let power_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         power_row.add_css_class("power-row");
@@ -697,9 +718,11 @@ impl SimpleComponent for App {
             cpu_pair,
             mem_pair,
             pwr_pair,
+            gpu_pair,
             cpu_lbl,
             mem_lbl,
             pwr_lbl,
+            gpu_lbl,
             vol_lbl,
             bat_lbl,
             bat_img,
@@ -854,17 +877,24 @@ impl SimpleComponent for App {
                 self.date_lbl.set_label(&bar::clock::date());
             }
             AppInput::StatsUpdate(stats) => {
-                self.cpu_lbl.set_label(&stats.cpu);
+                let cpu = match stats.cpu_temp {
+                    Some(t) => format!("{} · {:.0}°", stats.cpu, t),
+                    None => stats.cpu,
+                };
+                self.cpu_lbl.set_label(&cpu);
                 self.mem_lbl.set_label(&stats.mem);
                 self.pwr_lbl.set_label(&stats.power);
-
-                // Island bar never shows the system-stats trio — they live
-                // in the control panel. Keep the widgets hidden so a later
-                // re-parent cannot accidentally flash them.
-                self.cpu_pair.set_visible(false);
-                self.mem_pair.set_visible(false);
-                self.pwr_pair.set_visible(false);
-                self.system_stats_box.set_visible(false);
+                match stats.gpu_usage {
+                    Some(g) => {
+                        let gpu = match stats.gpu_temp {
+                            Some(t) => format!("{g}% · {t:.0}°"),
+                            None => format!("{g}%"),
+                        };
+                        self.gpu_lbl.set_label(&gpu);
+                        self.gpu_pair.set_visible(true);
+                    }
+                    None => self.gpu_pair.set_visible(false),
+                }
                 self.system_sep.set_visible(false);
 
                 tick_label(&self.vol_lbl, &stats.volume_pct.to_string());

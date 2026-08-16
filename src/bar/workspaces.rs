@@ -230,49 +230,68 @@ impl WorkspaceTrail {
     }
 
     pub fn place(&self, btn: &gtk4::Button) {
-        self.cancel();
-        if let Some(g) = button_geom(btn, &self.overlay) {
-            self.apply(&g);
-            return;
-        }
-        // First map: the button exists but has no allocation yet.
         let pill = self.pill.clone();
         let host = self.host.clone();
-        let btn = btn.clone();
         let inner = self.inner.clone();
-        let id = self.overlay.add_tick_callback(move |ov, _| {
-            let Some(g) = button_geom(&btn, ov) else {
-                return ControlFlow::Continue;
-            };
+        self.when_stable(btn, move |g| {
             apply_geom(&host, &pill, &inner, &g);
-            inner.borrow_mut().tick = None;
-            ControlFlow::Break
         });
-        self.inner.borrow_mut().tick = Some(id);
     }
 
     pub fn stretch(&self, from: Option<&gtk4::Button>, to: &gtk4::Button) {
         let from_g = self.from_geom(from);
-        if let Some(to_g) = button_geom(to, &self.overlay) {
-            self.stretch_geom(from_g, to_g);
-            return;
-        }
-        // Destination just appeared (empty workspace becoming active) and
-        // has no allocation yet. Wait one layout pass, then stretch from
-        // the last pill — don't snap via place().
-        self.cancel();
         let overlay = self.overlay.clone();
         let pill = self.pill.clone();
         let host = self.host.clone();
         let inner = self.inner.clone();
-        let btn = to.clone();
+        let dest = to.clone();
+        self.when_stable(to, move |to_g| {
+            stretch_geom_on(&overlay, &host, &pill, &inner, from_g, to_g, Some(dest));
+        });
+    }
+
+    /// New empty-workspace buttons first allocate at CSS `min-width` (32px)
+    /// and only then grow to the padded label. Two stable frames of that
+    /// placeholder is not enough — empty→empty used to shrink the pill to it.
+    fn when_stable(&self, btn: &gtk4::Button, then: impl FnOnce(Geom) + 'static) {
+        self.cancel();
+        let btn = btn.clone();
+        let inner = self.inner.clone();
+        let last = std::cell::Cell::new(None::<Geom>);
+        let same = std::cell::Cell::new(0u8);
+        let frames = std::cell::Cell::new(0u8);
+        let then = std::cell::Cell::new(Some(then));
         let id = self.overlay.add_tick_callback(move |ov, _| {
-            let Some(to_g) = button_geom(&btn, ov) else {
-                return ControlFlow::Continue;
+            frames.set(frames.get().saturating_add(1));
+            let n = frames.get();
+            let Some(g) = button_geom(&btn, ov) else {
+                last.set(None);
+                same.set(0);
+                return if n > 24 {
+                    inner.borrow_mut().tick = None;
+                    ControlFlow::Break
+                } else {
+                    ControlFlow::Continue
+                };
             };
-            inner.borrow_mut().tick = None;
-            stretch_geom_on(&overlay, &host, &pill, &inner, from_g, to_g);
-            ControlFlow::Break
+            // Still sitting on the 32px min-width slot, or smaller than the
+            // button's natural request — keep waiting for the real layout.
+            if still_placeholder(&btn, &g) && n < 20 {
+                last.set(None);
+                same.set(0);
+                return ControlFlow::Continue;
+            }
+            let stable = last.get().is_some_and(|p| geom_close(&p, &g));
+            last.set(Some(g));
+            same.set(if stable { same.get().saturating_add(1) } else { 0 });
+            if same.get() >= 2 || n > 22 {
+                inner.borrow_mut().tick = None;
+                if let Some(f) = then.take() {
+                    f(g);
+                }
+                return ControlFlow::Break;
+            }
+            ControlFlow::Continue
         });
         self.inner.borrow_mut().tick = Some(id);
     }
@@ -286,20 +305,68 @@ impl WorkspaceTrail {
         from.and_then(|b| button_geom(b, &self.overlay))
     }
 
-    fn stretch_geom(&self, from_g: Option<Geom>, to_g: Geom) {
-        stretch_geom_on(
-            &self.overlay,
-            &self.host,
-            &self.pill,
-            &self.inner,
-            from_g,
-            to_g,
-        );
+}
+
+fn stretch_geom_on(
+    overlay: &gtk4::Overlay,
+    host: &gtk4::Fixed,
+    pill: &gtk4::Box,
+    inner: &Rc<RefCell<TrailInner>>,
+    from_g: Option<Geom>,
+    to_g: Geom,
+    dest: Option<gtk4::Button>,
+) {
+    let Some(from_g) = from_g else {
+        apply_geom(host, pill, inner, &to_g);
+        return;
+    };
+    if (from_g.x - to_g.x).abs() < 0.5 && (from_g.w - to_g.w).abs() < 0.5 {
+        apply_geom(host, pill, inner, &to_g);
+        return;
     }
 
-    fn apply(&self, g: &Geom) {
-        apply_geom(&self.host, &self.pill, &self.inner, g);
+    let span_x = from_g.x.min(to_g.x);
+    let span_w = (from_g.x + from_g.w).max(to_g.x + to_g.w) - span_x;
+    let mid = Geom {
+        x: span_x,
+        y: to_g.y,
+        w: span_w,
+        h: to_g.h,
+    };
+
+    if let Some(id) = inner.borrow_mut().tick.take() {
+        id.remove();
     }
+    let started = Instant::now();
+    let pill = pill.clone();
+    let host = host.clone();
+    let inner_tick = inner.clone();
+    let dest = dest.clone();
+    let ov = overlay.clone();
+    let id = overlay.add_tick_callback(move |_, _| {
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        let (g, done) = if elapsed < STRETCH_MS {
+            let t = ease(elapsed / STRETCH_MS);
+            (lerp_geom(&from_g, &mid, t), false)
+        } else if elapsed < STRETCH_MS + SNAP_MS {
+            let t = ease_overshoot((elapsed - STRETCH_MS) / SNAP_MS);
+            (lerp_geom(&mid, &to_g, t), false)
+        } else {
+            let end = dest
+                .as_ref()
+                .and_then(|b| button_geom(b, &ov))
+                .unwrap_or(to_g);
+            (end, true)
+        };
+        apply_geom(&host, &pill, &inner_tick, &g);
+        if done {
+            inner_tick.borrow_mut().tick = None;
+            ControlFlow::Break
+        } else {
+            ControlFlow::Continue
+        }
+    });
+    inner.borrow_mut().tick = Some(id);
 }
 
 fn button_geom(btn: &gtk4::Button, overlay: &gtk4::Overlay) -> Option<Geom> {
@@ -324,9 +391,25 @@ fn apply_geom(host: &gtk4::Fixed, pill: &gtk4::Box, inner: &Rc<RefCell<TrailInne
         w: g.w,
         h: g.h,
     };
-    pill.set_size_request(g.w.max(1.0).round() as i32, g.h.max(1.0).round() as i32);
+    let w = g.w.max(1.0).round() as i32;
+    let h = g.h.max(1.0).round() as i32;
+    // Clearing first lets GTK shrink; size-request is a minimum.
+    pill.set_size_request(-1, -1);
+    pill.set_size_request(w, h);
     host.move_(pill, g.x, g.y);
     pill.set_visible(true);
+}
+
+fn still_placeholder(btn: &gtk4::Button, g: &Geom) -> bool {
+    let (min_w, nat_w, _, _) = btn.measure(gtk4::Orientation::Horizontal, -1);
+    g.w <= f64::from(min_w) + 1.0 || g.w + 0.5 < f64::from(nat_w)
+}
+
+fn geom_close(a: &Geom, b: &Geom) -> bool {
+    (a.x - b.x).abs() < 0.5
+        && (a.y - b.y).abs() < 0.5
+        && (a.w - b.w).abs() < 0.5
+        && (a.h - b.h).abs() < 0.5
 }
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {

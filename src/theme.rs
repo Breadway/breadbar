@@ -190,7 +190,10 @@ fn load_css() -> String {
          .control-panel-btn:hover {{ opacity: 1; background: alpha(@on-bg, 0.10); }}\
          .control-panel-btn:active {{ background: alpha(@on-bg, 0.16); }}\
          .control-panel {{ }}\
-         .control-panel-inner {{ min-width: 220px; padding: {pad}; }}\
+         .control-panel-inner {{ min-width: 248px; padding: {pad}; }}\
+         .sys-grid {{ margin: 2px 0 6px; }}\
+         .sys-stat {{ padding: 4px 2px; background: transparent; }}\
+         .sys-stat:hover {{ background: transparent; }}\
          .control-panel-header {{ font-size: 12px; font-weight: bold; letter-spacing: 0.12em;\
              opacity: 0.45; margin-bottom: 8px; }}\
          .control-panel-row {{ margin: 8px 0; }}\
