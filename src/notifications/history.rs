@@ -175,13 +175,15 @@ pub fn build_window(store: Store) -> Ui {
     let window = gtk4::Window::new();
     window.add_css_class("breadbar-history");
     window.init_layer_shell();
+    window.set_namespace(Some("breadbar-notif"));
     window.set_layer(Layer::Overlay);
     window.set_anchor(Edge::Top, true);
     window.set_anchor(Edge::Right, true);
-    window.set_margin(Edge::Top, 48);
-    window.set_margin(Edge::Right, 20);
+    window.set_margin(Edge::Top, crate::BAR_MARGIN_TOP + crate::BAR_HEIGHT + 8);
+    window.set_margin(Edge::Right, crate::BAR_MARGIN_SIDES);
     window.set_default_width(360);
     window.set_keyboard_mode(KeyboardMode::OnDemand);
+    crate::theme::bind_auto(&window);
 
     let outer = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     outer.set_margin_top(10);
@@ -284,8 +286,8 @@ fn make_row(entry: &Entry) -> gtk4::Box {
     }
 
     let top = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let show_app = !entry.app_name.is_empty()
-        && !entry.app_name.eq_ignore_ascii_case(&entry.summary);
+    let show_app =
+        !entry.app_name.is_empty() && !entry.app_name.eq_ignore_ascii_case(&entry.summary);
     if show_app {
         let app = gtk4::Label::new(Some(&entry.app_name));
         app.add_css_class("notification-app");

@@ -24,7 +24,8 @@ const DEFAULT_LABEL_MAX_WIDTH_CHARS: i32 = 32;
 fn bundled_icon(name: &str) -> Option<&'static str> {
     use crate::bar::stats::{
         AC_POWER, BAT_HIGH, BAT_LOW, BAT_MID, BT_OFF, BT_ON, ICON_BRIGHTNESS, ICON_LOCK,
-        ICON_VOLUME, WIFI_OFF, WIFI_STRONG,
+        ICON_RESTART, ICON_SHUTDOWN, ICON_SLEEP, ICON_VOLUME, WIFI_MEDIUM, WIFI_OFF, WIFI_STRONG,
+        WIFI_WEAK,
     };
     Some(match name {
         "ac-power" => AC_POWER,
@@ -34,8 +35,13 @@ fn bundled_icon(name: &str) -> Option<&'static str> {
         "bluetooth-on" => BT_ON,
         "bluetooth-off" => BT_OFF,
         "wifi-strong" => WIFI_STRONG,
+        "wifi-medium" => WIFI_MEDIUM,
+        "wifi-weak" => WIFI_WEAK,
         "wifi-off" => WIFI_OFF,
         "lock" => ICON_LOCK,
+        "sleep" => ICON_SLEEP,
+        "restart" => ICON_RESTART,
+        "shutdown" => ICON_SHUTDOWN,
         "volume" => ICON_VOLUME,
         "brightness" => ICON_BRIGHTNESS,
         _ => return None,
@@ -171,6 +177,7 @@ pub fn build_node(node: &WidgetNode, widget_id: &str) -> gtk4::Widget {
             let px = size.unwrap_or(16).max(1) as u32;
             let texture = icon_texture(widget_id, name.as_deref(), path.as_deref(), px);
             let image = gtk4::Image::from_paintable(texture.as_ref());
+            crate::prepare_icon(&image, px as i32);
             image.upcast()
         }
         WidgetNode::Progress { value, .. } => {

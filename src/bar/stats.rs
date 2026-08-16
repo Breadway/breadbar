@@ -25,6 +25,14 @@ pub const WIFI_MEDIUM: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 pub const WIFI_WEAK: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Weak.svg"));
 pub const WIFI_OFF: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Disconnect.svg"));
 
+/// Adwaita symbolic names — these are drawn for 16px status bars, not our
+/// hand-cropped Lucide arcs.
+pub const WIFI_ICON_EXCELLENT: &str = "network-wireless-signal-excellent-symbolic";
+pub const WIFI_ICON_GOOD: &str = "network-wireless-signal-good-symbolic";
+pub const WIFI_ICON_OK: &str = "network-wireless-signal-ok-symbolic";
+pub const WIFI_ICON_WEAK: &str = "network-wireless-signal-weak-symbolic";
+pub const WIFI_ICON_OFF: &str = "network-wireless-offline-symbolic";
+
 pub const BAT_HIGH: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 3 Bars.svg"));
 pub const BAT_MID: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 2 Bars.svg"));
 pub const BAT_LOW: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Battery 1 Bar.svg"));
@@ -65,6 +73,7 @@ pub struct Stats {
     pub gpu_temp: Option<f32>,
     pub net_rx_kbs: f32,
     pub net_tx_kbs: f32,
+    pub volume_pct: u8,
 }
 
 struct CpuSnapshot {
@@ -76,7 +85,7 @@ static PREV_CPU: OnceLock<Mutex<CpuSnapshot>> = OnceLock::new();
 static BAT_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 static AC_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 static WIFI_CACHE: LazyLock<Mutex<(String, &'static str)>> =
-    LazyLock::new(|| Mutex::new(("—".to_string(), WIFI_OFF)));
+    LazyLock::new(|| Mutex::new(("—".to_string(), WIFI_ICON_OFF)));
 static WIFI_TICK: AtomicU8 = AtomicU8::new(0);
 
 fn read_cpu() -> f32 {
@@ -271,7 +280,7 @@ fn wifi_iface() -> Option<&'static str> {
 
 async fn read_wifi() -> (String, &'static str) {
     let Some(iface) = wifi_iface() else {
-        return ("—".into(), WIFI_OFF);
+        return ("—".into(), WIFI_ICON_OFF);
     };
 
     let link_out = tokio::process::Command::new("iw")
@@ -281,7 +290,7 @@ async fn read_wifi() -> (String, &'static str) {
         .ok();
     let link_stdout = match link_out {
         Some(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
-        _ => return ("—".into(), WIFI_OFF),
+        _ => return ("—".into(), WIFI_ICON_OFF),
     };
 
     let mut ssid = None;
@@ -296,13 +305,14 @@ async fn read_wifi() -> (String, &'static str) {
     }
 
     let Some(ssid) = ssid else {
-        return ("—".into(), WIFI_OFF);
+        return ("—".into(), WIFI_ICON_OFF);
     };
 
     let icon = match rssi {
-        Some(r) if r >= -55 => WIFI_STRONG,
-        Some(r) if r >= -70 => WIFI_MEDIUM,
-        _ => WIFI_WEAK,
+        Some(r) if r >= -55 => WIFI_ICON_EXCELLENT,
+        Some(r) if r >= -70 => WIFI_ICON_GOOD,
+        Some(r) if r >= -80 => WIFI_ICON_OK,
+        _ => WIFI_ICON_WEAK,
     };
 
     (ssid, icon)
@@ -413,7 +423,8 @@ pub async fn poll() -> Stats {
     let power_watts = read_power();
     let power = power_watts.map_or_else(|| "—W".into(), |w| format!("{w:.1}W"));
     let pct = read_battery();
-    let bat = pct.map_or_else(|| "—".into(), |p| format!("{p}%"));
+    // Demo bar prints the bare number ("83"), not "83%".
+    let bat = pct.map_or_else(|| "—".into(), |p| format!("{p}"));
     let bat_icon = pct.map_or(BAT_MID, bat_level_icon);
     let ac_connected = read_ac();
     // BT and WiFi both refresh every 8 cycles (~16 s); cache in between.
@@ -442,6 +453,7 @@ pub async fn poll() -> Stats {
     let gpu_usage = read_gpu_usage();
     let gpu_temp = read_gpu_temp();
     let (net_rx_kbs, net_tx_kbs) = read_net_throughput();
+    let volume_pct = read_volume_pct();
     Stats {
         cpu: format!("{cpu:.0}%"),
         cpu_pct: cpu,
@@ -465,7 +477,28 @@ pub async fn poll() -> Stats {
         gpu_temp,
         net_rx_kbs,
         net_tx_kbs,
+        volume_pct,
     }
+}
+
+/// `wpctl get-volume` prints `Volume: 0.44 [MUTED]`. Scale to a 0–150 percent
+/// for the bar chip. Missing pipewire / wpctl degrades to 0 rather than
+/// blocking the rest of the poll.
+fn read_volume_pct() -> u8 {
+    let out = std::process::Command::new("wpctl")
+        .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
+        .output()
+        .ok();
+    let Some(o) = out.filter(|o| o.status.success()) else {
+        return 0;
+    };
+    String::from_utf8_lossy(&o.stdout)
+        .trim()
+        .strip_prefix("Volume:")
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|v| (v * 100.0).round().clamp(0.0, 150.0) as u8)
+        .unwrap_or(0)
 }
 
 pub fn spawn_poller(sender: ComponentSender<App>) {

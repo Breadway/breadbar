@@ -121,6 +121,7 @@ pub fn spawn_set_brightness(v: f64) {
     });
 }
 
+#[allow(dead_code)]
 pub fn spawn_set_sink(name: String) {
     relm4::spawn(async move {
         let _ = tokio::process::Command::new("pactl")

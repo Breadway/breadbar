@@ -163,9 +163,7 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
     container.set_margin_end(14);
     window.set_child(Some(&container));
 
-    let icon = gtk4::Image::from_paintable(Some(&crate::svg_texture(
-        crate::bar::stats::ICON_VOLUME,
-    )));
+    let icon = crate::svg_image(crate::bar::stats::ICON_VOLUME);
     icon.add_css_class("osd-icon");
     container.append(&icon);
 
@@ -184,6 +182,7 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
         };
 
         icon.set_paintable(Some(&crate::svg_texture(icon_svg)));
+        crate::prepare_icon(&icon, crate::ICON_PX);
         if muted {
             icon.add_css_class("osd-icon-muted");
         } else {
@@ -209,9 +208,11 @@ fn create_window() -> gtk4::Window {
     let window = gtk4::Window::new();
     window.add_css_class("breadbar-osd");
     window.init_layer_shell();
+    window.set_namespace(Some("breadbar-osd"));
     window.set_layer(Layer::Overlay);
     window.set_anchor(Edge::Bottom, true);
     window.set_margin(Edge::Bottom, 80);
     window.set_default_width(180);
+    crate::theme::bind_auto(&window);
     window
 }

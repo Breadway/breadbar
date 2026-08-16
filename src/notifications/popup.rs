@@ -170,15 +170,17 @@ fn create_window() -> gtk4::Window {
     let window = gtk4::Window::new();
     window.add_css_class("breadbar-notification");
     window.init_layer_shell();
+    window.set_namespace(Some("breadbar-notif"));
     window.set_layer(Layer::Overlay);
     window.set_anchor(Edge::Top, true);
     window.set_anchor(Edge::Right, true);
-    window.set_margin(Edge::Top, 20);
-    window.set_margin(Edge::Right, 20);
+    window.set_margin(Edge::Top, crate::BAR_MARGIN_TOP + crate::BAR_HEIGHT + 8);
+    window.set_margin(Edge::Right, crate::BAR_MARGIN_SIDES);
     window.set_default_width(320);
     // OnDemand so an inline-reply GtkEntry can take keys without the popup
     // stealing every keystroke the rest of the time.
     window.set_keyboard_mode(KeyboardMode::OnDemand);
+    crate::theme::bind_auto(&window);
     window
 }
 

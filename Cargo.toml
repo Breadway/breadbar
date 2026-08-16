@@ -10,7 +10,7 @@ keywords = ["wayland", "hyprland", "bar", "status-bar", "gtk4"]
 categories = ["gui"]
 
 [dependencies]
-bread-theme = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.2", features = ["gtk"] }
+bread-theme = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.4", features = ["gtk"] }
 # Widget rendering client: bread-utils::BreadClient (emit/request/subscribe)
 # for talking to breadd's IPC socket, and bread-shared purely for the
 # WidgetSpec/WidgetNode wire types so we deserialize into real structs

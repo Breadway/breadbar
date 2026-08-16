@@ -24,6 +24,8 @@ pub struct ScanEntry {
 pub struct WifiPopoverData {
     pub profiles: Vec<(String, bool)>, // (name, is_active)
     pub scan: Vec<ScanEntry>,
+    /// False while nmcli is still listing APs — profiles must still be usable.
+    pub scan_ready: bool,
 }
 
 async fn fetch_status() -> Option<CrumbsStatus> {
@@ -73,31 +75,57 @@ async fn fetch_profile_list() -> Vec<(String, bool)> {
         .collect()
 }
 
+async fn saved_ssids() -> std::collections::HashSet<String> {
+    let out = tokio::process::Command::new("nmcli")
+        .args(["-t", "-f", "NAME,TYPE", "connection", "show"])
+        .output()
+        .await;
+    let Ok(o) = out else {
+        return std::collections::HashSet::new();
+    };
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (name, ty) = line.rsplit_once(':')?;
+            if ty == "802-11-wireless" || ty == "wifi" {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Cached AP list (no rescan). Fast enough to paint next to profiles.
 async fn fetch_scan() -> Vec<ScanEntry> {
-    let Ok(Ok(out)) = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::process::Command::new("breadcrumbs")
-            .args(["scan-list", "--json"])
+    let out = tokio::time::timeout(
+        Duration::from_secs(4),
+        tokio::process::Command::new("nmcli")
+            .args(["-t", "-f", "SSID,SIGNAL,IN-USE", "device", "wifi", "list"])
             .output(),
     )
-    .await
-    else {
+    .await;
+    let Ok(Ok(o)) = out else {
         return vec![];
     };
-    let arr: Vec<serde_json::Value> =
-        serde_json::from_slice(&out.stdout).unwrap_or_default();
-    arr.into_iter()
-        .filter_map(|v| {
-            let ssid = v["ssid"].as_str()?.to_string();
-            if ssid.is_empty() {
+    let saved = saved_ssids().await;
+    let mut seen = std::collections::HashSet::new();
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.rsplitn(3, ':');
+            let _in_use = parts.next()?;
+            let signal = parts.next()?.parse::<u8>().ok().unwrap_or(0);
+            let ssid = parts.next()?.replace("\\:", ":");
+            if ssid.is_empty() || ssid == "--" || !seen.insert(ssid.clone()) {
                 return None;
             }
-            let signal = v["signal"]
-                .as_str()
-                .and_then(|s| s.parse::<u8>().ok())
-                .unwrap_or(0);
-            let saved = v["saved"].as_bool().unwrap_or(false);
-            Some(ScanEntry { ssid, signal, saved })
+            let saved = saved.contains(&ssid);
+            Some(ScanEntry {
+                ssid,
+                signal,
+                saved,
+            })
         })
         .collect()
 }
@@ -114,11 +142,32 @@ pub fn spawn_status_poller(sender: ComponentSender<App>) {
     });
 }
 
-/// Called when the popover opens — loads profiles + scan in parallel.
+/// Profiles first (so you can switch Home/Away immediately), then the
+/// cached AP list. A background rescan refreshes the list if it finds more.
 pub fn spawn_popover_load(sender: ComponentSender<App>) {
     relm4::spawn(async move {
-        let (profiles, scan) = tokio::join!(fetch_profile_list(), fetch_scan());
-        sender.input(AppInput::WifiPopoverData(WifiPopoverData { profiles, scan }));
+        let profiles = fetch_profile_list().await;
+        sender.input(AppInput::WifiPopoverData(WifiPopoverData {
+            profiles: profiles.clone(),
+            scan: vec![],
+            scan_ready: false,
+        }));
+        let scan = fetch_scan().await;
+        sender.input(AppInput::WifiPopoverData(WifiPopoverData {
+            profiles: profiles.clone(),
+            scan: scan.clone(),
+            scan_ready: true,
+        }));
+        let _ = tokio::process::Command::new("nmcli")
+            .args(["device", "wifi", "rescan"])
+            .output()
+            .await;
+        let scan = fetch_scan().await;
+        sender.input(AppInput::WifiPopoverData(WifiPopoverData {
+            profiles,
+            scan,
+            scan_ready: true,
+        }));
     });
 }
 
@@ -132,29 +181,27 @@ pub fn spawn_profile_set(name: String) {
     });
 }
 
-/// Fire-and-forget: connect to a specific saved SSID via `breadcrumbs join`.
+/// Fire-and-forget: connect to a known SSID via NetworkManager.
 pub fn spawn_join(ssid: String) {
     relm4::spawn(async move {
-        let _ = tokio::process::Command::new("breadcrumbs")
-            .args(["join", &ssid])
+        let _ = tokio::process::Command::new("nmcli")
+            .args(["device", "wifi", "connect", &ssid])
             .output()
             .await;
     });
 }
 
-/// Fire-and-forget: save a new network with its password, then join it.
+/// Save in breadcrumbs (if the CLI still accepts `add`) and connect with nmcli.
 pub fn spawn_add_and_join(ssid: String, password: String) {
     relm4::spawn(async move {
-        let added = tokio::process::Command::new("breadcrumbs")
+        let _ = tokio::process::Command::new("breadcrumbs")
             .args(["add", &ssid, &password])
             .output()
             .await;
-        if matches!(added, Ok(o) if o.status.success()) {
-            let _ = tokio::process::Command::new("breadcrumbs")
-                .args(["join", &ssid])
-                .output()
-                .await;
-        }
+        let _ = tokio::process::Command::new("nmcli")
+            .args(["device", "wifi", "connect", &ssid, "password", &password])
+            .output()
+            .await;
     });
 }
 

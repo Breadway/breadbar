@@ -20,11 +20,9 @@ use gtk4::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Settle time for views whose content depends on `bar::stats::spawn_poller`'s
-/// 2-second background loop (control-panel's CPU/RAM/PWR/GPU/network labels,
-/// gated on popover visibility) or a similar live-data popover load
-/// (connectivity's wifi/bluetooth scan) — capturing any sooner leaves
-/// placeholder dashes/"Scanning…" instead of real content.
+/// Settle time for views whose content depends on a live-data popover load
+/// (connectivity's wifi/bluetooth scan, control-panel sliders) — capturing
+/// any sooner leaves placeholder dashes/"Scanning…" instead of real content.
 const LIVE_DATA_SETTLE_DELAY: Duration = Duration::from_millis(2_200);
 
 /// Delay between the bar's own `map` and calling `popover.popup()`. Calling
@@ -107,11 +105,11 @@ impl Cli {
 /// outlive `init()` (never stored on `App`), so they have to be cloned out
 /// before dispatch time same as `control_popover` always was.
 pub struct Handles {
-    pub control_popover: gtk4::Popover,
-    pub connectivity_popover: gtk4::Popover,
+    pub control_panel: gtk4::Window,
+    pub connectivity_panel: gtk4::Window,
     pub wifi_tab_btn: gtk4::ToggleButton,
     pub bt_tab_btn: gtk4::ToggleButton,
-    pub media_popover: gtk4::Popover,
+    pub media_panel: gtk4::Window,
     pub media_widget: gtk4::Box,
     pub media_track_lbl: gtk4::Label,
     /// Already built and primed with sample content by `main.rs` (via
@@ -122,10 +120,10 @@ pub struct Handles {
     pub osd_window: Option<gtk4::Window>,
 }
 
-/// The bar's fixed height — matches `root.set_exclusive_zone(32)` /
-/// `set_default_height: 32` in `main.rs`. Unlike the other views' full
-/// canvas, this never varies with `--width`/`--height`.
-const BAR_HEIGHT: i32 = 32;
+/// Capture height for the `bar` view: layer-shell top margin + widget
+/// height (the exclusive zone). Unlike the other views' full canvas,
+/// this never varies with `--width`/`--height`.
+const BAR_HEIGHT: i32 = crate::BAR_HEIGHT + crate::BAR_MARGIN_TOP;
 
 pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles: Handles) {
     let output = req.output;
@@ -141,15 +139,15 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
             });
         }
         "control-panel" => {
-            open_popover_on_root_map(root, handles.control_popover, LIVE_DATA_SETTLE_DELAY, output, width, height);
+            open_panel_on_root_map(root, handles.control_panel, LIVE_DATA_SETTLE_DELAY, output, width, height);
         }
         "connectivity-wifi" => {
             handles.wifi_tab_btn.set_active(true);
-            open_popover_on_root_map(root, handles.connectivity_popover, LIVE_DATA_SETTLE_DELAY, output, width, height);
+            open_panel_on_root_map(root, handles.connectivity_panel, LIVE_DATA_SETTLE_DELAY, output, width, height);
         }
         "connectivity-bluetooth" => {
             handles.bt_tab_btn.set_active(true);
-            open_popover_on_root_map(root, handles.connectivity_popover, LIVE_DATA_SETTLE_DELAY, output, width, height);
+            open_panel_on_root_map(root, handles.connectivity_panel, LIVE_DATA_SETTLE_DELAY, output, width, height);
         }
         "media-popover" => {
             // Real media state only shows the widget/text when something's
@@ -157,8 +155,9 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
             // run has nothing playing, so fake enough of it directly on the
             // widgets to get a representative capture.
             handles.media_widget.set_visible(true);
+            handles.media_widget.add_css_class("playing");
             handles.media_track_lbl.set_text("Sample Track — Sample Artist");
-            open_popover_on_root_map(root, handles.media_popover, SETTLE_DELAY, output, width, height);
+            open_panel_on_root_map(root, handles.media_panel, SETTLE_DELAY, output, width, height);
         }
         "notification" | "notification-critical" => {
             let Some(window) = handles.notification_window else {
@@ -196,27 +195,25 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
     }
 }
 
-/// Shared shape for every popover view: force it open shortly after the bar
-/// maps (autohide disabled — a programmatic `popup()` has no real input
-/// event serial to grab the Wayland seat with), then capture the whole
-/// canvas after `settle` once the popover itself maps.
-fn open_popover_on_root_map(
+/// Shared shape for panel views: present the standalone layer window after
+/// the bar maps, then capture the canvas once the panel itself maps.
+fn open_panel_on_root_map(
     root: &gtk4::ApplicationWindow,
-    popover: gtk4::Popover,
+    panel: gtk4::Window,
     settle: Duration,
     output: PathBuf,
     width: i32,
     height: i32,
 ) {
-    let popover_to_open = popover.clone();
+    let panel_to_open = panel.clone();
     root.connect_map(move |_| {
-        popover_to_open.set_autohide(false);
-        let popover_to_open = popover_to_open.clone();
+        let panel_to_open = panel_to_open.clone();
         gtk4::glib::timeout_add_local_once(PRE_POPUP_DELAY, move || {
-            popover_to_open.popup();
+            panel_to_open.set_visible(true);
+            panel_to_open.present();
         });
     });
-    popover.connect_map(move |_| {
+    panel.connect_map(move |_| {
         let output = output.clone();
         gtk4::glib::timeout_add_local_once(settle, move || {
             finish(bread_screenshots::capture_region(0, 0, width, height, &output));

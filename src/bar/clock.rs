@@ -1,11 +1,21 @@
 use crate::{App, AppInput};
 use relm4::ComponentSender;
 
+pub fn now() -> gtk4::glib::DateTime {
+    gtk4::glib::DateTime::now_local().expect("local time")
+}
+
+pub fn time() -> String {
+    let dt = now();
+    format!("{:02}:{:02}", dt.hour(), dt.minute())
+}
+
+pub fn date() -> String {
+    now().format("%a %d/%m").expect("date format").to_string()
+}
+
 pub fn current() -> String {
-    let dt = gtk4::glib::DateTime::now_local().expect("local time");
-    let date = dt.format("%a %d/%m").expect("date format");
-    let time = format!("{:02}:{:02}", dt.hour(), dt.minute());
-    format!("{} {}", date, time)
+    format!("{}  {}", date(), time())
 }
 
 pub fn spawn_ticker(sender: ComponentSender<App>) {
