@@ -121,12 +121,29 @@ pub fn spawn_set_brightness(v: f64) {
     });
 }
 
-#[allow(dead_code)]
-pub fn spawn_set_sink(name: String) {
+pub fn spawn_set_sink(name: String, sender: ComponentSender<App>) {
     relm4::spawn(async move {
         let _ = tokio::process::Command::new("pactl")
             .args(["set-default-sink", &name])
             .output()
             .await;
+        // Default sink alone leaves already-playing streams on the old
+        // device — move them too so the switch is audible immediately.
+        if let Ok(o) = tokio::process::Command::new("pactl")
+            .args(["list", "short", "sink-inputs"])
+            .output()
+            .await
+        {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                let Some(id) = line.split_whitespace().next() else {
+                    continue;
+                };
+                let _ = tokio::process::Command::new("pactl")
+                    .args(["move-sink-input", id, &name])
+                    .output()
+                    .await;
+            }
+        }
+        spawn_load(sender);
     });
 }

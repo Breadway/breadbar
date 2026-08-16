@@ -139,8 +139,14 @@ pub fn make_button(
         btn.add_css_class("active");
     }
     btn.set_valign(gtk4::Align::Center);
+    btn.set_halign(gtk4::Align::Center);
     btn.set_vexpand(false);
+    btn.set_hexpand(false);
     btn.set_size_request(-1, crate::CHIP_HEIGHT);
+    if let Some(child) = btn.child() {
+        child.set_halign(gtk4::Align::Center);
+        child.set_valign(gtk4::Align::Center);
+    }
     btn.connect_clicked(move |_| {
         relm4::spawn(async move {
             switch_workspace(id).await;
@@ -189,7 +195,7 @@ impl WorkspaceTrail {
         pill.set_visible(false);
         host.put(&pill, 0.0, 0.0);
 
-        let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+        let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 1);
         buttons.set_halign(gtk4::Align::Fill);
         buttons.set_valign(gtk4::Align::Center);
         buttons.set_vexpand(false);
@@ -230,150 +236,125 @@ impl WorkspaceTrail {
     }
 
     pub fn place(&self, btn: &gtk4::Button) {
+        self.cancel();
+        if let Some(g) = button_geom(btn, &self.host) {
+            apply_geom(&self.host, &self.pill, &self.inner, &inset_pill(g));
+            return;
+        }
         let pill = self.pill.clone();
         let host = self.host.clone();
         let inner = self.inner.clone();
-        self.when_stable(btn, move |g| {
-            apply_geom(&host, &pill, &inner, &g);
+        let btn = btn.clone();
+        let id = self.overlay.add_tick_callback(move |_, _| {
+            let Some(g) = button_geom(&btn, &host) else {
+                return ControlFlow::Continue;
+            };
+            apply_geom(&host, &pill, &inner, &inset_pill(g));
+            inner.borrow_mut().tick = None;
+            ControlFlow::Break
         });
+        self.inner.borrow_mut().tick = Some(id);
     }
 
     pub fn stretch(&self, from: Option<&gtk4::Button>, to: &gtk4::Button) {
-        let from_g = self.from_geom(from);
-        let overlay = self.overlay.clone();
+        self.cancel();
+        let Some(from_g) = self.from_geom(from) else {
+            self.place(to);
+            return;
+        };
+        let dest = to.clone();
         let pill = self.pill.clone();
         let host = self.host.clone();
         let inner = self.inner.clone();
-        let dest = to.clone();
-        self.when_stable(to, move |to_g| {
-            stretch_geom_on(&overlay, &host, &pill, &inner, from_g, to_g, Some(dest));
-        });
-    }
-
-    /// New empty-workspace buttons first allocate at CSS `min-width` (32px)
-    /// and only then grow to the padded label. Two stable frames of that
-    /// placeholder is not enough — empty→empty used to shrink the pill to it.
-    fn when_stable(&self, btn: &gtk4::Button, then: impl FnOnce(Geom) + 'static) {
-        self.cancel();
-        let btn = btn.clone();
-        let inner = self.inner.clone();
-        let last = std::cell::Cell::new(None::<Geom>);
-        let same = std::cell::Cell::new(0u8);
-        let frames = std::cell::Cell::new(0u8);
-        let then = std::cell::Cell::new(Some(then));
-        let id = self.overlay.add_tick_callback(move |ov, _| {
-            frames.set(frames.get().saturating_add(1));
-            let n = frames.get();
-            let Some(g) = button_geom(&btn, ov) else {
-                last.set(None);
-                same.set(0);
-                return if n > 24 {
-                    inner.borrow_mut().tick = None;
-                    ControlFlow::Break
-                } else {
-                    ControlFlow::Continue
-                };
-            };
-            // Still sitting on the 32px min-width slot, or smaller than the
-            // button's natural request — keep waiting for the real layout.
-            if still_placeholder(&btn, &g) && n < 20 {
-                last.set(None);
-                same.set(0);
-                return ControlFlow::Continue;
-            }
-            let stable = last.get().is_some_and(|p| geom_close(&p, &g));
-            last.set(Some(g));
-            same.set(if stable { same.get().saturating_add(1) } else { 0 });
-            if same.get() >= 2 || n > 22 {
-                inner.borrow_mut().tick = None;
-                if let Some(f) = then.take() {
-                    f(g);
+        let started = Instant::now();
+        let id = self.overlay.add_tick_callback(move |_, _| {
+            let to_g = resolved_dest(&dest, &host, &from_g);
+            let mid = {
+                let span_x = from_g.x.min(to_g.x);
+                let span_w = (from_g.x + from_g.w).max(to_g.x + to_g.w) - span_x;
+                Geom {
+                    x: span_x,
+                    y: to_g.y,
+                    w: span_w,
+                    h: to_g.h,
                 }
-                return ControlFlow::Break;
+            };
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            let (g, done) = if elapsed < STRETCH_MS {
+                let t = ease(elapsed / STRETCH_MS);
+                (lerp_geom(&from_g, &mid, t), false)
+            } else if elapsed < STRETCH_MS + SNAP_MS {
+                let t = ease_overshoot((elapsed - STRETCH_MS) / SNAP_MS);
+                (lerp_geom(&mid, &to_g, t), false)
+            } else {
+                (to_g, true)
+            };
+            apply_geom(&host, &pill, &inner, &g);
+            if done {
+                inner.borrow_mut().tick = None;
+                ControlFlow::Break
+            } else {
+                ControlFlow::Continue
             }
-            ControlFlow::Continue
         });
         self.inner.borrow_mut().tick = Some(id);
     }
 
     fn from_geom(&self, from: Option<&gtk4::Button>) -> Option<Geom> {
         let st = self.inner.borrow();
-        if self.pill.is_visible() && st.geom.w > 0.5 {
+        // A leftover mid-stretch can be as wide as the whole row — never
+        // treat that as the start of the next animation.
+        if self.pill.is_visible() && st.geom.w > 0.5 && st.geom.w <= MAX_CHIP_W {
             return Some(st.geom);
         }
         drop(st);
-        from.and_then(|b| button_geom(b, &self.overlay))
+        from.and_then(|b| button_geom(b, &self.host).map(inset_pill))
     }
-
 }
 
-fn stretch_geom_on(
-    overlay: &gtk4::Overlay,
-    host: &gtk4::Fixed,
-    pill: &gtk4::Box,
-    inner: &Rc<RefCell<TrailInner>>,
-    from_g: Option<Geom>,
-    to_g: Geom,
-    dest: Option<gtk4::Button>,
-) {
-    let Some(from_g) = from_g else {
-        apply_geom(host, pill, inner, &to_g);
-        return;
-    };
-    if (from_g.x - to_g.x).abs() < 0.5 && (from_g.w - to_g.w).abs() < 0.5 {
-        apply_geom(host, pill, inner, &to_g);
-        return;
-    }
+/// Keep the trail slimmer than the hit target so the fill doesn't look
+/// like a second, fatter button.
+const PILL_INSET_X: f64 = 5.0;
+const PILL_INSET_Y: f64 = 3.0;
+/// One workspace chip is a digit + padding. Wider than this is the overlay
+/// or the whole button row leaking through `compute_bounds`.
+const MAX_CHIP_W: f64 = 72.0;
 
-    let span_x = from_g.x.min(to_g.x);
-    let span_w = (from_g.x + from_g.w).max(to_g.x + to_g.w) - span_x;
-    let mid = Geom {
-        x: span_x,
-        y: to_g.y,
-        w: span_w,
-        h: to_g.h,
-    };
-
-    if let Some(id) = inner.borrow_mut().tick.take() {
-        id.remove();
+fn inset_pill(g: Geom) -> Geom {
+    let w = (g.w - PILL_INSET_X * 2.0).max(10.0);
+    let h = (g.h - PILL_INSET_Y * 2.0).max(18.0);
+    Geom {
+        x: g.x + (g.w - w) * 0.5,
+        y: g.y + (g.h - h) * 0.5,
+        w,
+        h,
     }
-    let started = Instant::now();
-    let pill = pill.clone();
-    let host = host.clone();
-    let inner_tick = inner.clone();
-    let dest = dest.clone();
-    let ov = overlay.clone();
-    let id = overlay.add_tick_callback(move |_, _| {
-        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-        let (g, done) = if elapsed < STRETCH_MS {
-            let t = ease(elapsed / STRETCH_MS);
-            (lerp_geom(&from_g, &mid, t), false)
-        } else if elapsed < STRETCH_MS + SNAP_MS {
-            let t = ease_overshoot((elapsed - STRETCH_MS) / SNAP_MS);
-            (lerp_geom(&mid, &to_g, t), false)
-        } else {
-            let end = dest
-                .as_ref()
-                .and_then(|b| button_geom(b, &ov))
-                .unwrap_or(to_g);
-            (end, true)
-        };
-        apply_geom(&host, &pill, &inner_tick, &g);
-        if done {
-            inner_tick.borrow_mut().tick = None;
-            ControlFlow::Break
-        } else {
-            ControlFlow::Continue
+}
+
+fn resolved_dest(btn: &gtk4::Button, host: &gtk4::Fixed, from: &Geom) -> Geom {
+    match button_geom(btn, host) {
+        Some(g) if !still_placeholder(btn, &g) => inset_pill(g),
+        Some(g) => {
+            let centered = inset_pill(g);
+            Geom {
+                x: centered.x + (centered.w - from.w) * 0.5,
+                y: centered.y + (centered.h - from.h) * 0.5,
+                w: from.w,
+                h: from.h,
+            }
         }
-    });
-    inner.borrow_mut().tick = Some(id);
+        None => *from,
+    }
 }
 
-fn button_geom(btn: &gtk4::Button, overlay: &gtk4::Overlay) -> Option<Geom> {
-    let r = btn.compute_bounds(overlay)?;
+/// Position in the Fixed host's space — that's what `host.move_` uses.
+/// Measuring against the Overlay instead left the pill a few px left of
+/// the digit whenever the host and overlay origins disagreed.
+fn button_geom(btn: &gtk4::Button, host: &gtk4::Fixed) -> Option<Geom> {
+    let r = btn.compute_bounds(host)?;
     let w = f64::from(r.width());
     let h = f64::from(r.height());
-    if w < 1.0 || h < 1.0 {
+    if w < 8.0 || h < 8.0 || w > MAX_CHIP_W {
         return None;
     }
     Some(Geom {
@@ -403,13 +384,6 @@ fn apply_geom(host: &gtk4::Fixed, pill: &gtk4::Box, inner: &Rc<RefCell<TrailInne
 fn still_placeholder(btn: &gtk4::Button, g: &Geom) -> bool {
     let (min_w, nat_w, _, _) = btn.measure(gtk4::Orientation::Horizontal, -1);
     g.w <= f64::from(min_w) + 1.0 || g.w + 0.5 < f64::from(nat_w)
-}
-
-fn geom_close(a: &Geom, b: &Geom) -> bool {
-    (a.x - b.x).abs() < 0.5
-        && (a.y - b.y).abs() < 0.5
-        && (a.w - b.w).abs() < 0.5
-        && (a.h - b.h).abs() < 0.5
 }
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {

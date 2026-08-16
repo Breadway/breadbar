@@ -99,6 +99,8 @@ pub struct App {
     panel_vol_slider: gtk4::Scale,
     panel_bright_slider: gtk4::Scale,
     panel_loading: Rc<Cell<bool>>,
+    sink_box: gtk4::Box,
+    sink_section: gtk4::Box,
 
     // ── Tray ──────────────────────────────────────────────────────────────
     tray_section: gtk4::Box,
@@ -517,6 +519,18 @@ impl SimpleComponent for App {
         let panel_vol_slider = vol_row.1.clone();
         panel_inner.append(&vol_row.0);
 
+        let sink_section = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        sink_section.add_css_class("control-panel-section");
+        let sink_header = gtk4::Label::new(Some("OUTPUT"));
+        sink_header.add_css_class("control-panel-header");
+        sink_header.set_xalign(0.0);
+        sink_header.set_margin_top(6);
+        let sink_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        sink_section.append(&sink_header);
+        sink_section.append(&sink_box);
+        sink_section.set_visible(false);
+        panel_inner.append(&sink_section);
+
         let bright_row = build_slider_row("bl", 0.0, 1.0, 0.02);
         let panel_bright_slider = bright_row.1.clone();
         panel_inner.append(&bright_row.0);
@@ -747,6 +761,8 @@ impl SimpleComponent for App {
             panel_vol_slider,
             panel_bright_slider,
             panel_loading,
+            sink_box,
+            sink_section,
             tray_section,
             tray_sep,
             tray_box,
@@ -1033,6 +1049,7 @@ impl SimpleComponent for App {
                 self.panel_vol_slider.set_value(data.volume);
                 self.panel_bright_slider.set_value(data.brightness);
                 self.panel_loading.set(false);
+                self.rebuild_sinks(&data.sinks, &sender);
             }
             AppInput::WidgetsUpdate(specs) => {
                 self.reconcile_widgets(specs);
@@ -1126,6 +1143,40 @@ impl App {
             if let Some(ctrl) = spawn_satellite(&name) {
                 self.satellites.push((name, ctrl));
             }
+        }
+    }
+
+    fn rebuild_sinks(
+        &mut self,
+        sinks: &[bar::control::AudioSink],
+        sender: &ComponentSender<Self>,
+    ) {
+        while let Some(child) = self.sink_box.first_child() {
+            self.sink_box.remove(&child);
+        }
+        self.sink_section.set_visible(!sinks.is_empty());
+        for (i, sink) in sinks.iter().enumerate() {
+            let row = gtk4::Button::new();
+            row.add_css_class("flat");
+            row.add_css_class("wifi-popover-row");
+            row.add_css_class("sink-row");
+            if sink.is_default {
+                row.add_css_class("wifi-popover-row-active");
+            }
+            stagger_row(&row, i);
+            let lbl = gtk4::Label::new(Some(&sink.description));
+            lbl.set_xalign(0.0);
+            lbl.set_hexpand(true);
+            lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            lbl.set_max_width_chars(22);
+            lbl.set_valign(gtk4::Align::Center);
+            row.set_child(Some(&lbl));
+            let name = sink.name.clone();
+            let sender = sender.clone();
+            row.connect_clicked(move |_| {
+                bar::control::spawn_set_sink(name.clone(), sender.clone());
+            });
+            self.sink_box.append(&row);
         }
     }
 

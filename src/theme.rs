@@ -39,10 +39,10 @@ fn load_css() -> String {
          window.breadbar > centerbox {{ padding: 0 8px 0 6px; }}\
          window.breadbar button {{ min-height: 0; min-width: 0; }}\
          .workspace-trail {{ background-image: linear-gradient(90deg, @accent, @teal);\
-             background-color: @accent; border-radius: 999px; }}\
+             background-color: @accent; border-radius: 12px; }}\
          .workspace-btn {{ background: transparent; opacity: 0.36; color: @on-bg;\
-             border-radius: 999px; border: none; outline: none; box-shadow: none;\
-             min-width: 32px; min-height: 32px; margin: 0 2px; padding: 0 12px;\
+             border-radius: 12px; border: none; outline: none; box-shadow: none;\
+             min-width: 28px; min-height: 28px; margin: 0; padding: 0 7px;\
              font-size: 22px; font-weight: bold;\
              transition: opacity 0.22s cubic-bezier(0.22, 1.2, 0.36, 1),\
                  background-color 0.22s cubic-bezier(0.22, 1.2, 0.36, 1); }}\
@@ -67,9 +67,10 @@ fn load_css() -> String {
                  opacity 0.18s ease; }}\
          .stat-pair:hover {{ background: alpha(@on-bg, 0.12); }}\
          .stat-pair:active {{ background: alpha(@on-bg, 0.18); }}\
-         .stat-pair.icon-only {{ padding: 6px; border-radius: 999px; }}\
+         .stat-pair.icon-only {{ padding: 4px; border-radius: 999px;\
+             min-width: 32px; min-height: 32px; }}\
          .stat-icon {{ margin-right: 6px; }}\
-         .stat-pair.icon-only .stat-icon {{ margin-right: 0; }}\
+         .stat-pair.icon-only .stat-icon {{ margin: 0; }}\
          .bt-icon {{ margin-right: 8px; }}
          separator.bar-sep {{ min-height: 12px; min-width: 1px; margin: 0 10px 0 2px;\
              background: alpha(@on-bg, 0.10); }}\
@@ -208,6 +209,7 @@ fn load_css() -> String {
              padding: 0; opacity: 0; background: transparent; border: none;\
              outline: none; box-shadow: none; }}\
          .control-panel-section {{ margin: 8px 0 0; }}\
+         .sink-row label {{ font-size: 15px; }}\
          .power-row {{ margin-top: 8px; }}\
          .power-btn {{ min-width: 0; min-height: 0; padding: 8px 10px; border-radius: 8px;\
              background: alpha(@on-bg, 0.08); font-size: 13px; border: none;\
