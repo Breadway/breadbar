@@ -1,7 +1,7 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gtk4::prelude::*;
-use gtk4_layer_shell::{Edge, Layer, LayerShell};
+use gtk4_layer_shell::LayerShell;
 use tokio::sync::mpsc;
 
 enum OsdEvent {
@@ -182,7 +182,7 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
         };
 
         icon.set_paintable(Some(&crate::svg_texture(icon_svg)));
-        crate::prepare_icon(&icon, crate::ICON_PX);
+        crate::prepare_icon(&icon, crate::theme::shell_theme().tokens().icon_px() as i32);
         if muted {
             icon.add_css_class("osd-icon-muted");
         } else {
@@ -209,10 +209,7 @@ fn create_window() -> gtk4::Window {
     window.add_css_class("breadbar-osd");
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-osd"));
-    window.set_layer(Layer::Overlay);
-    window.set_anchor(Edge::Bottom, true);
-    window.set_margin(Edge::Bottom, 80);
-    window.set_default_width(180);
+    crate::surface::apply(&window, "breadbar-osd");
     crate::theme::bind_auto(&window);
     window
 }

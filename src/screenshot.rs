@@ -123,18 +123,22 @@ pub struct Handles {
 /// Capture height for the `bar` view: layer-shell top margin + widget
 /// height (the exclusive zone). Unlike the other views' full canvas,
 /// this never varies with `--width`/`--height`.
-const BAR_HEIGHT: i32 = crate::BAR_HEIGHT + crate::BAR_MARGIN_TOP;
+fn bar_capture_height() -> i32 {
+    let window = crate::theme::shell_theme().window().clone();
+    window.height + window.margin.top
+}
 
 pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles: Handles) {
     let output = req.output;
     let (width, height) = (req.width as i32, req.height as i32);
+    let bar_height = bar_capture_height();
 
     match req.view.as_str() {
         "bar" => {
             root.connect_map(move |_| {
                 let output = output.clone();
                 gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
-                    finish(bread_screenshots::capture_region(0, 0, width, BAR_HEIGHT, &output));
+                    finish(bread_screenshots::capture_region(0, 0, width, bar_height, &output));
                 });
             });
         }

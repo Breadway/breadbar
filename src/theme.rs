@@ -1,10 +1,38 @@
+use bread_theme::shell::ShellTheme;
 use bread_theme::{gtk as bgtk, ink_on, load_palette, load_palette_for, Palette};
 use gtk4::prelude::IsA;
 use gtk4::CssProvider;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 thread_local! {
     static USER_PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
+    // Loaded lazily on first access and cached — the underlying
+    // `bread_theme::shell::load()` call happens at most once per process,
+    // not once per read site (plan §5/§6, Phase 2). Stored as an `Rc` so
+    // window/surface-geometry call sites elsewhere in the crate can hold a
+    // cheap clone rather than re-reading the cell each time.
+    static SHELL_THEME: RefCell<Rc<ShellTheme>> =
+        RefCell::new(Rc::new(bread_theme::shell::load()));
+}
+
+/// The active shell theme — window geometry, `[surfaces.*]`, and CSS tokens
+/// (plan §5). Every consumer (this module's own `load_css`, plus main.rs,
+/// osd.rs, panel.rs, notifications/, and `surface::apply`) reads through
+/// this single shared instance instead of calling `bread_theme::shell::load()`
+/// itself.
+pub fn shell_theme() -> Rc<ShellTheme> {
+    SHELL_THEME.with(|cell| cell.borrow().clone())
+}
+
+/// Replaces the shared shell theme in place. Only used by the optional
+/// `theme.toml` hot-reload watch (see `watch_hot_reload` below) — per plan
+/// §10, a window-spec change (anchors, margins, exclusive zone, keyboard)
+/// still needs a restart to take effect, since those are read once at
+/// window-construction time; only CSS token values re-resolve live, the
+/// next time `load_css` runs.
+pub fn set_shell_theme(theme: ShellTheme) {
+    SHELL_THEME.with(|cell| *cell.borrow_mut() = Rc::new(theme));
 }
 
 fn load_css() -> String {
@@ -19,11 +47,27 @@ fn load_css() -> String {
     // Hyprland `layerrule = blur, breadbar` frosts the translucent fills —
     // the CSS just leaves alpha. Colours are bread-theme tokens so pywal
     // accents (`@accent`) flow through on SIGHUP / `bread-theme reload`.
-    let radius = "12px";
-    let radius_bar = "16px";
-    let radius_sm = "9px";
-    let radius_pill = "999px";
-    let pad = "12px";
+    //
+    // These ~250 lines are breadbar-specific chrome (notifications, wifi
+    // popover, control panel, media widget) that `ShellTheme::css()` does
+    // not template — only the window/workspace/clock chrome the manifest's
+    // own concepts model does (plan §6 scope note). This function stays
+    // hand-written CSS; it now just reads its radius/pad/easing numbers from
+    // the theme's tokens instead of hardcoding them.
+    let theme = shell_theme();
+    let tokens = theme.tokens();
+    let radius = format!("{}px", tokens.radius_card());
+    let radius_bar = format!("{}px", tokens.radius_bar());
+    let radius_sm = format!("{}px", tokens.radius_sm());
+    let radius_pill = format!("{}px", tokens.radius_pill());
+    let pad = format!("{}px", tokens.pad());
+    // Two curves, not one: `spring` is the overshoot/bounce curve (clock
+    // flips, pop-ins, the workspace caret draw); `spring_settle` is the
+    // flatter curve used for hovers and background/opacity transitions.
+    // Do not collapse these — they read differently and cover different
+    // sites below (see the Phase 0 constant inventory).
+    let spring = tokens.spring();
+    let spring_settle = tokens.spring_settle();
 
     format!(
         "@keyframes notif-in {{ from {{ opacity: 0; margin-right: -16px; }} }}\
@@ -44,26 +88,26 @@ fn load_css() -> String {
              border-radius: 12px; border: none; outline: none; box-shadow: none;\
              min-width: 28px; min-height: 28px; margin: 0; padding: 0 7px;\
              font-size: 22px; font-weight: bold;\
-             transition: opacity 0.22s cubic-bezier(0.22, 1.2, 0.36, 1),\
-                 background-color 0.22s cubic-bezier(0.22, 1.2, 0.36, 1); }}\
+             transition: opacity 0.22s {spring_settle},\
+                 background-color 0.22s {spring_settle}; }}\
          .workspace-btn:hover {{ opacity: 0.85; background: alpha(@on-bg, 0.08); }}\
          .workspace-btn.occupied {{ opacity: 0.78; }}\
          .workspace-btn.active {{ background: transparent; color: @on-accent; opacity: 1; }}\
          .workspace-btn.active:hover {{ background: transparent; }}\
-         .workspace-btn.ws-in {{ animation: row-in 0.32s cubic-bezier(0.22, 1.2, 0.36, 1) both; }}\
+         .workspace-btn.ws-in {{ animation: row-in 0.32s {spring_settle} both; }}\
          .clock-box {{ padding: 0 4px; }}\
          .clock-label {{ font-size: 24px; font-weight: bold; letter-spacing: 0.04em;\
              min-height: 0; padding: 0; margin-top: 3px; }}\
          .clock-digit {{ font-size: 24px; font-weight: bold; letter-spacing: 0.04em;\
              min-width: 15px; min-height: 0; padding: 0; margin: 0; }}\
          .clock-colon {{ min-width: 10px; opacity: 0.7; }}\
-         .clock-digit.flip {{ animation: digit-flip 0.45s cubic-bezier(0.22, 1.35, 0.36, 1) both; }}\
+         .clock-digit.flip {{ animation: digit-flip 0.45s {spring} both; }}\
          .date-label {{ font-size: 14px; opacity: 0.52; letter-spacing: 0.04em; }}\
          .stat-label {{ font-size: 14px; letter-spacing: 0.02em; opacity: 0.92; }}\
-         .stat-label.tick {{ animation: digit-flip 0.35s cubic-bezier(0.22, 1.35, 0.36, 1) both; }}\
+         .stat-label.tick {{ animation: digit-flip 0.35s {spring} both; }}\
          .stats-box {{ margin-right: 0; }}\
          .stat-pair {{ margin: 0; border-radius: 10px; padding: 5px 9px; min-height: 0;\
-             transition: background-color 0.22s cubic-bezier(0.22, 1.2, 0.36, 1),\
+             transition: background-color 0.22s {spring_settle},\
                  opacity 0.18s ease; }}\
          .stat-pair:hover {{ background: alpha(@on-bg, 0.12); }}\
          .stat-pair:active {{ background: alpha(@on-bg, 0.18); }}\
@@ -77,11 +121,11 @@ fn load_css() -> String {
          window.breadbar-notification {{ background-color: transparent; color: @on-bg; }}\
          window.breadbar-history {{ background-color: alpha(@bg, 0.70); color: @on-bg;\
              border-radius: {radius}; border: 1px solid alpha(@on-bg, 0.10);\
-             animation: pop-in 0.45s cubic-bezier(0.22, 1.35, 0.36, 1) both; }}\
+             animation: pop-in 0.45s {spring} both; }}\
          .notification-card {{ background: alpha(@bg, 0.70); color: @on-bg; border-radius: {radius};\
              padding: {pad}; margin-bottom: 8px; border: 1px solid alpha(@on-bg, 0.10);\
              border-left: 3px solid transparent;\
-             animation: notif-in 0.45s cubic-bezier(0.22, 1.2, 0.36, 1) both; }}\
+             animation: notif-in 0.45s {spring_settle} both; }}\
          .notification-card.urgency-critical {{ border-left-color: @red; }}\
          .notification-card.urgency-normal {{ border-left-color: @accent; }}\
          .notification-summary {{ font-weight: bold; }}\
@@ -98,7 +142,7 @@ fn load_css() -> String {
          .history-card {{ margin-bottom: 6px; }}\
          window.breadbar-osd {{ background-color: alpha(@bg, 0.70); color: @on-bg;\
              border-radius: {radius_pill}; border: 1px solid alpha(@on-bg, 0.10);\
-             animation: osd-in 0.4s cubic-bezier(0.22, 1.2, 0.36, 1) both; }}\
+             animation: osd-in 0.4s {spring_settle} both; }}\
          .osd-icon {{ opacity: 0.85; margin-right: 8px; }}\
          .osd-icon-muted {{ opacity: 0.35; }}\
          progressbar.osd-bar {{ min-height: 6px; }}\
@@ -114,7 +158,7 @@ fn load_css() -> String {
          .popover-caret {{ min-height: 2px; margin: 2px 4px 10px; border-radius: 2px;\
              background-color: @accent;\
              background-image: linear-gradient(90deg, @accent, @teal);\
-             animation: caret-draw 0.45s cubic-bezier(0.22, 1.35, 0.36, 1) both; }}\
+             animation: caret-draw 0.45s {spring} both; }}\
          .wifi-popover-inner {{ min-width: 228px; padding: {pad}; }}\
          window.wifi-popover button {{ min-height: 0; min-width: 0; }}\
          .popover-tab-row {{ background: alpha(@on-bg, 0.06); border-radius: 10px;\
@@ -122,7 +166,7 @@ fn load_css() -> String {
          .popover-tab {{ background: transparent; color: @on-bg; border: none; box-shadow: none;\
              outline: none; border-radius: 999px; padding: 0 14px; min-height: 32px;\
              font-size: 17px; font-weight: bold; opacity: 0.55;\
-             transition: background-color 0.22s cubic-bezier(0.22, 1.2, 0.36, 1),\
+             transition: background-color 0.22s {spring_settle},\
                  opacity 0.22s ease, color 0.22s ease; }}\
          .popover-tab:hover {{ opacity: 0.8; }}\
          .popover-tab:checked {{ background: alpha(@accent, 0.22); color: @accent; opacity: 1; }}\
@@ -134,12 +178,12 @@ fn load_css() -> String {
              letter-spacing: 0.12em; }}\
          .wifi-popover-row {{ background: transparent; border: none; box-shadow: none;\
              outline: none; border-radius: 10px; padding: 0 12px; min-height: 42px;\
-             transition: background-color 0.18s cubic-bezier(0.22, 1.2, 0.36, 1); }}\
+             transition: background-color 0.18s {spring_settle}; }}\
          .wifi-popover-row label {{ font-size: 18px; }}\
          .wifi-popover-row:hover {{ background: alpha(@on-bg, 0.08); }}\
          .wifi-popover-row-active {{ background: alpha(@accent, 0.14); color: @accent; }}\
          .wifi-popover-row-active:hover {{ background: alpha(@accent, 0.20); }}\
-         .row-in {{ animation: row-in 0.32s cubic-bezier(0.22, 1.35, 0.36, 1) both; }}\
+         .row-in {{ animation: row-in 0.32s {spring} both; }}\
          .stagger-0 {{ animation-delay: 0ms; }} .stagger-1 {{ animation-delay: 28ms; }}\
          .stagger-2 {{ animation-delay: 56ms; }} .stagger-3 {{ animation-delay: 84ms; }}\
          .stagger-4 {{ animation-delay: 112ms; }} .stagger-5 {{ animation-delay: 140ms; }}\
@@ -153,23 +197,23 @@ fn load_css() -> String {
              border: none; outline: none; box-shadow: none; background-image: none;\
              border-radius: 99px; }}\
          switch.bt-switch {{ background-color: alpha(@on-bg, 0.14);\
-             transition: background-color 0.25s cubic-bezier(0.22, 1.2, 0.36, 1); }}\
+             transition: background-color 0.25s {spring_settle}; }}\
          switch.bt-switch:checked {{ background-color: @accent; }}\
          switch.bt-switch slider {{ min-width: 20px; min-height: 20px; margin: 0;\
              border-radius: 99px; border: none; outline: none; box-shadow: none;\
              background-image: none; background-color: @on-bg; }}\
          window.wifi-add-dialog {{ background-color: alpha(@bg, 0.70); color: @on-bg; min-width: 240px;\
              border-radius: {radius}; border: 1px solid alpha(@on-bg, 0.10);\
-             animation: pop-in 0.45s cubic-bezier(0.22, 1.35, 0.36, 1) both; }}\
+             animation: pop-in 0.45s {spring} both; }}\
          window.wifi-add-dialog headerbar {{ background-color: alpha(@bg, 0.70); color: @on-bg;\
              border-top-left-radius: {radius}; border-top-right-radius: {radius};\
              border-bottom: 1px solid alpha(@on-bg, 0.10); box-shadow: none; }}\
          .confirm-button {{ background-color: @accent; color: @on-accent; }}\
          .confirm-button:hover {{ background-color: alpha(@accent, 0.85); }}\
          .media-widget {{ border-radius: 10px; padding: 4px 8px; min-height: 0;\
-             transition: background-color 0.22s cubic-bezier(0.22, 1.2, 0.36, 1); }}\
+             transition: background-color 0.22s {spring_settle}; }}\
          .media-widget:hover {{ background: alpha(@on-bg, 0.08); }}\
-         .media-widget.media-in {{ animation: row-in 0.4s cubic-bezier(0.22, 1.35, 0.36, 1) both; }}\
+         .media-widget.media-in {{ animation: row-in 0.4s {spring} both; }}\
          .media-eq {{ min-height: 14px; margin-right: 4px; }}\
          .media-eq-bar {{ min-width: 3px; min-height: 5px; background-color: @accent;\
              border-radius: 2px; }}\
@@ -186,7 +230,7 @@ fn load_css() -> String {
          .control-panel-btn {{ padding: 5px 8px; margin: 0; border-radius: 10px;\
              opacity: 0.92; font-size: 18px; line-height: 1; min-width: 0; min-height: 0;\
              background: transparent; border: none; outline: none; box-shadow: none;\
-             transition: background-color 0.22s cubic-bezier(0.22, 1.2, 0.36, 1),\
+             transition: background-color 0.22s {spring_settle},\
                  opacity 0.18s ease; }}\
          .control-panel-btn:hover {{ opacity: 1; background: alpha(@on-bg, 0.10); }}\
          .control-panel-btn:active {{ background: alpha(@on-bg, 0.16); }}\
@@ -214,7 +258,7 @@ fn load_css() -> String {
          .power-btn {{ min-width: 0; min-height: 0; padding: 8px 10px; border-radius: 8px;\
              background: alpha(@on-bg, 0.08); font-size: 13px; border: none;\
              outline: none; box-shadow: none;\
-             transition: background-color 0.2s cubic-bezier(0.22, 1.2, 0.36, 1); }}\
+             transition: background-color 0.2s {spring_settle}; }}\
          .power-btn:hover {{ background: alpha(@on-bg, 0.14); }}\
          .power-btn:active {{ background: alpha(@accent, 0.22); }}\
          .notification-action {{ transition: background-color 0.18s ease; }}\
@@ -275,6 +319,8 @@ fn load_css() -> String {
         radius_sm = radius_sm,
         radius_pill = radius_pill,
         pad = pad,
+        spring = spring,
+        spring_settle = spring_settle,
     )
 }
 
@@ -323,4 +369,28 @@ pub fn apply() {
     let home = std::env::var("HOME").unwrap_or_default();
     let user_path = std::path::PathBuf::from(format!("{home}/.config/breadbar/style.css"));
     USER_PROVIDER.with(|cell| bgtk::apply_user_css(&user_path, cell));
+}
+
+thread_local! {
+    static SHELL_THEME_MONITOR: RefCell<Option<gtk4::gio::FileMonitor>> =
+        const { RefCell::new(None) };
+}
+
+/// Wires `bread_theme::shell::watch()` (plan §10) so editing the active
+/// theme's `theme.toml`/`extra.css` on disk re-resolves CSS tokens without a
+/// restart, the same way a pywal palette change already does via
+/// `apply_app_css`. Window-spec values (anchors, margins, exclusive zone,
+/// keyboard mode) are read once at window-construction time and are *not*
+/// re-applied here — per plan §10 those need a restart, since live-swapping
+/// a mapped layer-shell surface's anchors/exclusive-zone is a lot of
+/// teardown risk for a rare operation.
+///
+/// Call once at startup (primary instance only — every satellite window
+/// calling this would just re-arm the same watch redundantly).
+pub fn watch_hot_reload() {
+    let monitor = bread_theme::shell::watch(|new_theme| {
+        set_shell_theme(new_theme);
+        apply();
+    });
+    SHELL_THEME_MONITOR.with(|cell| *cell.borrow_mut() = Some(monitor));
 }

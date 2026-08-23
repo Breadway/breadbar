@@ -1,7 +1,7 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gtk4::prelude::*;
-use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+use gtk4_layer_shell::{KeyboardMode, LayerShell};
 use tokio::sync::mpsc::Receiver;
 
 use super::{history, Action, Expire, NotifEvent, Urgency, INLINE_REPLY_KEY};
@@ -171,22 +171,10 @@ fn create_window() -> gtk4::Window {
     window.add_css_class("breadbar-notification");
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-notif"));
-    window.set_layer(Layer::Overlay);
-    window.set_anchor(Edge::Top, true);
-    window.set_anchor(Edge::Right, true);
-    window.set_margin(Edge::Top, crate::BAR_MARGIN_TOP + crate::BAR_HEIGHT + 8);
-    window.set_margin(Edge::Right, crate::BAR_MARGIN_SIDES);
-    window.set_default_width(320);
-    // Toasts are purely informational for now: never grab keyboard focus...
-    window.set_keyboard_mode(KeyboardMode::None);
-    // ...and click through entirely — an empty input region means every
-    // pointer event passes straight to whatever's underneath instead of
-    // hitting the toast.
-    window.connect_map(|win| {
-        if let Some(surface) = win.surface() {
-            surface.set_input_region(Some(&gtk4::cairo::Region::create()));
-        }
-    });
+    crate::surface::apply(&window, "breadbar-notif");
+    // OnDemand so an inline-reply GtkEntry can take keys without the popup
+    // stealing every keystroke the rest of the time.
+    window.set_keyboard_mode(KeyboardMode::OnDemand);
     crate::theme::bind_auto(&window);
     window
 }

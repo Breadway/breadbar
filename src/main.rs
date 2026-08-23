@@ -9,21 +9,13 @@ mod notifications;
 mod osd;
 mod panel;
 mod screenshot;
+mod surface;
 mod theme;
 mod widgets;
 
-/// Floating island bar: widget height, layer-shell inset, reserved zone.
-/// Exclusive zone is height + top margin so tiled clients sit below the gap.
-pub const BAR_HEIGHT: i32 = 44;
-pub const BAR_MARGIN_TOP: i32 = 12;
-pub const BAR_MARGIN_SIDES: i32 = 16;
-/// Chip / workspace-pill height. Must stay smaller than `BAR_HEIGHT` so
-/// hover/active highlights hug the glyphs instead of filling the island.
-pub const CHIP_HEIGHT: i32 = 32;
-pub const ICON_PX: i32 = 24;
-
+use bread_theme::shell::{Exclusive, Keyboard};
 use gtk4::prelude::*;
-use gtk4_layer_shell::{Edge, Layer, LayerShell};
+use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use hyprland::data::Workspace;
 use hyprland::shared::WorkspaceId;
 use relm4::prelude::*;
@@ -151,7 +143,7 @@ impl SimpleComponent for App {
         gtk::ApplicationWindow {
             add_css_class: "breadbar",
             set_title: Some("breadbar"),
-            set_default_height: BAR_HEIGHT,
+            set_default_height: bar_height,
 
             #[name = "center_box"]
             gtk::CenterBox {
@@ -171,16 +163,51 @@ impl SimpleComponent for App {
             .or_else(primary_hypr_monitor)
             .unwrap_or_else(|| "eDP-1".into());
 
+        // `bar.window` (plan §2/§6) — window shape is data, not a closed
+        // layout enum. Read once and reused below for the layer-shell setup
+        // and (via `bar_height`, captured for the view! macro above) the
+        // root window's initial GTK height.
+        let window_spec = theme::shell_theme().window().clone();
+        let bar_height = window_spec.height;
+
         root.init_layer_shell();
         root.set_namespace(Some("breadbar"));
-        root.set_layer(Layer::Top);
-        root.set_anchor(Edge::Top, true);
-        root.set_anchor(Edge::Left, true);
-        root.set_anchor(Edge::Right, true);
-        root.set_margin(Edge::Top, BAR_MARGIN_TOP);
-        root.set_margin(Edge::Left, BAR_MARGIN_SIDES);
-        root.set_margin(Edge::Right, BAR_MARGIN_SIDES);
-        root.set_exclusive_zone(BAR_HEIGHT + BAR_MARGIN_TOP);
+        root.set_layer(if window_spec.layer == "overlay" {
+            Layer::Overlay
+        } else {
+            Layer::Top
+        });
+        for anchor in &window_spec.anchors {
+            match anchor.as_str() {
+                "top" => root.set_anchor(Edge::Top, true),
+                "bottom" => root.set_anchor(Edge::Bottom, true),
+                "left" => root.set_anchor(Edge::Left, true),
+                "right" => root.set_anchor(Edge::Right, true),
+                other => eprintln!(
+                    "breadbar: bar.window.anchors entry \"{other}\" is not top|bottom|left|right, ignoring"
+                ),
+            }
+        }
+        root.set_margin(Edge::Top, window_spec.margin.top);
+        root.set_margin(Edge::Left, window_spec.margin.left);
+        root.set_margin(Edge::Right, window_spec.margin.right);
+        // "auto" reserves height + top margin so tiled clients sit below the
+        // gap — see WindowSpec::exclusive's doc comment (bread-theme).
+        let exclusive_zone = match window_spec.exclusive {
+            Exclusive::Auto => window_spec.height + window_spec.margin.top,
+            Exclusive::None => -1,
+            Exclusive::Px(px) => px,
+        };
+        root.set_exclusive_zone(exclusive_zone);
+        // breadbar never called `set_keyboard_mode` before Phase 2 — it
+        // relied on gtk4-layer-shell's own default (`KeyboardMode::None`),
+        // which is exactly what the builtin manifest's `keyboard = "none"`
+        // resolves to. Same behaviour, no longer implicit.
+        root.set_keyboard_mode(match window_spec.keyboard {
+            Keyboard::None => KeyboardMode::None,
+            Keyboard::OnDemand => KeyboardMode::OnDemand,
+            Keyboard::Exclusive => KeyboardMode::Exclusive,
+        });
         eprintln!(
             "breadbar: init monitor={monitor_name} primary={}",
             init.primary
@@ -226,6 +253,10 @@ impl SimpleComponent for App {
         let widget_left_of_stats = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         widget_left_of_stats.add_css_class("bread-widget-slot");
 
+        // `tokens.icon_px` (plan §4) — bar-chrome icon pixel size; reused
+        // below for every `prepare_icon` call in this function.
+        let icon_px = theme::shell_theme().tokens().icon_px() as i32;
+
         // ── SVG icon sets ────────────────────────────────────────────────
         use bar::stats::{
             AC_POWER, BAT_HIGH, BAT_LOW, BAT_MID, BT_CONNECTED, BT_OFF, BT_ON, ICON_VOLUME,
@@ -253,13 +284,13 @@ impl SimpleComponent for App {
         let bat_img = gtk4::Image::from_paintable(Some(
             bat_textures.get(&(BAT_MID.as_ptr() as usize)).unwrap(),
         ));
-        prepare_icon(&bat_img, ICON_PX);
+        prepare_icon(&bat_img, icon_px);
         let ac_img = svg_image(AC_POWER);
         ac_img.set_visible(false);
         let bt_img = gtk4::Image::from_paintable(Some(
             bt_textures.get(&(BT_OFF.as_ptr() as usize)).unwrap(),
         ));
-        prepare_icon(&bt_img, ICON_PX);
+        prepare_icon(&bt_img, icon_px);
         bt_img.set_visible(false);
 
         // ── WiFi pair + popover ──────────────────────────────────────────
@@ -273,7 +304,7 @@ impl SimpleComponent for App {
         // crowding the tray is the opposite of a glass workbench bar.
         wifi_lbl.set_visible(false);
         let wifi_img = gtk4::Image::from_icon_name(bar::stats::WIFI_ICON_EXCELLENT);
-        prepare_icon(&wifi_img, ICON_PX);
+        prepare_icon(&wifi_img, icon_px);
         wifi_img.add_css_class("stat-icon");
 
         // Content pane only — this becomes a tab inside the merged
@@ -783,6 +814,11 @@ impl SimpleComponent for App {
         if init.primary {
             bar::tray::spawn_watcher(sender.clone());
             widgets::client::spawn(sender.clone());
+            // Optional (plan §10, Phase 2 item 6): live theme.toml/extra.css
+            // token reload, the same way a pywal palette change already
+            // hot-reloads via `apply_app_css`. One watch per process, so
+            // only the primary instance arms it.
+            theme::watch_hot_reload();
         }
 
         // Screenshot mode primes these with sample content instead of the
@@ -1008,7 +1044,10 @@ impl SimpleComponent for App {
                     };
                     self.media_play_icon
                         .set_paintable(Some(&svg_texture(icon_svg)));
-                    prepare_icon(&self.media_play_icon, ICON_PX);
+                    prepare_icon(
+                        &self.media_play_icon,
+                        theme::shell_theme().tokens().icon_px() as i32,
+                    );
                     if state.playing {
                         self.media_widget.add_css_class("playing");
                     } else {
@@ -1703,7 +1742,7 @@ fn popover_tab(label: &str) -> gtk4::ToggleButton {
     btn.set_hexpand(true);
     btn.set_valign(gtk4::Align::Center);
     btn.set_vexpand(false);
-    btn.set_size_request(-1, CHIP_HEIGHT);
+    btn.set_size_request(-1, theme::shell_theme().tokens().chip_height() as i32);
     if let Some(child) = btn.child() {
         child.set_halign(gtk4::Align::Center);
         child.set_valign(gtk4::Align::Center);
@@ -1743,7 +1782,7 @@ pub(crate) fn prepare_icon(img: &gtk4::Image, px: i32) {
 }
 
 pub(crate) fn svg_image(svg_src: &str) -> gtk4::Image {
-    svg_image_sized(svg_src, ICON_PX as u32)
+    svg_image_sized(svg_src, theme::shell_theme().tokens().icon_px() as u32)
 }
 
 pub(crate) fn svg_image_sized(svg_src: &str, px: u32) -> gtk4::Image {
@@ -1753,7 +1792,7 @@ pub(crate) fn svg_image_sized(svg_src: &str, px: u32) -> gtk4::Image {
 }
 
 pub(crate) fn svg_texture(svg_src: &str) -> gtk4::gdk::Texture {
-    svg_texture_sized(svg_src, ICON_PX as u32)
+    svg_texture_sized(svg_src, theme::shell_theme().tokens().icon_px() as u32)
 }
 
 /// Rasterise at 2× the display size so Lucide strokes stay sharp when GTK

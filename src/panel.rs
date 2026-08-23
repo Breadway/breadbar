@@ -7,11 +7,9 @@
 
 use gtk4::gdk::Key;
 use gtk4::prelude::*;
-use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+use gtk4_layer_shell::{KeyboardMode, LayerShell};
 
-use crate::{bind_layer_monitor, theme, BAR_HEIGHT, BAR_MARGIN_SIDES, BAR_MARGIN_TOP};
-
-const BELOW_BAR: i32 = BAR_MARGIN_TOP + BAR_HEIGHT + 8;
+use crate::{bind_layer_monitor, theme};
 
 #[derive(Clone)]
 pub struct PanelSet {
@@ -111,11 +109,7 @@ fn make_panel(class: &str, child: &impl IsA<gtk4::Widget>, monitor: &str) -> gtk
     window.set_resizable(false);
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-panel"));
-    window.set_layer(Layer::Overlay);
-    window.set_anchor(Edge::Top, true);
-    window.set_anchor(Edge::Right, true);
-    window.set_margin(Edge::Top, BELOW_BAR);
-    window.set_margin(Edge::Right, BAR_MARGIN_SIDES);
+    crate::surface::apply(&window, "breadbar-panel");
     window.set_exclusive_zone(-1);
     window.set_keyboard_mode(KeyboardMode::OnDemand);
     window.set_child(Some(child));
@@ -132,12 +126,13 @@ fn make_dismiss(monitor: &str) -> gtk4::Window {
     window.set_namespace(Some("breadbar-dismiss"));
     // Overlay with the panels, but mapped first so they sit above it.
     // Top margin keeps the island's chips clickable.
-    window.set_layer(Layer::Overlay);
-    window.set_anchor(Edge::Top, true);
-    window.set_anchor(Edge::Bottom, true);
-    window.set_anchor(Edge::Left, true);
-    window.set_anchor(Edge::Right, true);
-    window.set_margin(Edge::Top, BAR_MARGIN_TOP + BAR_HEIGHT);
+    //
+    // NOTE — deliberate, not a bug: this surface's top margin is 8px less
+    // than `breadbar-panel`'s (see `make_panel` above / `[surfaces.*]` in
+    // the active theme). The panels start 8px lower than the dismiss
+    // scrim's clickable region. This predates Phase 2 and is preserved
+    // exactly for pixel-identical rendering — do not "fix" this gap.
+    crate::surface::apply(&window, "breadbar-dismiss");
     window.set_exclusive_zone(-1);
     window.set_keyboard_mode(KeyboardMode::None);
     // An empty window never maps a hit region. A filling child + a hair of

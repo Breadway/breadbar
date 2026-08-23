@@ -142,7 +142,7 @@ pub fn make_button(
     btn.set_halign(gtk4::Align::Center);
     btn.set_vexpand(false);
     btn.set_hexpand(false);
-    btn.set_size_request(-1, crate::CHIP_HEIGHT);
+    btn.set_size_request(-1, crate::theme::shell_theme().tokens().chip_height() as i32);
     if let Some(child) = btn.child() {
         child.set_halign(gtk4::Align::Center);
         child.set_valign(gtk4::Align::Center);

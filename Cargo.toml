@@ -40,3 +40,9 @@ resvg = { version = "0.47", default-features = false }
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# DEV ONLY — remove before tagging. Points bread-theme at the local
+# bread-ecosystem checkout so Phase 2 can build against `bread_theme::shell`
+# (feature/shell-theme-manifest) before it is tagged as a release.
+[patch."https://git.breadway.dev/Breadway/bread-ecosystem"]
+bread-theme = { path = "../bread-ecosystem/bread-theme" }
