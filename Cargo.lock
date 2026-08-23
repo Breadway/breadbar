@@ -152,8 +152,8 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "bread-screenshots"
-version = "0.7.2"
-source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.2#30517f161724132cdeb658c04cf5e490be07ee73"
+version = "0.7.4"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.4#a9754d90ed32efcc26765abd01c9f441bfb01b1e"
 dependencies = [
  "anyhow",
  "bread-utils",
@@ -196,8 +196,8 @@ dependencies = [
 
 [[package]]
 name = "bread-utils"
-version = "0.7.2"
-source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.2#30517f161724132cdeb658c04cf5e490be07ee73"
+version = "0.7.4"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.4#a9754d90ed32efcc26765abd01c9f441bfb01b1e"
 dependencies = [
  "bread-shared 0.7.0",
  "dirs 5.0.1",
