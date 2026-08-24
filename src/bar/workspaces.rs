@@ -184,14 +184,53 @@ pub fn make_dot_button(
     btn.set_halign(gtk4::Align::Center);
     btn.set_vexpand(false);
     btn.set_hexpand(false);
-    let idx = (windows.max(0) as usize).min(3);
-    btn.set_size_request(dot_widths[idx], 6);
+    btn.set_size_request(dot_widths[dot_width_index(windows)], 6);
     btn.connect_clicked(move |_| {
         relm4::spawn(async move {
             switch_workspace(id).await;
         });
     });
     btn
+}
+
+/// Maps an open-window count to a [`bread_theme::shell::DotWidths`] index:
+/// 0/1/2 pass through, 3-or-more all collapse onto index 3 (the demo's own
+/// `.dots button[data-n="3"]` never has a "4" variant). Pulled out of
+/// [`make_dot_button`] as its own pure function purely so it's testable
+/// without a GTK display — the isolated screenshot harness
+/// (`bread-capture`) has no Hyprland IPC, so it can never exercise a
+/// nonzero window count, and this is what stands in for that visual proof
+/// (see the task notes on that gap).
+fn dot_width_index(windows: i32) -> usize {
+    (windows.max(0) as usize).min(3)
+}
+
+#[cfg(test)]
+mod dot_width_tests {
+    use super::dot_width_index;
+
+    #[test]
+    fn zero_and_one_and_two_pass_through() {
+        assert_eq!(dot_width_index(0), 0);
+        assert_eq!(dot_width_index(1), 1);
+        assert_eq!(dot_width_index(2), 2);
+    }
+
+    #[test]
+    fn three_or_more_all_collapse_onto_index_three() {
+        assert_eq!(dot_width_index(3), 3);
+        assert_eq!(dot_width_index(4), 3);
+        assert_eq!(dot_width_index(50), 3);
+    }
+
+    #[test]
+    fn negative_windows_clamps_to_zero_rather_than_panicking() {
+        // Hyprland's `windows` count is unsigned (u16) in practice, but
+        // `make_dot_button` takes a plain i32 — a negative value must
+        // never underflow the `dot_widths` index and panic.
+        assert_eq!(dot_width_index(-1), 0);
+        assert_eq!(dot_width_index(i32::MIN), 0);
+    }
 }
 
 #[derive(Clone, Copy)]
