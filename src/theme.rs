@@ -69,6 +69,66 @@ fn load_css() -> String {
     let spring = tokens.spring();
     let spring_settle = tokens.spring_settle();
 
+    // `tokens.bar_border()` (plan §11 Phase 5): "full" (default, liquid-
+    // motion's floating island) draws a border on all four edges; "bottom"
+    // (glass-workbench's flush edge-to-edge bar) draws only the hairline
+    // the demo's `.bar { border-bottom: 1px solid #ffffff12 }` calls for —
+    // a full border on a bar flush against the screen's top/left/right
+    // edges would otherwise show as a stray line along those edges an
+    // island never has to worry about. Reused below for the centerbox's
+    // horizontal padding too: the flush bar's demo padding (`0 12px`,
+    // symmetric) differs from the island's own asymmetric `0 8px 0 6px`.
+    let flush = tokens.bar_border() == "bottom";
+    let window_border = if flush {
+        "border: none; border-bottom: 1px solid alpha(@on-bg, 0.07);".to_string()
+    } else {
+        "border: 1px solid alpha(@on-bg, 0.08);".to_string()
+    };
+    let centerbox_padding = if flush { "0 12px" } else { "0 8px 0 6px" };
+
+    // `modules.workspaces.style` (plan §11 Phase 5): "trail" (default,
+    // liquid-motion) is exactly today's CSS, unchanged byte-for-byte —
+    // dimmed/translucent buttons with the gradient trail overlay supplying
+    // the active fill. "pill"/"dots" (glass-workbench, Phase 6+) render the
+    // active state as a solid accent fill on the button itself instead,
+    // since neither style ever calls `WorkspaceTrail::place`/`stretch`
+    // (see `App::rebuild_buttons`) — the trail's own `.workspace-trail`
+    // pill CSS is therefore irrelevant for them (it's never made visible).
+    let workspace_css = match theme.modules().workspaces.style {
+        bread_theme::shell::WorkspaceStyle::Trail => format!(
+            ".workspace-trail {{ background-image: linear-gradient(90deg, @accent, @teal);\
+                 background-color: @accent; border-radius: 12px; }}\
+             .workspace-btn {{ background: transparent; opacity: 0.36; color: @on-bg;\
+                 border-radius: 12px; border: none; outline: none; box-shadow: none;\
+                 min-width: 28px; min-height: 28px; margin: 0; padding: 0 7px;\
+                 font-size: 22px; font-weight: bold;\
+                 transition: opacity 0.22s {spring_settle},\
+                     background-color 0.22s {spring_settle}; }}\
+             .workspace-btn:hover {{ opacity: 0.85; background: alpha(@on-bg, 0.08); }}\
+             .workspace-btn.occupied {{ opacity: 0.78; }}\
+             .workspace-btn.active {{ background: transparent; color: @on-accent; opacity: 1; }}\
+             .workspace-btn.active:hover {{ background: transparent; }}\
+             .workspace-btn.ws-in {{ animation: row-in 0.32s {spring_settle} both; }}",
+        ),
+        _ => {
+            let accent = theme.tokens().accent_from();
+            format!(
+                ".workspace-btn {{ background: transparent; opacity: 1; color: alpha(@on-bg, 0.4);\
+                     border-radius: {radius_sm}; border: none; outline: none; box-shadow: none;\
+                     min-width: 22px; min-height: 20px; margin: 0; padding: 0 6px;\
+                     font-size: 12px; font-weight: 600;\
+                     transition: background-color 0.22s {spring_settle},\
+                         color 0.22s {spring_settle}, opacity 0.22s {spring_settle}; }}\
+                 .workspace-btn:hover {{ background: alpha(@on-bg, 0.08); }}\
+                 .workspace-btn.occupied {{ color: alpha(@on-bg, 0.8); }}\
+                 .workspace-btn:not(.occupied):not(.active) {{ opacity: 0.35; }}\
+                 .workspace-btn.active {{ background: @{accent}; color: @on-accent; opacity: 1; }}\
+                 .workspace-btn.active:hover {{ background: @{accent}; }}\
+                 .workspace-btn.ws-in {{ animation: row-in 0.32s {spring_settle} both; }}",
+            )
+        }
+    };
+
     format!(
         "@keyframes notif-in {{ from {{ opacity: 0; margin-right: -16px; }} }}\
          @keyframes osd-in {{ from {{ opacity: 0; margin-bottom: -8px; }} }}\
@@ -79,22 +139,10 @@ fn load_css() -> String {
          @keyframes digit-flip {{ from {{ opacity: 0; margin-top: 7px; }} to {{ opacity: 1; margin-top: 0; }} }}\
          @keyframes caret-draw {{ from {{ margin-right: 200px; opacity: 0.2; }} to {{ margin-right: 4px; opacity: 1; }} }}\
          window.breadbar {{ background-color: alpha(@bg, 0.72); color: @on-bg;\
-             border-radius: {radius_bar}; border: 1px solid alpha(@on-bg, 0.08); }}\
-         window.breadbar > centerbox {{ padding: 0 8px 0 6px; }}\
+             border-radius: {radius_bar}; {window_border} }}\
+         window.breadbar > centerbox {{ padding: {centerbox_padding}; }}\
          window.breadbar button {{ min-height: 0; min-width: 0; }}\
-         .workspace-trail {{ background-image: linear-gradient(90deg, @accent, @teal);\
-             background-color: @accent; border-radius: 12px; }}\
-         .workspace-btn {{ background: transparent; opacity: 0.36; color: @on-bg;\
-             border-radius: 12px; border: none; outline: none; box-shadow: none;\
-             min-width: 28px; min-height: 28px; margin: 0; padding: 0 7px;\
-             font-size: 22px; font-weight: bold;\
-             transition: opacity 0.22s {spring_settle},\
-                 background-color 0.22s {spring_settle}; }}\
-         .workspace-btn:hover {{ opacity: 0.85; background: alpha(@on-bg, 0.08); }}\
-         .workspace-btn.occupied {{ opacity: 0.78; }}\
-         .workspace-btn.active {{ background: transparent; color: @on-accent; opacity: 1; }}\
-         .workspace-btn.active:hover {{ background: transparent; }}\
-         .workspace-btn.ws-in {{ animation: row-in 0.32s {spring_settle} both; }}\
+         {workspace_css}\
          .clock-box {{ padding: 0 4px; }}\
          .clock-label {{ font-size: 24px; font-weight: bold; letter-spacing: 0.04em;\
              min-height: 0; padding: 0; margin-top: 3px; }}\
@@ -102,7 +150,9 @@ fn load_css() -> String {
              min-width: 15px; min-height: 0; padding: 0; margin: 0; }}\
          .clock-colon {{ min-width: 10px; opacity: 0.7; }}\
          .clock-digit.flip {{ animation: digit-flip 0.45s {spring} both; }}\
-         .date-label {{ font-size: 14px; opacity: 0.52; letter-spacing: 0.04em; }}\
+         .clock-plain {{ padding: 0 4px; }}\
+         .clock-plain-time {{ font-size: 15px; font-weight: 600; letter-spacing: 0.04em; }}\
+         .date-label {{ font-size: 12px; opacity: 0.48; letter-spacing: 0.04em; }}\
          .stat-label {{ font-size: 14px; letter-spacing: 0.02em; opacity: 0.92; }}\
          .stat-label.tick {{ animation: digit-flip 0.35s {spring} both; }}\
          .stats-box {{ margin-right: 0; }}\
@@ -321,6 +371,9 @@ fn load_css() -> String {
         pad = pad,
         spring = spring,
         spring_settle = spring_settle,
+        window_border = window_border,
+        centerbox_padding = centerbox_padding,
+        workspace_css = workspace_css,
     )
 }
 

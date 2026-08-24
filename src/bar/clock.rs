@@ -18,6 +18,19 @@ pub fn current() -> String {
     format!("{}  {}", date(), time())
 }
 
+/// `modules.clock.format` rendered against GLib's own `DateTime::format`
+/// (a strftime subset — `%H`, `%M`, `%a`, `%d`, `%m`, ... all work). Falls
+/// back to [`time`]'s hardcoded "HH:MM" on a malformed format string rather
+/// than propagating an error — a broken theme's clock format must degrade,
+/// not crash the bar, same as every other "malformed theme" fallback in
+/// this system.
+pub fn formatted(format: &str) -> String {
+    now()
+        .format(format)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| time())
+}
+
 pub fn spawn_ticker(sender: ComponentSender<App>) {
     relm4::spawn(async move {
         loop {

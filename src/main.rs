@@ -13,7 +13,7 @@ mod surface;
 mod theme;
 mod widgets;
 
-use bread_theme::shell::{Exclusive, Keyboard};
+use bread_theme::shell::{ClockStyle, Exclusive, Keyboard, WorkspaceStyle};
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use hyprland::data::Workspace;
@@ -45,6 +45,12 @@ pub struct App {
     time_str: String,
     clock_digits: Vec<gtk4::Label>,
     date_lbl: gtk4::Label,
+    // `modules.clock.style = "plain"` (glass-workbench, Phase 5): a plain
+    // "HH:MM" label with no per-digit flip. Built alongside `clock_digits`
+    // regardless of the active theme's style so switching styles needs no
+    // recompile; only one of the two ever lands in a `[bar.slots]` module
+    // registration (see the "Assemble" section).
+    clock_plain_lbl: gtk4::Label,
 
     // ── Stats bar ─────────────────────────────────────────────────────────
     // Island chrome matches the Liquid Motion demo: volume / wifi / battery
@@ -58,6 +64,14 @@ pub struct App {
     cpu_lbl: gtk4::Label,
     mem_lbl: gtk4::Label,
     pwr_lbl: gtk4::Label,
+    // `[bar.slots].right = [..., "cpu", "ram", ...]` (glass-workbench, Phase
+    // 5): separate instances from `cpu_pair`/`mem_pair` above, which stay
+    // parented in the control panel's sys-grid — a GTK widget can only have
+    // one parent, so reusing those here would mean reparenting them out of
+    // the panel, changing panel behaviour no theme asked to change. Fed by
+    // the same `AppInput::StatsUpdate` data.
+    bar_cpu_lbl: gtk4::Label,
+    bar_ram_lbl: gtk4::Label,
     gpu_lbl: gtk4::Label,
     vol_lbl: gtk4::Label,
     bat_lbl: gtk4::Label,
@@ -388,6 +402,22 @@ impl SimpleComponent for App {
         date_lbl.add_css_class("date-label");
         date_lbl.set_visible(false);
 
+        // `modules.clock.style = "plain"` (glass-workbench): date_lbl above
+        // plus one plain "HH:MM" label, no per-digit flip markup at all.
+        // Built unconditionally alongside the flip clock so a theme's style
+        // choice is just which of the two gets registered into the "clock"
+        // slot below — see "Assemble".
+        let clock_plain_lbl = gtk4::Label::new(Some(&bar::clock::time()));
+        clock_plain_lbl.add_css_class("clock-plain-time");
+        clock_plain_lbl.set_valign(gtk4::Align::Center);
+        clock_plain_lbl.set_vexpand(false);
+        let clock_plain_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        clock_plain_box.add_css_class("clock-plain");
+        clock_plain_box.set_valign(gtk4::Align::Center);
+        clock_plain_box.set_vexpand(false);
+        clock_plain_box.append(&date_lbl);
+        clock_plain_box.append(&clock_plain_lbl);
+
         // Center area: [media_widget · widgets · clock · widgets]
         let center_area = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
         center_area.add_css_class("center-area");
@@ -420,6 +450,18 @@ impl SimpleComponent for App {
             pair.set_hexpand(true);
         }
         gpu_pair.set_visible(false);
+
+        // `[bar.slots].right = [..., "cpu", "ram", ...]` (glass-workbench,
+        // Phase 5): separate chip instances from `cpu_pair`/`mem_pair`
+        // above, which stay parented in the control panel's sys-grid below
+        // — reusing them here would mean reparenting them out of the panel.
+        // Same icons, same `.stat-pair` chip styling every other bar chip
+        // (volume/battery) already uses; fed by the same `StatsUpdate` data.
+        let bar_cpu_lbl = stat_label();
+        let bar_ram_lbl = stat_label();
+        let bar_cpu_pair = stat_pair(asset!("CPU.svg"), &bar_cpu_lbl);
+        let bar_ram_pair = stat_pair(asset!("RAM Usage.svg"), &bar_ram_lbl);
+
         let system_stats_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         system_stats_box.add_css_class("sys-grid");
         let sys_row1 = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
@@ -721,11 +763,32 @@ impl SimpleComponent for App {
         let mut bar_modules = bar::slots::ModuleRegistry::new();
         bar_modules.register("workspaces", &workspace_trail.overlay);
         bar_modules.register("media", &media_widget);
-        bar_modules.register("clock", &clock_box);
+        // `modules.clock.style`: "flip" (default, liquid-motion) registers
+        // the existing per-digit clock_box unchanged; "plain" (glass-
+        // workbench) registers clock_plain_box instead and reveals date_lbl
+        // per `show_date` — clock_box/clock_digits are still fully built in
+        // that case, just never placed in any slot. "none" (Phase 6+,
+        // unused today) registers neither.
+        match bar_shell_theme.modules().clock.style {
+            ClockStyle::Plain => {
+                date_lbl.set_visible(bar_shell_theme.modules().clock.show_date);
+                bar_modules.register("clock", &clock_plain_box);
+            }
+            ClockStyle::Flip => bar_modules.register("clock", &clock_box),
+            ClockStyle::None => {}
+        }
         bar_modules.register("volume", &vol_box);
         bar_modules.register("wifi", &connectivity_pair);
         bar_modules.register("battery", &bat_box);
         bar_modules.register("control", &hamburger_btn);
+        // `[bar.slots].right = [..., "cpu", "ram", ...]` (glass-workbench):
+        // registered unconditionally, same as every other module — a theme
+        // that never names "cpu"/"ram" in a slot (liquid-motion) just never
+        // walks these entries in `for_each_in_slot` below, so they stay
+        // built but unparented, exactly like `media_widget` does for
+        // glass-workbench (which omits "media" entirely).
+        bar_modules.register("cpu", &bar_cpu_pair);
+        bar_modules.register("ram", &bar_ram_pair);
 
         // `tray` never appears in a bar slot — it stays inside the
         // control-panel popover (built above, next to the SNI tray) — but
@@ -791,6 +854,7 @@ impl SimpleComponent for App {
             time_str: bar::clock::current(),
             clock_digits,
             date_lbl,
+            clock_plain_lbl,
             system_stats_box,
             system_sep,
             cpu_pair,
@@ -800,6 +864,8 @@ impl SimpleComponent for App {
             cpu_lbl,
             mem_lbl,
             pwr_lbl,
+            bar_cpu_lbl,
+            bar_ram_lbl,
             gpu_lbl,
             vol_lbl,
             bat_lbl,
@@ -938,7 +1004,14 @@ impl SimpleComponent for App {
                     self.active_ws = new_active;
                     if let Some(btn) = self.button_map.get(&self.active_ws).cloned() {
                         btn.add_css_class("active");
-                        self.workspace_trail.stretch(from.as_ref(), &btn);
+                        // Trail style only: pill/dots never call place()/
+                        // stretch() at all — the "active" CSS class above is
+                        // the whole of their active-workspace treatment
+                        // (solid accent fill, no trail overlay).
+                        if theme::shell_theme().modules().workspaces.style == WorkspaceStyle::Trail
+                        {
+                            self.workspace_trail.stretch(from.as_ref(), &btn);
+                        }
                     }
                 }
             }
@@ -958,8 +1031,25 @@ impl SimpleComponent for App {
             }
             AppInput::ClockTick => {
                 self.time_str = bar::clock::current();
-                flip_clock_digits(&self.clock_digits, &bar::clock::time());
                 self.date_lbl.set_label(&bar::clock::date());
+                let clock_module = theme::shell_theme().modules().clock.clone();
+                match clock_module.style {
+                    // Plain (glass-workbench): one label, no flip animation
+                    // — `flip_clock_digits` would just be wasted work (and
+                    // a pointless 450ms `play_once` timer) on digits that
+                    // are never on screen.
+                    ClockStyle::Plain => {
+                        self.clock_plain_lbl
+                            .set_label(&bar::clock::formatted(&clock_module.format));
+                    }
+                    // Flip (default, liquid-motion) and None both keep
+                    // exactly today's per-digit-flip update — None has no
+                    // module in a slot to display it, but there's no reason
+                    // to special-case skipping the (cheap, idempotent) work.
+                    ClockStyle::Flip | ClockStyle::None => {
+                        flip_clock_digits(&self.clock_digits, &bar::clock::time());
+                    }
+                }
             }
             AppInput::StatsUpdate(stats) => {
                 let cpu = match stats.cpu_temp {
@@ -969,6 +1059,11 @@ impl SimpleComponent for App {
                 self.cpu_lbl.set_label(&cpu);
                 self.mem_lbl.set_label(&stats.mem);
                 self.pwr_lbl.set_label(&stats.power);
+                // `[bar.slots].right = [..., "cpu", "ram", ...]` (glass-
+                // workbench): same formatted text, separate chip instances
+                // (see the App struct field docs for why).
+                self.bar_cpu_lbl.set_label(&cpu);
+                self.bar_ram_lbl.set_label(&stats.mem);
                 match stats.gpu_usage {
                     Some(g) => {
                         let gpu = match stats.gpu_temp {
@@ -1306,14 +1401,33 @@ impl App {
             self.workspace_box.remove(&child);
         }
         self.button_map.clear();
+        let modules = theme::shell_theme().modules().clone();
+        let ws_style = modules.workspaces.style;
+        let show_empty = modules.workspaces.show_empty;
         for ws in &self.workspaces {
             if ws.monitor != self.monitor {
                 continue;
             }
-            // Persistent empty Hyprland workspaces stay off the bar unless
-            // this output is actually looking at them.
-            if ws.windows == 0 && ws.id != self.active_ws {
-                continue;
+            let empty = ws.windows == 0 && ws.id != self.active_ws;
+            if empty {
+                match ws_style {
+                    // Trail (default, liquid-motion): unconditionally off
+                    // the bar, exactly as before this change — regardless
+                    // of `show_empty`, which liquid-motion's own manifest
+                    // declares `true` but this style has never consumed.
+                    // Changing that now would be a real, undesired
+                    // liquid-motion regression, not a Phase 5 fix.
+                    WorkspaceStyle::Trail => continue,
+                    // Pill/Dots: honour `show_empty` for real — demo 02's
+                    // pills render an unoccupied, non-active workspace at
+                    // reduced opacity via the `.workspace-btn:not(.occupied)
+                    // :not(.active)` CSS rule rather than hiding it.
+                    _ => {
+                        if !show_empty {
+                            continue;
+                        }
+                    }
+                }
             }
             let btn = bar::workspaces::make_button(ws.id, &ws.name, self.active_ws, ws.windows > 0);
             if !prev.contains(&ws.id) {
@@ -1322,10 +1436,15 @@ impl App {
             self.workspace_box.append(&btn);
             self.button_map.insert(ws.id, btn);
         }
-        match self.button_map.get(&self.active_ws).cloned() {
-            Some(btn) if animate => self.workspace_trail.stretch(None, &btn),
-            Some(btn) => self.workspace_trail.place(&btn),
-            None => self.workspace_trail.clear(),
+        // Trail style only: pill/dots never call place()/stretch()/clear()
+        // at all — the "active" CSS class `make_button` already applies is
+        // the whole of their active-workspace treatment.
+        if ws_style == WorkspaceStyle::Trail {
+            match self.button_map.get(&self.active_ws).cloned() {
+                Some(btn) if animate => self.workspace_trail.stretch(None, &btn),
+                Some(btn) => self.workspace_trail.place(&btn),
+                None => self.workspace_trail.clear(),
+            }
         }
     }
 
