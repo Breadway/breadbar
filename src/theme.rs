@@ -68,6 +68,13 @@ fn load_css() -> String {
     // sites below (see the Phase 0 constant inventory).
     let spring = tokens.spring();
     let spring_settle = tokens.spring_settle();
+    let bg_alpha = tokens.bg_alpha();
+    // Palette token NAME (never hex — see every builtin theme.toml's own
+    // comment on this), used below by the dots/launcher-entry/drawer rules.
+    // liquid-motion/glass-workbench never render those (see the match arms
+    // and unconditional-but-unused block below), so this being "accent" vs
+    // "green" vs "pink" per theme has no visible effect on them.
+    let accent_from = tokens.accent_from();
 
     // `tokens.bar_border()` (plan §11 Phase 5): "full" (default, liquid-
     // motion's floating island) draws a border on all four edges; "bottom"
@@ -110,7 +117,7 @@ fn load_css() -> String {
              .workspace-btn.active:hover {{ background: transparent; }}\
              .workspace-btn.ws-in {{ animation: row-in 0.32s {spring_settle} both; }}",
         ),
-        _ => {
+        bread_theme::shell::WorkspaceStyle::Pill => {
             let accent = theme.tokens().accent_from();
             format!(
                 ".workspace-btn {{ background: transparent; opacity: 1; color: alpha(@on-bg, 0.4);\
@@ -127,6 +134,30 @@ fn load_css() -> String {
                  .workspace-btn.ws-in {{ animation: row-in 0.32s {spring_settle} both; }}",
             )
         }
+        // "dots" (theme 04/spotlight): a label-less pill whose WIDTH comes
+        // from `modules.workspaces.dot_widths` and is set directly via
+        // `Widget::set_size_request` in `bar::workspaces::make_dot_button`
+        // — GTK CSS has no per-instance variable width, so unlike the demo's
+        // `.dots button[data-n="N"]` rules this class only supplies colour/
+        // opacity/radius, never a width. `04-spotlight.html`'s own base
+        // rule (`background: #5a4a54`) is a *dim, desaturated* grey, not the
+        // bar's ink colour — approximated here as a low-alpha `@on-bg` fill
+        // so it still tracks pywal instead of hardcoding a hex that would
+        // clash with a light palette.
+        bread_theme::shell::WorkspaceStyle::Dots => {
+            let accent = theme.tokens().accent_from();
+            format!(
+                ".workspace-dot {{ background-color: alpha(@on-bg, 0.35); color: transparent;\
+                     border-radius: {radius_pill}; border: none; outline: none; box-shadow: none;\
+                     min-height: 6px; margin: 0; padding: 0;\
+                     transition: background-color 0.25s {spring_settle},\
+                         opacity 0.25s {spring_settle}; }}\
+                 .workspace-dot:hover {{ background-color: alpha(@on-bg, 0.55); }}\
+                 .workspace-dot:not(.occupied):not(.active) {{ opacity: 0.35; }}\
+                 .workspace-dot.active {{ background-color: @{accent}; opacity: 1; }}\
+                 .workspace-dot.active:hover {{ background-color: @{accent}; }}",
+            )
+        }
     };
 
     format!(
@@ -138,9 +169,15 @@ fn load_css() -> String {
          @keyframes row-in {{ from {{ opacity: 0; margin-top: 8px; }} to {{ opacity: 1; margin-top: 0; }} }}\
          @keyframes digit-flip {{ from {{ opacity: 0; margin-top: 7px; }} to {{ opacity: 1; margin-top: 0; }} }}\
          @keyframes caret-draw {{ from {{ margin-right: 200px; opacity: 0.2; }} to {{ margin-right: 4px; opacity: 1; }} }}\
-         window.breadbar {{ background-color: alpha(@bg, 0.72); color: @on-bg;\
+         window.breadbar {{ background-color: alpha(@bg, {bg_alpha}); color: @on-bg;\
              border-radius: {radius_bar}; {window_border} }}\
-         window.breadbar > centerbox {{ padding: {centerbox_padding}; }}\
+         /* `> box > centerbox`, not `> centerbox`: the root is a vbox (bar\
+            row + drawer, plan §2) as of the `drawer` slot wiring — every\
+            theme's centerbox is now one level deeper than before, this\
+            selector just follows it there. Since `padding` doesn't depend\
+            on nesting depth, liquid-motion/glass-workbench render byte-\
+            identical CSS either way. */\
+         window.breadbar > box > centerbox {{ padding: {centerbox_padding}; }}\
          window.breadbar button {{ min-height: 0; min-width: 0; }}\
          {workspace_css}\
          .clock-box {{ padding: 0 4px; }}\
@@ -363,7 +400,28 @@ fn load_css() -> String {
          .bread-padding-none {{ padding: 0; }}\
          .bread-padding-xs {{ padding: 4px; }}\
          .bread-padding-sm {{ padding: 8px; }}\
-         .bread-padding-md {{ padding: 12px; }}",
+         .bread-padding-md {{ padding: 12px; }}\
+         /* Theme 04/spotlight's embedded launcher (plan §7). Unconditional,\
+            like `.clock-plain-time` above: `launcher_entry`/`launcher_results`\
+            are built regardless of the active theme (see main.rs's \"Assemble\"\
+            section), just never placed in a slot outside spotlight, so these\
+            rules render nothing on liquid-motion/glass-workbench. */\
+         .launcher-entry {{ background: transparent; color: @on-bg; border: none;\
+             outline: none; box-shadow: none; caret-color: @{accent_from};\
+             font-size: 13px; font-weight: 500; letter-spacing: 0.06em;\
+             padding: 0; margin: 0; min-height: 0; }}\
+         .launcher-entry.searching {{ font-size: 15px; letter-spacing: 0; }}\
+         .bread-drawer {{ min-height: 0; }}\
+         .bread-drawer.open {{ border-top: 1px solid alpha(@on-bg, 0.08);\
+             margin-top: 6px; padding-top: 2px; }}\
+         .bread-drawer listbox {{ background: transparent; padding: 2px 0; }}\
+         .bread-drawer row {{ padding: 8px 14px; border-radius: {radius_sm};\
+             color: @on-bg; background-color: transparent; }}\
+         .bread-drawer row:hover {{ background-color: alpha(@on-bg, 0.08); }}\
+         .bread-drawer row:selected {{ background-color: alpha(@{accent_from}, 0.18);\
+             color: @on-bg; }}\
+         .bread-drawer .app-name {{ font-size: 14px; font-weight: 500; }}\
+         .bread-drawer .app-muted {{ opacity: 0.45; font-size: 11px; }}",
         radius = radius,
         radius_bar = radius_bar,
         radius_sm = radius_sm,
@@ -374,6 +432,8 @@ fn load_css() -> String {
         window_border = window_border,
         centerbox_padding = centerbox_padding,
         workspace_css = workspace_css,
+        bg_alpha = bg_alpha,
+        accent_from = accent_from,
     )
 }
 

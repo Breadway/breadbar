@@ -155,6 +155,45 @@ pub fn make_button(
     btn
 }
 
+/// `style = "dots"` (theme 04/spotlight): a label-less pill whose WIDTH
+/// encodes `windows` (0/1/2/3-or-more open) via `dot_widths` — see
+/// `bread_theme::shell::WorkspacesModule::dot_widths`. Distinct from
+/// [`make_button`] (Trail/Pill) rather than a variant of it because dots
+/// carry no text at all (`04-spotlight.html`'s `.dots button` has no label);
+/// reusing `Button::with_label("")` would still measure/lay out an empty
+/// label box that a genuinely childless button doesn't. Width is a hard
+/// `set_size_request` snap, not animated — GTK CSS min-width transitions
+/// don't participate in a directly-set size request the way an opacity/
+/// background-color transition does, and the plan only calls out the
+/// capsule's own expand/collapse as worth the `anim::spring_to` treatment.
+pub fn make_dot_button(
+    id: WorkspaceId,
+    active: WorkspaceId,
+    windows: i32,
+    dot_widths: bread_theme::shell::DotWidths,
+) -> gtk4::Button {
+    let btn = gtk4::Button::new();
+    btn.add_css_class("workspace-dot");
+    if windows > 0 {
+        btn.add_css_class("occupied");
+    }
+    if id == active {
+        btn.add_css_class("active");
+    }
+    btn.set_valign(gtk4::Align::Center);
+    btn.set_halign(gtk4::Align::Center);
+    btn.set_vexpand(false);
+    btn.set_hexpand(false);
+    let idx = (windows.max(0) as usize).min(3);
+    btn.set_size_request(dot_widths[idx], 6);
+    btn.connect_clicked(move |_| {
+        relm4::spawn(async move {
+            switch_workspace(id).await;
+        });
+    });
+    btn
+}
+
 #[derive(Clone, Copy)]
 struct Geom {
     x: f64,

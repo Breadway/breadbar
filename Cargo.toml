@@ -21,6 +21,11 @@ bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag =
 bread-shared = { git = "https://git.breadway.dev/Breadway/bread", tag = "v0.8.0-rc.1" }
 # Capture primitives for `--screenshot` mode — see src/screenshot.rs.
 bread-screenshots = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.4" }
+# Headless app-launcher core + GTK4 results-list widget (plan §3/§7): theme
+# 04/spotlight embeds the SAME `ResultsList` breadbox's overlay wraps, via
+# `bar::launcher_results` — one implementation, two hosts. `gtk` feature for
+# the results widget itself.
+bread-launcher = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.4", features = ["gtk"] }
 gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 relm4 = { version = "0.11", features = ["macros"] }
@@ -46,3 +51,4 @@ strip = "symbols"
 # (feature/shell-theme-manifest) before it is tagged as a release.
 [patch."https://git.breadway.dev/Breadway/bread-ecosystem"]
 bread-theme = { path = "../bread-ecosystem/bread-theme" }
+bread-launcher = { path = "../bread-ecosystem/bread-launcher" }

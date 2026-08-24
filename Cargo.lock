@@ -151,12 +151,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
+name = "bread-launcher"
+version = "0.7.4"
+dependencies = [
+ "bread-utils 0.7.4",
+ "gtk4",
+ "serde_json",
+]
+
+[[package]]
 name = "bread-screenshots"
 version = "0.7.4"
 source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.4#a9754d90ed32efcc26765abd01c9f441bfb01b1e"
 dependencies = [
  "anyhow",
- "bread-utils",
+ "bread-utils 0.7.4 (git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.4)",
  "tracing",
 ]
 
@@ -199,6 +208,16 @@ dependencies = [
 [[package]]
 name = "bread-utils"
 version = "0.7.4"
+dependencies = [
+ "bread-shared 0.7.0",
+ "dirs 5.0.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "bread-utils"
+version = "0.7.4"
 source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.4#a9754d90ed32efcc26765abd01c9f441bfb01b1e"
 dependencies = [
  "bread-shared 0.7.0",
@@ -212,10 +231,11 @@ name = "breadbar"
 version = "0.3.3"
 dependencies = [
  "anyhow",
+ "bread-launcher",
  "bread-screenshots",
  "bread-shared 0.8.0",
  "bread-theme",
- "bread-utils",
+ "bread-utils 0.7.4 (git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.4)",
  "clap",
  "futures-lite",
  "gtk4",

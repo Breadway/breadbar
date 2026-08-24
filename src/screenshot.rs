@@ -45,6 +45,14 @@ const KNOWN_VIEWS: &[&str] = &[
     "osd-volume",
     "osd-brightness",
     "wifi-add-dialog",
+    // Theme 04/spotlight's capsule (plan §6b) — see `dispatch`'s two new
+    // match arms. "capsule-collapsed" captures the same region "bar"
+    // always has (bar_capture_height already reflects the active theme's
+    // own window height/margin); it exists as its own name purely so a
+    // verification script doesn't have to already know "bar" means "the
+    // capsule, collapsed" under spotlight specifically.
+    "capsule-collapsed",
+    "capsule-expanded",
 ];
 
 #[derive(Parser)]
@@ -118,6 +126,15 @@ pub struct Handles {
     pub notification_window: Option<gtk4::Window>,
     /// Same deal as `notification_window`, via `osd::spawn(Some(kind))`.
     pub osd_window: Option<gtk4::Window>,
+    /// Theme 04/spotlight's capsule centre module — see the
+    /// "capsule-expanded" view, which focuses it and types a query to
+    /// drive the drawer open before capturing.
+    pub launcher_entry: gtk4::Entry,
+    /// The `drawer` slot's own container — read back after the open
+    /// animation settles so "capsule-expanded"'s capture height matches
+    /// however tall the results actually grew, rather than a guessed
+    /// constant.
+    pub drawer_box: gtk4::Box,
 }
 
 /// Capture height for the `bar` view: layer-shell top margin + widget
@@ -176,6 +193,48 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                 std::process::exit(1);
             };
             capture_standalone_window(window, output, width, height);
+        }
+        "capsule-collapsed" => {
+            // Identical to "bar" — see KNOWN_VIEWS's doc comment on why
+            // this has its own name anyway.
+            root.connect_map(move |_| {
+                let output = output.clone();
+                gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
+                    finish(bread_screenshots::capture_region(0, 0, width, bar_height, &output));
+                });
+            });
+        }
+        "capsule-expanded" => {
+            // Focus + a real query, the same way a person opens the
+            // capsule (`connect_changed`/`EventControllerFocus::enter` in
+            // main.rs's capsule wiring do the rest: `open_fn` runs,
+            // `results.set_query` filters, and `animate_drawer_height`
+            // grows `drawer_box`). Capture height is bar height + however
+            // tall the drawer actually settled, not a hardcoded guess —
+            // this stays correct even if `dot_widths`/font/entry-count
+            // numbers change later.
+            let entry = handles.launcher_entry;
+            let drawer_box = handles.drawer_box;
+            root.connect_map(move |_| {
+                let output = output.clone();
+                let entry = entry.clone();
+                let drawer_box = drawer_box.clone();
+                gtk4::glib::timeout_add_local_once(PRE_POPUP_DELAY, move || {
+                    entry.grab_focus();
+                    entry.set_text("f");
+                    let output = output.clone();
+                    let drawer_box = drawer_box.clone();
+                    // Past the 360ms spring_to run plus a normal capture
+                    // settle, so the drawer's size_request (and the actual
+                    // on-screen layer-shell surface it grows) has reached
+                    // its final height before grabbing pixels.
+                    gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                        let drawer_h = drawer_box.size_request().1.max(0);
+                        let capture_h = bar_height + drawer_h;
+                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                    });
+                });
+            });
         }
         "wifi-add-dialog" => {
             let anchor = handles.wifi_tab_btn;

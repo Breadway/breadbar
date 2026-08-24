@@ -13,7 +13,8 @@ mod surface;
 mod theme;
 mod widgets;
 
-use bread_theme::shell::{ClockStyle, Exclusive, Keyboard, WorkspaceStyle};
+use bread_launcher::gtk::ResultsList;
+use bread_theme::shell::{ClockStyle, Exclusive, Keyboard, Width, WorkspaceStyle};
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use hyprland::data::Workspace;
@@ -21,7 +22,20 @@ use hyprland::shared::WorkspaceId;
 use relm4::prelude::*;
 use relm4::{Component, ComponentController, Controller};
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
+
+/// The launched-app event's publisher id and event name — deliberately
+/// matching breadbox's OWN constants (`breadbox/src/main.rs`: `APP_ID =
+/// "box"`, `LAUNCHED_EVENT = "bread.box.launched"`), NOT breadbar's own
+/// `widgets::client::APP_ID` ("bar"). Theme 04/spotlight's capsule IS the
+/// launcher wearing a different shell (plan §7), sharing breadbox's cache
+/// and history via `bread_launcher::LAUNCHER_APP` — it publishes under that
+/// same launcher identity too, so anything downstream listening for "an app
+/// was launched via the launcher" sees one event stream regardless of which
+/// surface launched it.
+const LAUNCHER_APP_ID: &str = "box";
+const LAUNCHER_LAUNCHED_EVENT: &str = "bread.box.launched";
 
 pub struct BarInit {
     pub screenshot: Option<screenshot::ScreenshotRequest>,
@@ -51,6 +65,15 @@ pub struct App {
     // recompile; only one of the two ever lands in a `[bar.slots]` module
     // registration (see the "Assemble" section).
     clock_plain_lbl: gtk4::Label,
+    // `modules.clock.placeholder_clock` (spotlight, theme 04): when set,
+    // `AppInput::ClockTick` writes the time into this entry's placeholder
+    // text instead of (or alongside) any clock label — see that handler.
+    launcher_entry: gtk4::Entry,
+    // Whether the capsule's drawer is currently expanded — read by
+    // `ClockTick` so a live search in progress never has its placeholder
+    // text stomped (it wouldn't be visible anyway once there's real text,
+    // but matches the demo's own `if (!open) q.placeholder = t;` guard).
+    launcher_open: Rc<Cell<bool>>,
 
     // ── Stats bar ─────────────────────────────────────────────────────────
     // Island chrome matches the Liquid Motion demo: volume / wifi / battery
@@ -165,8 +188,27 @@ impl SimpleComponent for App {
             set_title: Some("breadbar"),
             set_default_height: bar_height,
 
-            #[name = "center_box"]
-            gtk::CenterBox {
+            // Root is a vbox (bar row + drawer), not a bare CenterBox, per
+            // plan §2/§11: `drawer` is the only structural thing Capsule/
+            // theme-04 adds over Island/Edge, and it's a slot below the bar
+            // row, not a separate layout code path. `drawer_box` starts
+            // empty and zero-height for every theme that never names a
+            // module in `[bar.slots].drawer` (liquid-motion, glass-
+            // workbench) — see main.rs's "Assemble" section and
+            // `theme.rs`'s `window.breadbar > box > centerbox` selector
+            // update for why this is a no-op for both.
+            #[name = "root_vbox"]
+            gtk::Box {
+                set_orientation: gtk4::Orientation::Vertical,
+
+                #[name = "center_box"]
+                gtk::CenterBox {
+                },
+
+                #[name = "drawer_box"]
+                gtk::Box {
+                    set_orientation: gtk4::Orientation::Vertical,
+                },
             }
         }
     }
@@ -211,6 +253,17 @@ impl SimpleComponent for App {
         root.set_margin(Edge::Top, window_spec.margin.top);
         root.set_margin(Edge::Left, window_spec.margin.left);
         root.set_margin(Edge::Right, window_spec.margin.right);
+        // `Width::Fill` (Island/Edge): unset, exactly as before this
+        // change — the surface stretches to the anchored left/right edges
+        // on its own, with no explicit width request needed. `Width::Px`
+        // (the capsule, anchored top-only): gtk4-layer-shell has nothing to
+        // stretch it TO, so without this it would size to its natural
+        // content width instead of the theme's requested 480px — this was
+        // a schema key declared but never consumed before theme 04 needed
+        // a real value out of it.
+        if let Width::Px(px) = window_spec.width {
+            root.set_default_width(px);
+        }
         // "auto" reserves height + top margin so tiled clients sit below the
         // gap — see WindowSpec::exclusive's doc comment (bread-theme).
         let exclusive_zone = match window_spec.exclusive {
@@ -417,6 +470,66 @@ impl SimpleComponent for App {
         clock_plain_box.set_vexpand(false);
         clock_plain_box.append(&date_lbl);
         clock_plain_box.append(&clock_plain_lbl);
+
+        // ── Launcher entry + results (theme 04/spotlight, plan §7) ───────
+        // Built unconditionally, exactly like `clock_plain_box` above —
+        // placed in a slot only by a theme that names "launcher_entry"/
+        // "launcher_results" (spotlight today; see "Assemble" below).
+        // `bread_launcher::LAUNCHER_APP` ("breadbox") is the launcher's
+        // shared identity: this reads/writes the SAME icon cache and
+        // launch history breadbox's own overlay window does, so the
+        // capsule and breadbox rank a user's apps identically instead of
+        // forking into two histories just because a different theme
+        // happens to be active (see that constant's own doc comment).
+        let launcher_cfg = theme::shell_theme().launcher().clone();
+        let launcher_manifest: std::collections::HashMap<String, std::path::PathBuf> =
+            std::fs::read_to_string(bread_launcher::IconCache::manifest_path(
+                bread_launcher::LAUNCHER_APP,
+            ))
+            .ok()
+            .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, String>>(&s).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| (k, std::path::PathBuf::from(v)))
+            .collect();
+        let launcher_history = Rc::new(RefCell::new(bread_launcher::LaunchHistory::load(
+            bread_launcher::LAUNCHER_APP,
+        )));
+        // No per-workspace priority context here — that's breadbox's own
+        // `Config`/`Context` format (breadbox-shared), not launcher
+        // substance, and breadbar has no equivalent concept. The capsule
+        // sorts by launch history then alphabetically, same fallback
+        // ordering breadbox itself uses once a workspace has no configured
+        // priority list at all.
+        let launcher_entries = bread_launcher::load_sorted_entries(
+            &launcher_manifest,
+            &[],
+            &launcher_history.borrow(),
+        );
+        let launcher_results = ResultsList::new(
+            &launcher_entries,
+            launcher_cfg.icon_px,
+            Rc::clone(&launcher_history),
+        );
+        launcher_results.scroller.add_css_class("bread-drawer-scroller");
+
+        let launcher_entry = gtk4::Entry::new();
+        launcher_entry.add_css_class("launcher-entry");
+        launcher_entry.set_has_frame(false);
+        launcher_entry.set_hexpand(true);
+        gtk4::prelude::EntryExt::set_alignment(&launcher_entry, 0.5);
+        // `modules.clock.placeholder_clock` (spotlight): the entry's idle
+        // placeholder IS the clock — no separate clock module renders at
+        // all under `style = "none"`. Any other theme gets a plain "Search"
+        // placeholder (never shown today: no other builtin slots
+        // "launcher_entry" anywhere), so this still degrades sanely if a
+        // future/user theme places it without also setting the flag.
+        let placeholder_clock = theme::shell_theme().modules().clock.placeholder_clock;
+        launcher_entry.set_placeholder_text(Some(if placeholder_clock {
+            bar::clock::time()
+        } else {
+            "Search".to_string()
+        }.as_str()));
 
         // Center area: [media_widget · widgets · clock · widgets]
         let center_area = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
@@ -789,6 +902,11 @@ impl SimpleComponent for App {
         // glass-workbench (which omits "media" entirely).
         bar_modules.register("cpu", &bar_cpu_pair);
         bar_modules.register("ram", &bar_ram_pair);
+        // Theme 04/spotlight (plan §7): unconditional, same reasoning —
+        // liquid-motion/glass-workbench never name either in a slot, so
+        // both stay built but unparented for them.
+        bar_modules.register("launcher_entry", &launcher_entry);
+        bar_modules.register("launcher_results", &launcher_results.scroller);
 
         // `tray` never appears in a bar slot — it stays inside the
         // control-panel popover (built above, next to the SNI tray) — but
@@ -820,6 +938,143 @@ impl SimpleComponent for App {
         widgets.center_box.set_center_widget(Some(&center_area));
         widgets.center_box.set_end_widget(Some(&stats_box));
 
+        // `drawer` slot (plan §2/§7/§11 Phase 6): the only slot list that
+        // isn't left/centre/right of the CenterBox — appended into the vbox
+        // row below it instead. Empty for every theme but spotlight, so
+        // `drawer_box` stays a childless, zero-height box for them (see the
+        // `window.breadbar > box > centerbox` selector note in theme.rs for
+        // why the vbox wrapper itself is safe for those two themes too).
+        widgets.drawer_box.add_css_class("bread-drawer");
+        bar_modules.for_each_in_slot(
+            &bar_slots.drawer,
+            |_, widget| widgets.drawer_box.append(widget),
+            |key| {
+                widgets
+                    .drawer_box
+                    .append(&bar::slots::widget_slot_container(&mut widget_containers, key))
+            },
+        );
+        // Collapsed by default; `Overflow::Hidden` clips the results list
+        // while its allocated height is below its natural content height,
+        // same as the demo's `.results { max-height: 0; overflow: hidden }`.
+        widgets.drawer_box.set_overflow(gtk4::Overflow::Hidden);
+        widgets.drawer_box.set_size_request(-1, 0);
+
+        // ── Capsule expand/collapse + search wiring (theme 04/spotlight) ──
+        // Effectively a no-op under every other theme: `launcher_entry`
+        // never receives focus if it's never in a slot, so `open_fn` is
+        // simply never invoked. `results.set_query`/select_next`/`select_prev`
+        // and launching all come straight from `bread-launcher`; only the
+        // capsule shell (drawer height, entry placeholder/alignment,
+        // keyboard focus) is this file's own.
+        let anim: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
+        let launcher_open: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
+        let open_fn: Rc<dyn Fn()> = Rc::new({
+            let drawer_box = widgets.drawer_box.clone();
+            let anim = Rc::clone(&anim);
+            let launcher_open = Rc::clone(&launcher_open);
+            let entry = launcher_entry.clone();
+            move || {
+                if !launcher_open.get() {
+                    launcher_open.set(true);
+                    entry.add_css_class("searching");
+                    gtk4::prelude::EntryExt::set_alignment(&entry, 0.0);
+                }
+                let target = drawer_target_height(&drawer_box);
+                let current = drawer_box.size_request().1;
+                animate_drawer_height(&drawer_box, &anim, current, target);
+            }
+        });
+        let close_fn: Rc<dyn Fn()> = Rc::new({
+            let drawer_box = widgets.drawer_box.clone();
+            let anim = Rc::clone(&anim);
+            let launcher_open = Rc::clone(&launcher_open);
+            let entry = launcher_entry.clone();
+            let root_for_focus = root.clone();
+            move || {
+                if !launcher_open.get() {
+                    return;
+                }
+                launcher_open.set(false);
+                entry.remove_css_class("searching");
+                gtk4::prelude::EntryExt::set_alignment(&entry, 0.5);
+                entry.set_text("");
+                if placeholder_clock {
+                    entry.set_placeholder_text(Some(&bar::clock::time()));
+                }
+                let current = drawer_box.size_request().1;
+                animate_drawer_height(&drawer_box, &anim, current, 0);
+                // `keyboard = "on_demand"` (plan §7) ties the layer-shell
+                // surface's keyboard grab to GTK's own focus-widget state —
+                // releasing focus here is what hands the keyboard back.
+                gtk4::prelude::GtkWindowExt::set_focus(&root_for_focus, None::<&gtk4::Widget>);
+            }
+        });
+
+        {
+            let results = launcher_results.clone();
+            let open_fn = Rc::clone(&open_fn);
+            launcher_entry.connect_changed(move |entry| {
+                results.set_query(entry.text().as_str());
+                open_fn();
+            });
+        }
+        {
+            let open_fn = Rc::clone(&open_fn);
+            let focus_ctrl = gtk4::EventControllerFocus::new();
+            focus_ctrl.connect_enter(move |_| open_fn());
+            launcher_entry.add_controller(focus_ctrl);
+        }
+        {
+            let results = launcher_results.clone();
+            let close_fn = Rc::clone(&close_fn);
+            let key_ctrl = gtk4::EventControllerKey::new();
+            key_ctrl.connect_key_pressed(move |_, key, _, _| {
+                use gtk4::gdk::Key;
+                match key {
+                    Key::Escape => {
+                        close_fn();
+                        gtk4::glib::Propagation::Stop
+                    }
+                    Key::Down => {
+                        results.select_next();
+                        gtk4::glib::Propagation::Stop
+                    }
+                    Key::Up => {
+                        results.select_prev();
+                        gtk4::glib::Propagation::Stop
+                    }
+                    Key::Return | Key::KP_Enter => {
+                        if let Some(entry) = results.selected_entry() {
+                            results.record_launch(&entry);
+                            bread_launcher::do_launch(
+                                &entry,
+                                LAUNCHER_APP_ID,
+                                LAUNCHER_LAUNCHED_EVENT,
+                            );
+                        }
+                        close_fn();
+                        gtk4::glib::Propagation::Stop
+                    }
+                    _ => gtk4::glib::Propagation::Proceed,
+                }
+            });
+            launcher_entry.add_controller(key_ctrl);
+        }
+        // Row click launches too, same as breadbox's own overlay.
+        {
+            let results = launcher_results.clone();
+            let close_fn = Rc::clone(&close_fn);
+            launcher_results.list.connect_row_activated(move |_, row| {
+                if let Some(entry) = bread_launcher::gtk::row_entry(row) {
+                    results.record_launch(&entry);
+                    bread_launcher::do_launch(&entry, LAUNCHER_APP_ID, LAUNCHER_LAUNCHED_EVENT);
+                }
+                close_fn();
+            });
+        }
+
         // Captured before these move into `model` (or are otherwise dropped
         // as bare locals, never stored on `App` at all) — needed by the
         // screenshot dispatch just before this function returns.
@@ -830,6 +1085,12 @@ impl SimpleComponent for App {
         let media_panel_for_screenshot = panels.media.clone();
         let media_widget_for_screenshot = media_widget.clone();
         let media_track_lbl_for_screenshot = media_track_lbl.clone();
+        // Theme 04/spotlight's capsule (plan §6b): `launcher_entry` moves
+        // into `model` below, `drawer_box` lives only in `widgets` — both
+        // need a clone out here for the same reason every other
+        // `_for_screenshot` handle above does.
+        let launcher_entry_for_screenshot = launcher_entry.clone();
+        let drawer_box_for_screenshot = widgets.drawer_box.clone();
 
         // Never launch sibling App windows from inside this init — RelmApp
         // is still in GApplication activate, and a same-type launch here
@@ -855,6 +1116,8 @@ impl SimpleComponent for App {
             clock_digits,
             date_lbl,
             clock_plain_lbl,
+            launcher_entry,
+            launcher_open,
             system_stats_box,
             system_sep,
             cpu_pair,
@@ -963,6 +1226,8 @@ impl SimpleComponent for App {
                     media_track_lbl: media_track_lbl_for_screenshot,
                     notification_window,
                     osd_window,
+                    launcher_entry: launcher_entry_for_screenshot,
+                    drawer_box: drawer_box_for_screenshot,
                 },
             );
         }
@@ -1049,6 +1314,15 @@ impl SimpleComponent for App {
                     ClockStyle::Flip | ClockStyle::None => {
                         flip_clock_digits(&self.clock_digits, &bar::clock::time());
                     }
+                }
+                // `modules.clock.placeholder_clock` (spotlight): the
+                // capsule's entry IS the clock until focused — matches the
+                // demo's own `if (!open) q.placeholder = t;` guard so a
+                // live search in progress never has its placeholder text
+                // (invisibly, since real text covers it) stomped mid-type.
+                if clock_module.placeholder_clock && !self.launcher_open.get() {
+                    self.launcher_entry
+                        .set_placeholder_text(Some(&bar::clock::time()));
                 }
             }
             AppInput::StatsUpdate(stats) => {
@@ -1429,7 +1703,17 @@ impl App {
                     }
                 }
             }
-            let btn = bar::workspaces::make_button(ws.id, &ws.name, self.active_ws, ws.windows > 0);
+            let btn = match ws_style {
+                WorkspaceStyle::Dots => bar::workspaces::make_dot_button(
+                    ws.id,
+                    self.active_ws,
+                    ws.windows as i32,
+                    modules.workspaces.dot_widths,
+                ),
+                WorkspaceStyle::Trail | WorkspaceStyle::Pill => {
+                    bar::workspaces::make_button(ws.id, &ws.name, self.active_ws, ws.windows > 0)
+                }
+            };
             if !prev.contains(&ws.id) {
                 play_once(&btn, "ws-in", 360);
             }
@@ -1923,6 +2207,40 @@ fn reveal_media(widget: &gtk4::Box, show: bool) {
         play_once(widget, "media-in", 420);
     }
     widget.set_visible(show);
+}
+
+/// Drives `drawer_box`'s height from `from` to `to` over 360ms via
+/// `bread_theme::anim::spring_to` (plan §7: GTK4 has no CSS height
+/// transition on a widget, so the capsule's `.results { max-height: 0 →
+/// 420px }` becomes a `set_size_request` interpolation on the frame clock
+/// instead). Cancels any run already in flight first — reopening mid-close
+/// (or vice versa) must restart from the CURRENT height, not fight a
+/// leftover callback still walking toward the old target.
+fn animate_drawer_height(
+    drawer_box: &gtk4::Box,
+    anim: &Rc<std::cell::RefCell<Option<gtk4::TickCallbackId>>>,
+    from: i32,
+    to: i32,
+) {
+    if let Some(id) = anim.borrow_mut().take() {
+        id.remove();
+    }
+    let target = drawer_box.clone();
+    let id = bread_theme::anim::spring_to(drawer_box, from, to, 360.0, move |h| {
+        target.set_size_request(-1, h);
+    });
+    *anim.borrow_mut() = Some(id);
+}
+
+/// The drawer's natural content height right now, capped at the demo's own
+/// 420px (`04-spotlight.html`: `.searching .results { max-height: 420px }`)
+/// — `ResultsList`'s scroller already self-caps at 480px
+/// (`max_content_height`), shared with breadbox, so this is a tighter,
+/// spotlight-specific ceiling on top of that shared one, not a replacement
+/// for it.
+fn drawer_target_height(drawer_box: &gtk4::Box) -> i32 {
+    let (_, natural, _, _) = drawer_box.measure(gtk4::Orientation::Vertical, -1);
+    natural.min(420)
 }
 
 fn popover_tab(label: &str) -> gtk4::ToggleButton {
