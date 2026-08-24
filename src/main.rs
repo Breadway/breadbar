@@ -101,10 +101,16 @@ pub struct App {
     tray_items: std::collections::HashMap<String, gtk4::Button>,
 
     // ── Lua-declared widgets ─────────────────────────────────────────────
-    // One container per WidgetPlacement (see bread_shared::widget), fully
-    // rebuilt on every AppInput::WidgetsUpdate — see widgets::client's
+    // One container per `widget:<key>` slot entry (Phase 3b — see
+    // bar::slots::ModuleRegistry and reconcile_widgets' routing below),
+    // fully rebuilt on every AppInput::WidgetsUpdate — see widgets::client's
     // module doc for why that's simpler than incremental patching here.
-    widget_containers: std::collections::HashMap<bread_shared::widget::WidgetPlacement, gtk4::Box>,
+    // Keyed by the slot entry's key: either a WidgetPlacement alias
+    // (`right_of_workspaces`, `left_of_clock`, `right_of_clock`,
+    // `left_of_stats`, `tray`) or a Lua module name. `bread_shared::widget`'s
+    // `WidgetPlacement` itself never appears here — it's a wire type from
+    // the bread daemon API and stays untouched.
+    widget_containers: std::collections::HashMap<String, gtk4::Box>,
     widget_tray_section: gtk4::Box,
     widget_tray_sep: gtk4::Separator,
 
@@ -223,9 +229,9 @@ impl SimpleComponent for App {
 
         // ── Workspace row (left) ────────────────────────────────────────
         // Built imperatively (not via the view! macro) so a widget
-        // container can sit as a plain sibling of workspace_box — see
-        // WidgetPlacement::RightOfWorkspaces below. The Overlay trail
-        // lives behind the buttons; rebuild_buttons only touches the
+        // container can sit as a plain sibling of workspace_box — see the
+        // `widget:*` slot-entry handling in "Assemble" below. The Overlay
+        // trail lives behind the buttons; rebuild_buttons only touches the
         // button box, never the trail host.
         let workspace_trail = bar::workspaces::WorkspaceTrail::new();
         let workspace_box = workspace_trail.buttons.clone();
@@ -237,24 +243,12 @@ impl SimpleComponent for App {
         // below, in the order `[bar.slots].left` names it — not here.
 
         // ── Lua-declared widget containers ──────────────────────────────
-        // One per WidgetPlacement; positioned into the layout below as each
-        // surrounding section (workspace row / center area / stats box /
-        // control popover) is built. Populated by widgets::client's
-        // events.subscribe-driven refresh loop, started at the end of init.
-        use bread_shared::widget::WidgetPlacement;
-        let widget_right_of_workspaces = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        widget_right_of_workspaces.add_css_class("bread-widget-slot");
-        // Also appended in "Assemble" — after the left slot's modules, so
-        // its fixed position (right of the workspace modules) is preserved
-        // whatever `[bar.slots].left` contains.
-
-        let widget_left_of_clock = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        widget_left_of_clock.add_css_class("bread-widget-slot");
-        let widget_right_of_clock = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        widget_right_of_clock.add_css_class("bread-widget-slot");
-
-        let widget_left_of_stats = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        widget_left_of_stats.add_css_class("bread-widget-slot");
+        // Phase 3b: a container per `widget:<key>` slot entry is created
+        // on demand while walking `[bar.slots]` in the "Assemble" section
+        // below (see `bar::slots::widget_slot_container`), so ANY slot can
+        // host a Lua widget — not just the four fixed positions Phase 3a
+        // shipped with. Populated by widgets::client's events.subscribe-
+        // driven refresh loop, started at the end of init.
 
         // `tokens.icon_px` (plan §4) — bar-chrome icon pixel size; reused
         // below for every `prepare_icon` call in this function.
@@ -399,9 +393,9 @@ impl SimpleComponent for App {
         center_area.add_css_class("center-area");
         center_area.set_valign(gtk4::Align::Center);
         center_area.set_vexpand(false);
-        // `media_widget`/`clock_box` and the `widget_left_of_clock`/
-        // `widget_right_of_clock` interleave around the clock module are
-        // both appended in "Assemble" below, per `[bar.slots].centre`.
+        // `media_widget`/`clock_box` and any `widget:*` entries interleaved
+        // around them are all appended in "Assemble" below, in the exact
+        // order `[bar.slots].centre` names them.
 
         // ── Stats box (right side) ───────────────────────────────────────
         // Demo order: [vol 64] [wifi] [bat 83] [☰]
@@ -712,13 +706,16 @@ impl SimpleComponent for App {
             media_widget.add_controller(mgesture);
         }
 
-        // ── Assemble: slot-driven module order (plan §11 Phase 3a) ───────
+        // ── Assemble: slot-driven module + widget order (plan §11 Phase 3b) ──
         // Every module widget above is already fully built; only the ORDER
         // it lands in its container, and which of left/centre/right it
-        // lands in, comes from the theme manifest's `[bar.slots]` now.
-        // The `widget_*` Lua containers keep today's fixed interleave
-        // (right-of-workspaces, left/right-of-clock, left-of-stats) —
-        // generalizing their placement is Phase 3b, not this task.
+        // lands in, comes from the theme manifest's `[bar.slots]` now. A
+        // `widget:<key>` slot entry gets (or creates) a Lua widget
+        // container at that exact position — `<key>` is either a
+        // `WidgetPlacement` alias or a Lua module name; see
+        // `bar::slots::widget_slot_container` and `reconcile_widgets`'
+        // routing below. This is how a Lua widget can land in ANY slot,
+        // not just the four fixed positions Phase 3a shipped with.
         let bar_shell_theme = theme::shell_theme();
         let bar_slots = bar_shell_theme.slots();
         let mut bar_modules = bar::slots::ModuleRegistry::new();
@@ -730,32 +727,29 @@ impl SimpleComponent for App {
         bar_modules.register("battery", &bat_box);
         bar_modules.register("control", &hamburger_btn);
 
-        bar_modules.for_each_in_slot(&bar_slots.left, |_, widget| workspace_row.append(widget));
-        workspace_row.append(&widget_right_of_workspaces);
+        // `tray` never appears in a bar slot — it stays inside the
+        // control-panel popover (built above, next to the SNI tray) — but
+        // it's keyed here so `reconcile_widgets`' routing finds it the same
+        // way as any slot-driven widget container.
+        let mut widget_containers: std::collections::HashMap<String, gtk4::Box> =
+            std::collections::HashMap::new();
+        widget_containers.insert("tray".to_string(), widget_tray_box);
 
-        bar_modules.for_each_in_slot(&bar_slots.centre, |name, widget| {
-            if name == "clock" {
-                center_area.append(&widget_left_of_clock);
-            }
-            center_area.append(widget);
-            if name == "clock" {
-                center_area.append(&widget_right_of_clock);
-            }
-        });
-
-        stats_box.append(&widget_left_of_stats);
-        bar_modules.for_each_in_slot(&bar_slots.right, |_, widget| stats_box.append(widget));
-
-        let widget_containers = std::collections::HashMap::from([
-            (
-                WidgetPlacement::RightOfWorkspaces,
-                widget_right_of_workspaces,
-            ),
-            (WidgetPlacement::LeftOfClock, widget_left_of_clock),
-            (WidgetPlacement::RightOfClock, widget_right_of_clock),
-            (WidgetPlacement::LeftOfStats, widget_left_of_stats),
-            (WidgetPlacement::Tray, widget_tray_box),
-        ]);
+        bar_modules.for_each_in_slot(
+            &bar_slots.left,
+            |_, widget| workspace_row.append(widget),
+            |key| workspace_row.append(&bar::slots::widget_slot_container(&mut widget_containers, key)),
+        );
+        bar_modules.for_each_in_slot(
+            &bar_slots.centre,
+            |_, widget| center_area.append(widget),
+            |key| center_area.append(&bar::slots::widget_slot_container(&mut widget_containers, key)),
+        );
+        bar_modules.for_each_in_slot(
+            &bar_slots.right,
+            |_, widget| stats_box.append(widget),
+            |key| stats_box.append(&bar::slots::widget_slot_container(&mut widget_containers, key)),
+        );
 
         // ── Assemble ─────────────────────────────────────────────────────
         let widgets = view_output!();
@@ -1144,6 +1138,22 @@ impl SimpleComponent for App {
     }
 }
 
+/// The `widget:<key>` alias `for_each_in_slot` recognizes for each
+/// `WidgetPlacement` variant — the fallback a `WidgetSpec` routes through
+/// when no `widget:<module>` container claims its module name specifically.
+/// Kept in one place since both the builtin manifest's slot lists and
+/// `reconcile_widgets`' routing below must agree on these names.
+fn placement_alias(placement: bread_shared::widget::WidgetPlacement) -> &'static str {
+    use bread_shared::widget::WidgetPlacement::*;
+    match placement {
+        Tray => "tray",
+        LeftOfClock => "left_of_clock",
+        RightOfClock => "right_of_clock",
+        RightOfWorkspaces => "right_of_workspaces",
+        LeftOfStats => "left_of_stats",
+    }
+}
+
 impl App {
     fn reconcile_widgets(&mut self, specs: Vec<bread_shared::widget::WidgetSpec>) {
         for container in self.widget_containers.values() {
@@ -1152,22 +1162,46 @@ impl App {
             }
         }
 
-        let mut by_placement: std::collections::HashMap<
-            bread_shared::widget::WidgetPlacement,
+        // Route each spec to a widget_containers entry: a `widget:<module>`
+        // slot entry (keyed by WidgetSpec::module) takes priority over the
+        // spec's placement alias, so a theme can retarget one Lua module's
+        // widgets without moving every widget that shares its placement.
+        // A spec whose module AND placement alias both lack a container
+        // (e.g. a theme's slots omit that placement's widget: entry
+        // entirely) is logged and dropped rather than silently vanishing —
+        // WidgetPlacement itself never changes; only which container (if
+        // any) each spec lands in does.
+        let mut by_container: std::collections::HashMap<
+            String,
             Vec<&bread_shared::widget::WidgetSpec>,
         > = std::collections::HashMap::new();
         for spec in &specs {
-            by_placement.entry(spec.placement).or_default().push(spec);
+            let key = if self.widget_containers.contains_key(&spec.module) {
+                spec.module.clone()
+            } else {
+                placement_alias(spec.placement).to_string()
+            };
+            if self.widget_containers.contains_key(&key) {
+                by_container.entry(key).or_default().push(spec);
+            } else {
+                eprintln!(
+                    "breadbar: widget '{}' (module '{}', placement {:?}) has no matching \
+                     [bar.slots] widget: container — dropping",
+                    spec.id, spec.module, spec.placement
+                );
+            }
         }
 
-        for (placement, mut group) in by_placement {
-            let Some(container) = self.widget_containers.get(&placement) else {
-                continue;
-            };
+        let mut has_tray_widgets = false;
+        for (key, mut group) in by_container {
+            let container = &self.widget_containers[&key];
             group.sort_by_key(|s| s.order);
             for spec in group {
                 if !spec.visible {
                     continue;
+                }
+                if key == "tray" {
+                    has_tray_widgets = true;
                 }
                 let node = widgets::build_node(&spec.root, &spec.id);
                 if let Some(tooltip) = &spec.tooltip {
@@ -1177,20 +1211,17 @@ impl App {
             }
         }
 
-        // The Tray placement has its own section/separator (handled below,
-        // same as the existing SNI tray items) — an empty inline slot has no
-        // such wrapper, so it must hide itself to stop contributing to
-        // center_area's `spacing` gap.
-        for (placement, container) in &self.widget_containers {
-            if *placement == bread_shared::widget::WidgetPlacement::Tray {
+        // The "tray" container has its own section/separator (handled
+        // below, same as the existing SNI tray items) — an empty inline
+        // slot has no such wrapper, so it must hide itself to stop
+        // contributing to its parent box's `spacing` gap.
+        for (key, container) in &self.widget_containers {
+            if key == "tray" {
                 continue;
             }
             container.set_visible(container.first_child().is_some());
         }
 
-        let has_tray_widgets = specs
-            .iter()
-            .any(|s| s.visible && s.placement == bread_shared::widget::WidgetPlacement::Tray);
         self.widget_tray_section.set_visible(has_tray_widgets);
         self.widget_tray_sep.set_visible(has_tray_widgets);
     }
