@@ -2,6 +2,7 @@ pub mod bluetooth;
 pub mod clock;
 pub mod control;
 pub mod media;
+pub mod slots;
 pub mod stats;
 pub mod tray;
 pub mod wifi;

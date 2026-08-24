@@ -233,7 +233,8 @@ impl SimpleComponent for App {
         workspace_row.set_margin_start(8);
         workspace_row.set_valign(gtk4::Align::Center);
         workspace_row.set_vexpand(false);
-        workspace_row.append(&workspace_trail.overlay);
+        // `workspace_trail.overlay` is appended in the "Assemble" section
+        // below, in the order `[bar.slots].left` names it — not here.
 
         // ── Lua-declared widget containers ──────────────────────────────
         // One per WidgetPlacement; positioned into the layout below as each
@@ -243,7 +244,9 @@ impl SimpleComponent for App {
         use bread_shared::widget::WidgetPlacement;
         let widget_right_of_workspaces = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         widget_right_of_workspaces.add_css_class("bread-widget-slot");
-        workspace_row.append(&widget_right_of_workspaces);
+        // Also appended in "Assemble" — after the left slot's modules, so
+        // its fixed position (right of the workspace modules) is preserved
+        // whatever `[bar.slots].left` contains.
 
         let widget_left_of_clock = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         widget_left_of_clock.add_css_class("bread-widget-slot");
@@ -396,10 +399,9 @@ impl SimpleComponent for App {
         center_area.add_css_class("center-area");
         center_area.set_valign(gtk4::Align::Center);
         center_area.set_vexpand(false);
-        center_area.append(&media_widget);
-        center_area.append(&widget_left_of_clock);
-        center_area.append(&clock_box);
-        center_area.append(&widget_right_of_clock);
+        // `media_widget`/`clock_box` and the `widget_left_of_clock`/
+        // `widget_right_of_clock` interleave around the clock module are
+        // both appended in "Assemble" below, per `[bar.slots].centre`.
 
         // ── Stats box (right side) ───────────────────────────────────────
         // Demo order: [vol 64] [wifi] [bat 83] [☰]
@@ -408,7 +410,9 @@ impl SimpleComponent for App {
         stats_box.set_margin_end(2);
         stats_box.set_valign(gtk4::Align::Center);
         stats_box.set_vexpand(false);
-        stats_box.append(&widget_left_of_stats);
+        // Also appended in "Assemble" — before the right slot's modules,
+        // preserving its fixed position (left of the stats modules)
+        // whatever `[bar.slots].right` contains.
 
         // CPU/RAM/power draw stay built (control panel + screenshots still
         // read the labels) but never mount on the island — the demo bar
@@ -442,7 +446,7 @@ impl SimpleComponent for App {
         vol_lbl.add_css_class("stat-label");
         vol_box.append(&vol_img);
         vol_box.append(&vol_lbl);
-        stats_box.append(&vol_box);
+        // Appended in "Assemble" below, per `[bar.slots].right`.
 
         let bat_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         bat_box.add_css_class("stat-pair");
@@ -530,8 +534,8 @@ impl SimpleComponent for App {
         wifi_img.set_halign(gtk4::Align::Center);
         wifi_img.set_hexpand(false);
         connectivity_pair.append(&wifi_img);
-        stats_box.append(&connectivity_pair);
-        stats_box.append(&bat_box);
+        // `connectivity_pair` and `bat_box` are appended in "Assemble"
+        // below, per `[bar.slots].right`.
 
         // ── Control panel popover ────────────────────────────────────────
         // Liquid Motion chrome: CONTROL / vol / bl / lock·sleep·off.
@@ -652,7 +656,8 @@ impl SimpleComponent for App {
             bar::control::spawn_set_brightness(s.value());
         });
 
-        stats_box.append(&hamburger_btn);
+        // `hamburger_btn` is appended in "Assemble" below, per
+        // `[bar.slots].right`.
 
         // Standalone layer windows — below the island, slid in by Hyprland.
         let panels = panel::PanelSet::new(
@@ -706,6 +711,40 @@ impl SimpleComponent for App {
             });
             media_widget.add_controller(mgesture);
         }
+
+        // ── Assemble: slot-driven module order (plan §11 Phase 3a) ───────
+        // Every module widget above is already fully built; only the ORDER
+        // it lands in its container, and which of left/centre/right it
+        // lands in, comes from the theme manifest's `[bar.slots]` now.
+        // The `widget_*` Lua containers keep today's fixed interleave
+        // (right-of-workspaces, left/right-of-clock, left-of-stats) —
+        // generalizing their placement is Phase 3b, not this task.
+        let bar_shell_theme = theme::shell_theme();
+        let bar_slots = bar_shell_theme.slots();
+        let mut bar_modules = bar::slots::ModuleRegistry::new();
+        bar_modules.register("workspaces", &workspace_trail.overlay);
+        bar_modules.register("media", &media_widget);
+        bar_modules.register("clock", &clock_box);
+        bar_modules.register("volume", &vol_box);
+        bar_modules.register("wifi", &connectivity_pair);
+        bar_modules.register("battery", &bat_box);
+        bar_modules.register("control", &hamburger_btn);
+
+        bar_modules.for_each_in_slot(&bar_slots.left, |_, widget| workspace_row.append(widget));
+        workspace_row.append(&widget_right_of_workspaces);
+
+        bar_modules.for_each_in_slot(&bar_slots.centre, |name, widget| {
+            if name == "clock" {
+                center_area.append(&widget_left_of_clock);
+            }
+            center_area.append(widget);
+            if name == "clock" {
+                center_area.append(&widget_right_of_clock);
+            }
+        });
+
+        stats_box.append(&widget_left_of_stats);
+        bar_modules.for_each_in_slot(&bar_slots.right, |_, widget| stats_box.append(widget));
 
         let widget_containers = std::collections::HashMap::from([
             (
