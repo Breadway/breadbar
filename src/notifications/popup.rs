@@ -177,9 +177,16 @@ fn create_window() -> gtk4::Window {
     window.set_margin(Edge::Top, crate::BAR_MARGIN_TOP + crate::BAR_HEIGHT + 8);
     window.set_margin(Edge::Right, crate::BAR_MARGIN_SIDES);
     window.set_default_width(320);
-    // OnDemand so an inline-reply GtkEntry can take keys without the popup
-    // stealing every keystroke the rest of the time.
-    window.set_keyboard_mode(KeyboardMode::OnDemand);
+    // Toasts are purely informational for now: never grab keyboard focus...
+    window.set_keyboard_mode(KeyboardMode::None);
+    // ...and click through entirely — an empty input region means every
+    // pointer event passes straight to whatever's underneath instead of
+    // hitting the toast.
+    window.connect_map(|win| {
+        if let Some(surface) = win.surface() {
+            surface.set_input_region(Some(&gtk4::cairo::Region::create()));
+        }
+    });
     crate::theme::bind_auto(&window);
     window
 }
