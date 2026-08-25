@@ -184,7 +184,19 @@ pub fn make_dot_button(
     btn.set_halign(gtk4::Align::Center);
     btn.set_vexpand(false);
     btn.set_hexpand(false);
-    btn.set_size_request(dot_widths[dot_width_index(windows)], 6);
+    // Height is a deliberate departure from `04-spotlight.html`'s own 6px
+    // (see the demo's `.dots button { height: 6px }`): reported as "too
+    // small and hard to click" — the click-target enlargement is a
+    // separate, non-visual fix elsewhere, but 6px is also genuinely hard
+    // to *see* on a real display, not just hard to hit. 9px keeps the
+    // dots reading as slim pills rather than growing into little chips
+    // (which would fight the capsule's minimal, text-first look), while
+    // being clearly perceptible against the 36px-tall bar. Widths are left
+    // exactly as `dot_widths` (the manifest's own per-occupancy encoding,
+    // e.g. `[6, 10, 14, 18]`) specifies — only the height, which has no
+    // manifest token of its own, is breadbar's call to make.
+    const DOT_HEIGHT: i32 = 9;
+    btn.set_size_request(dot_widths[dot_width_index(windows)], DOT_HEIGHT);
     btn.connect_clicked(move |_| {
         relm4::spawn(async move {
             switch_workspace(id).await;

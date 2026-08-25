@@ -180,9 +180,17 @@ fn load_css() -> String {
         bread_theme::shell::WorkspaceStyle::Dots => {
             let accent = theme.tokens().accent_from();
             format!(
+                // 9px, not the demo's 6px — kept in sync with
+                // `bar::workspaces::make_dot_button`'s `DOT_HEIGHT` const,
+                // which is the value that actually governs the rendered
+                // size (a direct `set_size_request`, not CSS min-height
+                // participating in layout the normal way) — see that
+                // constant's own doc comment for why. This min-height
+                // exists mainly so the property isn't silently absent from
+                // the stylesheet a reader would expect to define it.
                 ".workspace-dot {{ background-color: alpha(@on-bg, 0.35); color: transparent;\
                      border-radius: {radius_pill}; border: none; outline: none; box-shadow: none;\
-                     min-height: 6px; margin: 0; padding: 0;\
+                     min-height: 9px; margin: 0; padding: 0;\
                      transition: background-color 0.25s {spring_settle},\
                          opacity 0.25s {spring_settle}; }}\
                  .workspace-dot:hover {{ background-color: alpha(@on-bg, 0.55); }}\
