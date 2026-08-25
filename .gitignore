@@ -38,3 +38,6 @@ aster-brief.md
 
 # graphify knowledge-graph output (local tool cache, not for commit)
 graphify-out/
+
+# Local-only source overrides (see .cargo/config.toml).
+.cargo/
