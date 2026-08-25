@@ -2588,31 +2588,44 @@ fn mode_row_action(row: &gtk4::ListBoxRow) -> Option<ModeAction> {
     unsafe { row.data::<ModeAction>("mode_action").map(|p| p.as_ref().clone()) }
 }
 
+/// Pure half of the `.`-mode URL action: adds a scheme when the user typed
+/// a bare host (`example.com` -> `https://example.com`), leaves anything
+/// that already looks like `scheme://...` untouched.
+fn url_open_target(url: &str) -> String {
+    if url.contains("://") {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    }
+}
+
 fn run_mode_action(action: &ModeAction) {
     match action {
         ModeAction::RunShell(cmd) => {
-            let _ = std::process::Command::new("bash")
+            if let Err(e) = std::process::Command::new("bash")
                 .args(["-c", cmd])
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .spawn();
+                .spawn()
+            {
+                eprintln!("breadbar: failed to run mode command {cmd:?}: {e}");
+            }
         }
         ModeAction::OpenUrl(url) => {
             // No scheme-adding shell involved — `xdg-open` gets the raw
             // argument, so nothing in a `.`-mode query is ever parsed as
             // shell syntax.
-            let target = if url.contains("://") {
-                url.clone()
-            } else {
-                format!("https://{url}")
-            };
-            let _ = std::process::Command::new("xdg-open")
-                .arg(target)
+            let target = url_open_target(url);
+            if let Err(e) = std::process::Command::new("xdg-open")
+                .arg(&target)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .spawn();
+                .spawn()
+            {
+                eprintln!("breadbar: failed to open url {target:?}: {e}");
+            }
         }
     }
 }
@@ -3026,6 +3039,25 @@ mod launcher_route_tests {
         assert_eq!(
             resolve_launcher_route(None, "eDP-1", &["DVI-I-1"]),
             LauncherRoute::Local
+        );
+    }
+}
+
+#[cfg(test)]
+mod url_open_target_tests {
+    use super::url_open_target;
+
+    #[test]
+    fn bare_host_gets_https_scheme() {
+        assert_eq!(url_open_target("example.com"), "https://example.com");
+    }
+
+    #[test]
+    fn existing_scheme_is_left_untouched() {
+        assert_eq!(url_open_target("http://example.com"), "http://example.com");
+        assert_eq!(
+            url_open_target("ftp://example.com/file"),
+            "ftp://example.com/file"
         );
     }
 }
