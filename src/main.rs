@@ -544,6 +544,20 @@ impl SimpleComponent for App {
         launcher_entry.add_css_class("launcher-entry");
         launcher_entry.set_has_frame(false);
         launcher_entry.set_hexpand(true);
+        // Starts non-focusable ("the spotlight theme starts with the
+        // search open"). GTK4 auto-assigns keyboard focus to the first
+        // can-focus widget in a window as it's first mapped/shown — with
+        // nothing else focusable in the bar, that was always
+        // `launcher_entry`, and `focus_ctrl`'s `connect_enter` below
+        // (added unconditionally) turns "the entry gained focus" straight
+        // into `open_fn()`, so the capsule opened itself at startup. A
+        // widget that can't focus is skipped by BOTH that automatic
+        // selection and an explicit `grab_focus()` call — see GTK's own
+        // docs for `Widget::grab_focus`: "if widget is not focusable...
+        // this function does nothing." Every place that later wants real
+        // focus (the click gesture below, and `AppInput::OpenLauncher`'s
+        // handler) flips this back to `true` immediately before grabbing.
+        launcher_entry.set_can_focus(false);
         gtk4::prelude::EntryExt::set_alignment(&launcher_entry, 0.5);
         // `modules.clock.placeholder_clock` (spotlight): the entry's idle
         // placeholder IS the clock — no separate clock module renders at
@@ -1167,6 +1181,34 @@ impl SimpleComponent for App {
             focus_ctrl.connect_enter(move |_| open_fn());
             launcher_entry.add_controller(focus_ctrl);
         }
+        // "you can't close it using escape unless you are focused on the
+        // UI" / "it doesn't grab keyboard for typing": both are the same
+        // root cause as the startup-open bug above, from the other side.
+        // `launcher_entry.set_can_focus(false)` means nothing (startup or
+        // otherwise) can silently steal GTK's own notion of focus any
+        // more — so it now needs a real, explicit grab. This click gesture
+        // is that grab for the mouse path: a `GestureClick` press is a
+        // genuine user-originated pointer event delivered through the
+        // compositor, which is also exactly the kind of interaction
+        // `KeyboardMode::OnDemand` (gtk4-layer-shell/wlr-layer-shell) is
+        // documented to react to — the protocol spec (wlr-layer-shell-
+        // unstable-v1.xml) leaves *when* an on-demand surface gets the
+        // compositor's keyboard focus as "implementation-defined", but a
+        // literal click on the surface is the universal, minimum-common-
+        // denominator trigger every compositor implementation reacts to
+        // (it's the same interaction wofi/fuzzel/rofi-wayland rely on).
+        // Flipping `can_focus` back on right before `grab_focus()` mirrors
+        // `AppInput::OpenLauncher`'s handler below, which needs the exact
+        // same two-liner for the hotkey/command path.
+        {
+            let entry_for_click = launcher_entry.clone();
+            let click = gtk4::GestureClick::new();
+            click.connect_pressed(move |_, _, _, _| {
+                entry_for_click.set_can_focus(true);
+                entry_for_click.grab_focus();
+            });
+            launcher_entry.add_controller(click);
+        }
         {
             let results = launcher_results.clone();
             let mode_list = mode_list.clone();
@@ -1727,6 +1769,12 @@ impl SimpleComponent for App {
                         }
                     }
                     LauncherRoute::Local => {
+                        // See `launcher_entry.set_can_focus(false)`'s own
+                        // comment above: a hotkey/command-triggered open
+                        // has no pointer click to flip this back on, so
+                        // this path has to do it itself or `grab_focus()`
+                        // below is a silent no-op.
+                        self.launcher_entry.set_can_focus(true);
                         self.launcher_entry.grab_focus();
                     }
                 }
