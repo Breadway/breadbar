@@ -127,12 +127,20 @@ fn load_css() -> String {
     // (see `App::rebuild_buttons`) — the trail's own `.workspace-trail`
     // pill CSS is therefore irrelevant for them (it's never made visible).
     let workspace_css = match theme.modules().workspaces.style {
+        // Radius and height were hardcoded (12px, 28px) instead of reading
+        // from this theme's own tokens/demo — 12px is neither radius_sm
+        // (9px) nor any other token this theme defines, and the demo's
+        // `.ws-btn`/`.trail` both draw a 26px-tall, 9px-radius pill (not
+        // 28px/12px). radius_sm happens to be an exact match for the
+        // demo's 9px here, unlike glass-workbench's Pill style below where
+        // it's also used but for a different, already-correct reason.
+        // Reported: "the pills on liquid motion just look off".
         bread_theme::shell::WorkspaceStyle::Trail => format!(
             ".workspace-trail {{ background-image: linear-gradient(90deg, @accent, @teal);\
-                 background-color: @accent; border-radius: 12px; }}\
+                 background-color: @accent; border-radius: {radius_sm}; }}\
              .workspace-btn {{ background: transparent; opacity: 0.36; color: @on-bg;\
-                 border-radius: 12px; border: none; outline: none; box-shadow: none;\
-                 min-width: 28px; min-height: 28px; margin: 0; padding: 0 7px;\
+                 border-radius: {radius_sm}; border: none; outline: none; box-shadow: none;\
+                 min-width: 28px; min-height: 26px; margin: 0; padding: 0 7px;\
                  font-size: 22px; font-weight: bold;\
                  transition: opacity 0.22s {spring_settle},\
                      background-color 0.22s {spring_settle}; }}\
