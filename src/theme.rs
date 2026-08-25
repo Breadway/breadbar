@@ -100,6 +100,24 @@ fn load_css() -> String {
     };
     let centerbox_padding = if flush { "0 12px" } else { "0 8px 0 6px" };
 
+    // Radius for `.stat-pair` (vol/wifi/battery/hamburger chips): radius_sm
+    // for liquid-motion (9px) and glass-workbench (6px, exact match to that
+    // demo's `.chip` radius) reads as "the same small-control rounding this
+    // theme uses everywhere else" — but spotlight's overall language is
+    // dramatically rounder (radius_bar 22px, workspace dots at radius_pill
+    // 999px) than either sibling theme, so its one `.stat-pair` occupant
+    // (battery — the only slot entry besides a Lua widget under
+    // `[bar.slots].right`) looked like a stray sharp-cornered rectangle
+    // dropped inside a capsule and next to fully-round dots (reported:
+    // "the spotlight battery chip... radii that don't match their
+    // neighbours"). Keying off the same `WorkspaceStyle` enum
+    // `workspace_css` below already switches on, rather than the theme id,
+    // so this stays in step if a future theme ever reuses the "dots" style.
+    let chip_radius = match theme.modules().workspaces.style {
+        bread_theme::shell::WorkspaceStyle::Dots => radius_pill.clone(),
+        _ => radius_sm.clone(),
+    };
+
     // `modules.workspaces.style` (plan §11 Phase 5): "trail" (default,
     // liquid-motion) is exactly today's CSS, unchanged byte-for-byte —
     // dimmed/translucent buttons with the gradient trail overlay supplying
@@ -205,12 +223,38 @@ fn load_css() -> String {
          .stat-label {{ font-size: 14px; letter-spacing: 0.02em; opacity: 0.92; }}\
          .stat-label.tick {{ animation: digit-flip 0.35s {spring} both; }}\
          .stats-box {{ margin-right: 0; }}\
-         .stat-pair {{ margin: 0; border-radius: 10px; padding: 5px 9px; min-height: 0;\
+         /* Radius was a hardcoded 10px here regardless of theme — right by\
+            coincidence for liquid-motion's demo (`.chip {{ border-radius:\
+            10px }}`, this theme's radius_sm is 9px, a 1px rounding-off),\
+            wrong for glass-workbench (demo's `.chip` is 6px, exactly this\
+            theme's radius_sm — the hardcoded 10px never matched it), and\
+            wrong-in-spirit for spotlight even though no `.chip` class\
+            exists in that demo to compare against: a small, sharp-ish\
+            radius reads as a stray rectangle inside a 22px-radius capsule\
+            sitting right next to 999px-radius workspace dots (reported:\
+            spotlight's battery chip not matching its neighbours). See\
+            `chip_radius` above — radius_sm for the other two themes,\
+            radius_pill for spotlight, so every theme's stat chips round\
+            the way that theme's *other* rounded chrome already does,\
+            instead of all three sharing one borrowed hardcoded number. */\
+         .stat-pair {{ margin: 0; border-radius: {chip_radius}; padding: 5px 9px; min-height: 0;\
              transition: background-color 0.22s {spring_settle},\
                  opacity 0.18s ease; }}\
          .stat-pair:hover {{ background: alpha(@on-bg, 0.12); }}\
          .stat-pair:active {{ background: alpha(@on-bg, 0.18); }}\
-         .stat-pair.icon-only {{ padding: 4px; border-radius: 999px;\
+         /* No border-radius override here (was a hardcoded 999px, making\
+            wifi/hamburger — the only two `.icon-only` chips — fully\
+            circular while their row neighbours vol/battery stayed a\
+            rounded rect at `.stat-pair`'s own radius: a visible rounding\
+            mismatch inside one row, reported against the liquid-motion\
+            hamburger specifically). Every demo's `.chip` class (liquid-\
+            motion, glass-workbench) draws vol/wifi/bat/menu identically,\
+            none of them circular — dropping the override here just lets\
+            `.stat-pair`'s own `chip_radius` cascade through unchanged, so\
+            the icon-only chips match their siblings instead of standing\
+            out (spotlight has no icon-only chip today, but would get the\
+            same pill radius as its one `.stat-pair` sibling if it ever did). */\
+         .stat-pair.icon-only {{ padding: 4px;\
              min-width: 32px; min-height: 32px; }}\
          .stat-icon {{ margin-right: 6px; }}\
          .stat-pair.icon-only .stat-icon {{ margin: 0; }}\
@@ -447,6 +491,7 @@ fn load_css() -> String {
         radius_bar = radius_bar,
         radius_sm = radius_sm,
         radius_pill = radius_pill,
+        chip_radius = chip_radius,
         pad = pad,
         spring = spring,
         spring_settle = spring_settle,
