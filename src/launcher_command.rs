@@ -32,8 +32,22 @@ pub fn spawn(sender: ComponentSender<App>) {
         return;
     }
     let client = BreadClient::connect(crate::widgets::client::APP_ID);
-    let subscription = client.subscribe("bread.command.box.open", move |_event| {
-        sender.input(AppInput::OpenLauncher);
-    });
-    std::mem::forget(subscription);
+    // Two verbs, deliberately.
+    //
+    // `bread.box.open_requested` is what breadbox actually emits when the
+    // active theme is embedded: an app may only publish inside its own
+    // `bread.<app_id>.*` namespace, so breadbox (app id `box`) cannot emit a
+    // `bread.command.*` event at all — bread-client refuses it outright.
+    //
+    // `bread.command.box.open` is kept because it is the addressed-TO-an-app
+    // command form, which is what an external trigger (the `bread` CLI, a
+    // keybind, another app) would legitimately send. Honouring both means the
+    // capsule opens whether it was asked directly or told by breadbox.
+    for verb in ["bread.box.open_requested", "bread.command.box.open"] {
+        let sender = sender.clone();
+        let subscription = client.subscribe(verb, move |_event| {
+            sender.input(AppInput::OpenLauncher);
+        });
+        std::mem::forget(subscription);
+    }
 }
