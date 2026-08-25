@@ -282,6 +282,13 @@ impl SimpleComponent for App {
         // a real value out of it.
         if let Width::Px(px) = window_spec.width {
             root.set_default_width(px);
+            // set_default_width alone is only a preference — a wide child (the
+            // results list, whose natural width is its longest app name plus
+            // icon and wm-class) overrides it, so the capsule rendered far
+            // wider than the theme's 480px and stopped reading as a pill.
+            // Pinning the request keeps the surface at the theme's width
+            // regardless of what the app catalog contains.
+            root.set_size_request(px, -1);
         }
         // "auto" reserves height + top margin so tiled clients sit below the
         // gap — see WindowSpec::exclusive's doc comment (bread-theme).
@@ -979,6 +986,13 @@ impl SimpleComponent for App {
         // same as the demo's `.results { max-height: 0; overflow: hidden }`.
         widgets.drawer_box.set_overflow(gtk4::Overflow::Hidden);
         widgets.drawer_box.set_size_request(-1, 0);
+        // set_size_request is a MINIMUM, not a maximum: GTK still allocates a
+        // visible box its natural height, and this layer-shell surface has no
+        // fixed height, so the window grew to fit the whole results list and
+        // the capsule sat open-at-idle showing a stray row. A hidden widget
+        // requests no size at all, which is what "collapsed" actually needs.
+        // open_fn/close_fn toggle this back on/off around the height animation.
+        widgets.drawer_box.set_visible(false);
 
         // ── Query-mode results (plan §7 phase 6c: `=` calc, `>` cmd, `.`
         // url) ───────────────────────────────────────────────────────────
@@ -1035,6 +1049,10 @@ impl SimpleComponent for App {
             move || {
                 if !launcher_open.get() {
                     launcher_open.set(true);
+                    // Reveal before measuring/animating: while hidden the box
+                    // reports no natural height, so the open animation would
+                    // target 0 and nothing would appear.
+                    drawer_box.set_visible(true);
                     entry.add_css_class("searching");
                     gtk4::prelude::EntryExt::set_alignment(&entry, 0.0);
                     // `.searching` on the root itself (plan §7 phase 6c):
@@ -2429,6 +2447,14 @@ fn animate_drawer_height(
         // valid animation frame, so clamp to 0 rather than -1: a drawer mid-
         // collapse wants zero height, never its natural height.
         target.set_size_request(-1, h.max(0));
+        // Collapse finished: hide the box so it stops claiming natural height.
+        // set_size_request is only a minimum, so a visible-but-zero-request
+        // drawer still gets allocated its children's full height and holds the
+        // capsule open. Hiding here rather than in close_fn keeps the collapse
+        // animated instead of snapping shut on the first frame.
+        if to == 0 && h <= 0 {
+            target.set_visible(false);
+        }
     });
     *anim.borrow_mut() = Some(id);
 }
