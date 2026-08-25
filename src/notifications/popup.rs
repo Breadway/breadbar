@@ -172,9 +172,21 @@ fn create_window() -> gtk4::Window {
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-notif"));
     crate::surface::apply(&window, "breadbar-notif");
-    // OnDemand so an inline-reply GtkEntry can take keys without the popup
-    // stealing every keystroke the rest of the time.
-    window.set_keyboard_mode(KeyboardMode::OnDemand);
+    // Toasts are purely informational: they never grab keyboard focus...
+    window.set_keyboard_mode(KeyboardMode::None);
+    // ...and click through entirely, via an empty input region — every
+    // pointer event passes straight to whatever's underneath instead of
+    // hitting the toast. `make_card` below does build action buttons and,
+    // when a notification carries INLINE_REPLY_KEY, a reply `GtkEntry` —
+    // but with no input region reaching the toast at all, neither is ever
+    // clickable or focusable from here regardless of keyboard mode, so
+    // OnDemand would grant a focus capability nothing can trigger. Those
+    // controls are only reachable from the history window (history.rs),
+    // which is opened deliberately and correctly keeps OnDemand + normal
+    // hit-testing. If the toast itself grows real click interactivity
+    // later, this needs to become a real (non-empty) input region sized to
+    // just the interactive rows, not a blanket revert to OnDemand.
+    crate::surface::click_through(&window);
     crate::theme::bind_auto(&window);
     window
 }

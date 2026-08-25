@@ -86,3 +86,28 @@ pub fn apply(window: &gtk4::Window, namespace: &str) {
         window.set_size_request(px, -1);
     }
 }
+
+/// Makes `window` fully click-through: an empty layer-shell input region
+/// means every pointer event passes to whatever is underneath instead of
+/// being consumed by this surface. Deliberately opt-in, not part of
+/// `apply()` — like `exclusive` zone and `keyboard` mode (see the module
+/// doc comment), this isn't a `[surfaces.*]` schema concept, and most of
+/// breadbar's satellites (history, the panel, the dismiss-scrim) genuinely
+/// need real hit-testing. Only a purely-informational surface — today just
+/// the notification toast — should call this.
+///
+/// Must be applied in a `connect_map` handler: the surface (and therefore
+/// `window.surface()`) doesn't exist until the window is mapped.
+///
+/// This exists so a future migration of a surface's window-setup code
+/// (like the one from hand-rolled layer-shell calls to this module) can't
+/// silently drop a click-through requirement the way `breadbar-notif` did
+/// once already — see the git history of `notifications/popup.rs` around
+/// the "stop toast popups from stealing focus or blocking clicks" fix.
+pub fn click_through(window: &gtk4::Window) {
+    window.connect_map(|win| {
+        if let Some(surface) = win.surface() {
+            surface.set_input_region(Some(&gtk4::cairo::Region::create()));
+        }
+    });
+}
