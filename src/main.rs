@@ -148,6 +148,9 @@ pub struct App {
     // `WidgetPlacement` itself never appears here — it's a wire type from
     // the bread daemon API and stays untouched.
     widget_containers: std::collections::HashMap<String, gtk4::Box>,
+    /// Widget ids already reported as undeliverable by `reconcile_widgets`, so
+    /// the warning fires once per widget instead of once per reconcile.
+    dropped_widget_warned: std::collections::HashSet<String>,
     widget_tray_section: gtk4::Box,
     widget_tray_sep: gtk4::Separator,
 
@@ -1161,6 +1164,7 @@ impl SimpleComponent for App {
             tray_box,
             tray_items: std::collections::HashMap::new(),
             widget_containers,
+            dropped_widget_warned: std::collections::HashSet::new(),
             widget_tray_section,
             widget_tray_sep,
             panels,
@@ -1552,7 +1556,15 @@ impl App {
             };
             if self.widget_containers.contains_key(&key) {
                 by_container.entry(key).or_default().push(spec);
-            } else {
+            } else if self.dropped_widget_warned.insert(spec.id.clone()) {
+                // Warn ONCE per widget id, not once per reconcile: breadd
+                // re-pushes every spec on each update (a widget on a timer,
+                // like a git-branch poller, reconciles continuously), which
+                // turned a legitimate one-off diagnostic into unbounded log
+                // spam. The set is only added to, so a spec that starts
+                // resolving again after a theme switch stays quiet — the
+                // message is about a theme lacking the slot, and repeating it
+                // every tick tells the reader nothing new.
                 eprintln!(
                     "breadbar: widget '{}' (module '{}', placement {:?}) has no matching \
                      [bar.slots] widget: container — dropping",
@@ -2227,7 +2239,14 @@ fn animate_drawer_height(
     }
     let target = drawer_box.clone();
     let id = bread_theme::anim::spring_to(drawer_box, from, to, 360.0, move |h| {
-        target.set_size_request(-1, h);
+        // `spring_ease` deliberately overshoots past t=1.0 — that bounce is the
+        // point on expand, but on a collapse (from=content height, to=0) the
+        // same overshoot carries the interpolated value BELOW zero, and
+        // `set_size_request` hard-asserts `height >= -1` (GTK-CRITICAL, once
+        // per frame at 60fps). -1 is GTK's "use natural height" sentinel, not a
+        // valid animation frame, so clamp to 0 rather than -1: a drawer mid-
+        // collapse wants zero height, never its natural height.
+        target.set_size_request(-1, h.max(0));
     });
     *anim.borrow_mut() = Some(id);
 }
