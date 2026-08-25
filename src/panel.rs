@@ -5,7 +5,7 @@
 //! *below* the exclusive zone, and Hyprland slides `breadbar-panel` in from
 //! the right.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk4::gdk::Key;
@@ -14,9 +14,25 @@ use gtk4_layer_shell::{Edge, KeyboardMode, LayerShell};
 
 use crate::{bind_layer_monitor, theme};
 
+/// Outside this rectangle's local x/y span, the dismiss window's own real
+/// size (Wayland clips an input region to the surface's actual bounds, same
+/// as `surface::click_through`'s empty-region trick) — big enough to cover
+/// any realistic monitor layout, including a negative-origin secondary
+/// output (`hyprctl layers -j` reported `x: -1080` for this machine's own
+/// DVI-I-1). Centered on the origin so it's safe regardless of which way a
+/// hole's coordinates end up signed.
+const HOLE_CANVAS_SPAN: i32 = 20_000;
+
 /// A boxed, ref-counted, optionally-unset click-away callback — see
 /// `PanelSet::on_dismiss`'s own doc comment.
 type DismissCallback = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
+/// The capsule-column hole punched in the dismiss scrim's input region —
+/// local x, y, width, height — see `PanelSet::dismiss_hole`'s own doc
+/// comment. Shared (not just passed by value) so `make_dismiss`'s
+/// `connect_map` hook and every `show_capsule_dismiss`/`reset_dismiss_margin`
+/// call agree on the current value.
+type DismissHole = Rc<Cell<Option<(i32, i32, i32, i32)>>>;
 
 #[derive(Clone)]
 pub struct PanelSet {
@@ -30,6 +46,16 @@ pub struct PanelSet {
     // capsule's drawer — see `show_capsule_dismiss`/`hide_dismiss` and
     // `set_on_dismiss`. `None` under every other theme (never set).
     on_dismiss: DismissCallback,
+    // The rectangle (local to `dismiss`'s own surface coordinates) that
+    // should stay click-through even while the scrim otherwise covers the
+    // screen — `show_capsule_dismiss`'s own doc comment explains why this
+    // exists and how it's computed. `None` = no hole, the plain
+    // margin-based popover behaviour applies instead. Read inside
+    // `dismiss`'s own `connect_map` (the input region can only be set once
+    // the surface is real — see `surface::click_through`'s doc comment for
+    // the same constraint) and, for the case where `dismiss` is already
+    // mapped from a prior show, applied immediately too.
+    dismiss_hole: DismissHole,
 }
 
 impl PanelSet {
@@ -42,7 +68,8 @@ impl PanelSet {
         let connectivity = make_panel("wifi-popover", connectivity_child, monitor);
         let control = make_panel("control-panel", control_child, monitor);
         let media = make_panel("media-popover", media_child, monitor);
-        let dismiss = make_dismiss(monitor);
+        let dismiss_hole: DismissHole = Rc::new(Cell::new(None));
+        let dismiss = make_dismiss(monitor, &dismiss_hole);
 
         let set = Self {
             connectivity,
@@ -50,6 +77,7 @@ impl PanelSet {
             media,
             dismiss,
             on_dismiss: Rc::new(RefCell::new(None)),
+            dismiss_hole,
         };
         set.wire_dismiss();
         set.wire_escape();
@@ -106,8 +134,31 @@ impl PanelSet {
     /// (`top`), so if its clickable region ever reached up into where the
     /// drawer is actually drawn, it would swallow clicks meant for a
     /// result row instead of forwarding them.
-    pub fn show_capsule_dismiss(&self, top_margin: i32) {
-        self.dismiss.set_margin(Edge::Top, top_margin);
+    ///
+    /// Before this fix, that safety was bought with a `set_margin` that
+    /// pushed the scrim's *entire width* down by `top_margin` — leaving a
+    /// full-screen-wide dead band above it (up to ~470px on a 1200px-tall
+    /// display) where a click neither dismissed nor hit anything else, the
+    /// "it only sometimes is dismissed when you click somewhere else"
+    /// report. `hole`, when known (local-to-this-surface x-start/width, in
+    /// `main.rs`'s `capsule_dismiss_hole`), keeps exactly the same
+    /// vertical safety margin but scopes the dead band to the capsule's
+    /// own column instead of the full width, so everywhere else in that
+    /// band is dismiss-clickable too. `None` (geometry unavailable, e.g.
+    /// `hyprctl` failed) falls back to the old full-width behaviour rather
+    /// than risk a hole in the wrong place.
+    pub fn show_capsule_dismiss(&self, top_margin: i32, hole: Option<(i32, i32)>) {
+        match hole {
+            Some((x, w)) if w > 0 => {
+                self.dismiss.set_margin(Edge::Top, 0);
+                self.dismiss_hole.set(Some((x, 0, w, top_margin)));
+            }
+            _ => {
+                self.dismiss.set_margin(Edge::Top, top_margin);
+                self.dismiss_hole.set(None);
+            }
+        }
+        apply_dismiss_hole(&self.dismiss, &self.dismiss_hole);
         self.dismiss.set_visible(true);
         self.dismiss.present();
     }
@@ -126,6 +177,10 @@ impl PanelSet {
             let top = surf.offset.first().copied().unwrap_or(0.0) as i32;
             self.dismiss.set_margin(Edge::Top, top);
         }
+        // A stale capsule-shaped hole must not leak into a popover's own
+        // full-width dead zone.
+        self.dismiss_hole.set(None);
+        apply_dismiss_hole(&self.dismiss, &self.dismiss_hole);
     }
 
     fn wire_dismiss(&self) {
@@ -180,7 +235,7 @@ fn make_panel(class: &str, child: &impl IsA<gtk4::Widget>, monitor: &str) -> gtk
     window
 }
 
-fn make_dismiss(monitor: &str) -> gtk4::Window {
+fn make_dismiss(monitor: &str, hole: &DismissHole) -> gtk4::Window {
     let window = gtk4::Window::new();
     window.add_css_class("breadbar-dismiss");
     window.init_layer_shell();
@@ -206,5 +261,57 @@ fn make_dismiss(monitor: &str) -> gtk4::Window {
     bind_layer_monitor(&window, monitor);
     theme::bind_output(&window, monitor);
     window.set_visible(false);
+    // The underlying `GdkSurface` (and therefore `window.surface()`, which
+    // `apply_dismiss_hole` needs) doesn't exist until the window is mapped
+    // — same constraint `surface::click_through` documents. This surface
+    // gets hidden/shown repeatedly (every popover open/close, every
+    // capsule search), and GTK4 unmaps-then-remaps a toplevel each time
+    // its visibility toggles off then on, so re-applying here on every
+    // `map` (not just the first) is what keeps a freshly (re)shown surface
+    // honouring whatever hole was set before this particular `present()`.
+    {
+        let hole = Rc::clone(hole);
+        window.connect_map(move |win| apply_dismiss_hole(win, &hole));
+    }
     window
+}
+
+/// Sets `dismiss`'s click-away input region to "everywhere" minus `hole`
+/// (if any) — see `PanelSet::show_capsule_dismiss`'s doc comment for why.
+/// Only takes effect once `dismiss.surface()` is real, i.e. the window is
+/// currently mapped; harmlessly no-ops otherwise (the `connect_map` hook in
+/// `make_dismiss` re-runs this the moment that stops being true).
+fn apply_dismiss_hole(dismiss: &gtk4::Window, hole: &DismissHole) {
+    let Some(surface) = dismiss.surface() else {
+        return;
+    };
+    match hole.get() {
+        Some((x, y, w, h)) => {
+            let canvas = gtk4::cairo::RectangleInt::new(
+                -HOLE_CANVAS_SPAN,
+                -HOLE_CANVAS_SPAN,
+                HOLE_CANVAS_SPAN * 2,
+                HOLE_CANVAS_SPAN * 2,
+            );
+            let region = gtk4::cairo::Region::create_rectangle(&canvas);
+            let punch = gtk4::cairo::RectangleInt::new(x, y, w, h);
+            if region.subtract_rectangle(&punch).is_ok() {
+                surface.set_input_region(Some(&region));
+            } else {
+                // Punching the hole failed for some reason (an invalid
+                // cairo status on a plain rectangle op, effectively
+                // unreachable in practice) — falling back to `None` (the
+                // protocol's documented "no input region set: whole
+                // surface hits") is still safer than leaving whatever
+                // region predates this call in place, which could be
+                // stale from a completely different mode (e.g. an old
+                // popover-shaped margin-only region with no hole at all).
+                eprintln!(
+                    "breadbar: could not punch capsule hole in dismiss scrim's input region"
+                );
+                surface.set_input_region(None);
+            }
+        }
+        None => surface.set_input_region(None),
+    }
 }

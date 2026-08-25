@@ -1060,6 +1060,7 @@ impl SimpleComponent for App {
             let panels = panels.clone();
             let idle_width = launcher_cfg.width;
             let search_width = launcher_cfg.search_width;
+            let monitor_name_for_dismiss = monitor_name.clone();
             move || {
                 if !launcher_open.get() {
                     launcher_open.set(true);
@@ -1081,8 +1082,20 @@ impl SimpleComponent for App {
                     // offset (`capsule_dismiss_margin`), never the live
                     // drawer height — see that constant's own doc comment
                     // for why a live-tracking offset would risk swallowing
-                    // clicks meant for a result row.
-                    panels.show_capsule_dismiss(capsule_dismiss_margin);
+                    // clicks meant for a result row. `hole` scopes that
+                    // dead zone to the capsule's own column instead of the
+                    // full screen width ("it only sometimes is dismissed
+                    // when you click somewhere else") — see
+                    // `capsule_dismiss_hole`'s doc comment. Falls back to
+                    // the old full-width dead zone if the live geometry
+                    // query fails for any reason.
+                    let hole = hypr_capsule_center_x(&monitor_name_for_dismiss).and_then(
+                        |center_x| {
+                            let (origin_x, _) = hypr_monitor_origin(&monitor_name_for_dismiss)?;
+                            Some(capsule_dismiss_hole(center_x, origin_x, search_width))
+                        },
+                    );
+                    panels.show_capsule_dismiss(capsule_dismiss_margin, hole);
                 }
                 let target = drawer_target_height(&drawer_box);
                 let current = drawer_box.size_request().1;
@@ -2975,6 +2988,64 @@ fn hypr_monitor_origin(name: &str) -> Option<(i32, i32)> {
         .map(|m| (m.x, m.y))
 }
 
+/// The bar/capsule's own layer-surface geometry for `monitor`, straight
+/// from the compositor (`hyprctl layers -j`, ground truth — not derived
+/// from anything GTK/gtk4-layer-shell reports client-side, since the
+/// wlr-layer-shell protocol never hands a client its own assigned x/y back;
+/// only width/height come through `configure`). Matched by `namespace`
+/// ("breadbar", set via `root.set_namespace` above), which is unique per
+/// output since each monitor gets its own bound `App` instance/window.
+/// Returns the surface's horizontal center in Hyprland's global coordinate
+/// space. `None` on any parse/lookup failure — callers must fall back to
+/// the pre-existing, safe-but-broader dead-zone behaviour rather than
+/// guess.
+fn hypr_capsule_center_x(monitor: &str) -> Option<i32> {
+    let output = std::process::Command::new("hyprctl")
+        .args(["layers", "-j"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let levels = root.get(monitor)?.get("levels")?.as_object()?;
+    for arr in levels.values() {
+        let Some(items) = arr.as_array() else {
+            continue;
+        };
+        for item in items {
+            if item.get("namespace").and_then(|v| v.as_str()) != Some("breadbar") {
+                continue;
+            }
+            let x = item.get("x")?.as_i64()? as i32;
+            let w = item.get("w")?.as_i64()? as i32;
+            return Some(x + w / 2);
+        }
+    }
+    None
+}
+
+/// The click-away scrim's capsule-column hole, in coordinates local to the
+/// `breadbar-dismiss` surface (see `PanelSet::show_capsule_dismiss`) —
+/// pure arithmetic, split out for unit testing. `capsule_center_global` and
+/// `monitor_origin_x` are both in Hyprland's global compositor space
+/// (`hypr_capsule_center_x`/`hypr_monitor_origin`); `column_width` is the
+/// capsule's own *configured* search-state width
+/// (`[launcher].search_width`), not a live-queried one — this fires right
+/// as `open_fn` starts the width-animation from idle to search width, so a
+/// live query at that exact instant would catch it mid-transition. Using
+/// the wider, settled target here (like `DRAWER_MAX_HEIGHT_PX` already does
+/// for the vertical bound) means the hole is never narrower than the
+/// capsule ever actually gets while the scrim is showing.
+fn capsule_dismiss_hole(
+    capsule_center_global: i32,
+    monitor_origin_x: i32,
+    column_width: i32,
+) -> (i32, i32) {
+    let local_center = capsule_center_global - monitor_origin_x;
+    (local_center - column_width / 2, column_width)
+}
+
 /// Hyprland connector names and GDK connector names can disagree after a
 /// hotplug (`DVI-I-1` vs `DVI-I-2`). Match the connector first, then the
 /// output's origin — transform swaps width/height so size is not reliable.
@@ -3088,6 +3159,37 @@ mod launcher_route_tests {
             resolve_launcher_route(None, "eDP-1", &["DVI-I-1"]),
             LauncherRoute::Local
         );
+    }
+}
+
+#[cfg(test)]
+mod capsule_dismiss_hole_tests {
+    use super::capsule_dismiss_hole;
+
+    #[test]
+    fn centered_capsule_on_primary_monitor_at_origin() {
+        // A 520px-wide capsule centered on a 1920px-wide monitor at global
+        // origin (0,0): global center x = 960, monitor origin x = 0.
+        let (x, w) = capsule_dismiss_hole(960, 0, 520);
+        assert_eq!((x, w), (960 - 260, 520));
+    }
+
+    #[test]
+    fn negative_origin_secondary_monitor_converts_to_local() {
+        // This machine's own DVI-I-1 (`hyprctl layers -j`, quoted in this
+        // module's doc comments): monitor origin x = -1080. A capsule
+        // centered on that output's own 1080px-wide span sits at global
+        // center x = -1080 + 540 = -540.
+        let (x, w) = capsule_dismiss_hole(-540, -1080, 520);
+        // Local center is 540 (origin subtracted back out); hole starts
+        // 260px to either side of it, independent of the monitor's sign.
+        assert_eq!((x, w), (540 - 260, 520));
+    }
+
+    #[test]
+    fn hole_width_always_matches_requested_column_width() {
+        let (_, w) = capsule_dismiss_hole(100, 0, 480);
+        assert_eq!(w, 480);
     }
 }
 
