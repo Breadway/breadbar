@@ -718,11 +718,38 @@ impl SimpleComponent for App {
 
         let connectivity_pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         connectivity_pair.add_css_class("stat-pair");
-        connectivity_pair.add_css_class("wifi-pair");
         connectivity_pair.add_css_class("icon-only");
         bar_chip(&connectivity_pair);
         wifi_img.set_halign(gtk4::Align::Center);
-        wifi_img.set_hexpand(false);
+        // `.stat-pair.icon-only` forces a 32px min-width on this box, wider
+        // than the 24px icon's natural size. Without hexpand, a `gtk4::Box`
+        // packs a non-expanding child at its natural size flush against the
+        // start edge and leaves the leftover width trailing after it — so
+        // `halign: Center` had nothing to center within and the glyph sat a
+        // few pixels left of true center (reported: wifi icon not centered
+        // on glass-workbench/liquid-motion). `bat_box` never showed this
+        // because it isn't `icon-only` — no forced min-width wider than its
+        // (icon + label) content, so there's no leftover space to
+        // mis-place. hexpand(true) gives the icon a fillable cell spanning
+        // the full 32px box, which `halign: Center` then centers within,
+        // matching `bat_box`'s already-centered result.
+        //
+        // A bare `set_hexpand(true)` on the image is not enough on its
+        // own: GTK4 computes a container's *effective* expand by OR-ing in
+        // its children's hexpand whenever the container's own hexpand
+        // hasn't been explicitly set, so the flag silently bubbles up
+        // through `connectivity_pair` into the shared right-hand stats box
+        // and from there into the centerbox's end slot — which then hands
+        // that slot most of the bar's remaining width instead of its
+        // normal packed size. The visible symptom was dramatic, not
+        // subtle: the whole vol/wifi cluster jumped left to sit against
+        // the clock, with a huge dead gap before battery/hamburger, in a
+        // `--screenshot bar` capture. `connectivity_pair.set_hexpand(false)`
+        // pins this box's own expand explicitly, which stops the
+        // computation from climbing any further — the child can still
+        // fill and center within this one box's fixed 32px cell.
+        wifi_img.set_hexpand(true);
+        connectivity_pair.set_hexpand(false);
         connectivity_pair.append(&wifi_img);
         // `connectivity_pair` and `bat_box` are appended in "Assemble"
         // below, per `[bar.slots].right`.

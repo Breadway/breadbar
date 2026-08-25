@@ -249,7 +249,6 @@ fn load_css() -> String {
              border-radius: 3px; min-height: 6px; }}\
          progressbar.osd-bar trough progress {{ background-image: none; background-color: @accent;\
              border-radius: 3px; min-height: 6px; }}\
-         .wifi-pair {{ padding: 6px; }}\
          window.breadbar-panel {{ background-color: alpha(@bg, 0.72); color: @on-bg;\
              border-radius: 14px; border: 1px solid alpha(@on-bg, 0.12); }}\
          window.breadbar-dismiss, .breadbar-dismiss-hit {{\
