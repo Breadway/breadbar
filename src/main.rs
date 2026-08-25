@@ -1033,6 +1033,14 @@ impl SimpleComponent for App {
             let results = launcher_results.clone();
             let close_fn = Rc::clone(&close_fn);
             let key_ctrl = gtk4::EventControllerKey::new();
+            // CAPTURE, not the default BUBBLE. A GtkEntry handles Return in the
+            // target phase itself — it emits `activate` and returns TRUE, which
+            // stops propagation before a bubble-phase controller ever runs, so
+            // Enter silently did nothing and the selected app never launched.
+            // Capturing puts this controller ahead of the entry's own handling
+            // for every key it cares about (Return/Up/Down/Escape), and keys it
+            // doesn't claim still Proceed to the entry for normal text input.
+            key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
             key_ctrl.connect_key_pressed(move |_, key, _, _| {
                 use gtk4::gdk::Key;
                 match key {
