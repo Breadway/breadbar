@@ -75,6 +75,13 @@ fn load_css() -> String {
     // and unconditional-but-unused block below), so this being "accent" vs
     // "green" vs "pink" per theme has no visible effect on them.
     let accent_from = tokens.accent_from();
+    // `[launcher].search_radius` (plan §7 phase 6c) — `LauncherMode::
+    // Embedded` only (spotlight); `.launcher().radius` itself already
+    // equals `radius_bar` for that theme (see its own theme.toml comment),
+    // so a theme that omits `search_radius` gets `radius_search ==
+    // radius_bar` here too, i.e. no visible shrink, matching bread-theme's
+    // own "default to the idle value" fallback.
+    let radius_search = format!("{}px", theme.launcher().search_radius);
 
     // `tokens.bar_border()` (plan §11 Phase 5): "full" (default, liquid-
     // motion's floating island) draws a border on all four edges; "bottom"
@@ -170,7 +177,12 @@ fn load_css() -> String {
          @keyframes digit-flip {{ from {{ opacity: 0; margin-top: 7px; }} to {{ opacity: 1; margin-top: 0; }} }}\
          @keyframes caret-draw {{ from {{ margin-right: 200px; opacity: 0.2; }} to {{ margin-right: 4px; opacity: 1; }} }}\
          window.breadbar {{ background-color: alpha(@bg, {bg_alpha}); color: @on-bg;\
-             border-radius: {radius_bar}; {window_border} }}\
+             border-radius: {radius_bar}; {window_border}\
+             transition: border-radius 0.3s {spring_settle}; }}\
+         /* `[launcher].search_radius` (plan §7 phase 6c, spotlight only —\
+            `launcher_entry` never gets focus under any other theme, so\
+            `.searching` never lands on `window.breadbar` there). */\
+         window.breadbar.searching {{ border-radius: {radius_search}; }}\
          /* `> box > centerbox`, not `> centerbox`: the root is a vbox (bar\
             row + drawer, plan §2) as of the `drawer` slot wiring — every\
             theme's centerbox is now one level deeper than before, this\
@@ -421,8 +433,18 @@ fn load_css() -> String {
          .bread-drawer row:selected {{ background-color: alpha(@{accent_from}, 0.18);\
              color: @on-bg; }}\
          .bread-drawer .app-name {{ font-size: 14px; font-weight: 500; }}\
-         .bread-drawer .app-muted {{ opacity: 0.45; font-size: 11px; }}",
+         .bread-drawer .app-muted {{ opacity: 0.45; font-size: 11px; }}\
+         /* `[launcher].sections` (plan §7 phase 6c) — the idle drawer's\
+            \"Recent\"/\"Apps\" group labels (`bread_launcher::gtk::\
+            build_header_row`). Unconditional, same reasoning as every other\
+            launcher rule above: only spotlight ever builds a row with this\
+            class at all. */\
+         .bread-drawer-section-header {{ padding: 6px 14px 2px; }}\
+         .section-header-label {{ font-size: 11px; font-weight: 600;\
+             letter-spacing: 0.08em; text-transform: uppercase;\
+             opacity: 0.45; }}",
         radius = radius,
+        radius_search = radius_search,
         radius_bar = radius_bar,
         radius_sm = radius_sm,
         radius_pill = radius_pill,

@@ -5,6 +5,7 @@ macro_rules! asset {
 }
 
 mod bar;
+mod launcher_command;
 mod notifications;
 mod osd;
 mod panel;
@@ -36,6 +37,14 @@ use std::rc::Rc;
 /// surface launched it.
 const LAUNCHER_APP_ID: &str = "box";
 const LAUNCHER_LAUNCHED_EVENT: &str = "bread.box.launched";
+
+/// The drawer's own content-height ceiling (`04-spotlight.html`: `.searching
+/// .results { max-height: 420px }`) — see [`drawer_target_height`]. Also
+/// used to size the click-away scrim's dead zone (see `open_fn` in `init`):
+/// the scrim's clickable region never reaches higher than the capsule row
+/// plus this much, so it can never overlap a real result row regardless of
+/// how tall the drawer currently is.
+const DRAWER_MAX_HEIGHT_PX: i32 = 420;
 
 pub struct BarInit {
     pub screenshot: Option<screenshot::ScreenshotRequest>,
@@ -177,6 +186,13 @@ pub enum AppInput {
     WidgetsUpdate(Vec<bread_shared::widget::WidgetSpec>),
     ReconcileMonitors,
     DismissPanels,
+    // `bread.command.box.open` (plan §7 phase 6c, `launcher_command`
+    // module): only ever dispatched when the active theme's launcher is
+    // `Embedded` — `launcher_command::spawn` never subscribes otherwise.
+    // Focuses `launcher_entry`, which the existing `EventControllerFocus`
+    // (`connect_enter`) already turns into an `open_fn()` call, the same
+    // path a mouse click into the entry takes.
+    OpenLauncher,
 }
 
 #[relm4::component(pub)]
@@ -513,6 +529,7 @@ impl SimpleComponent for App {
             &launcher_entries,
             launcher_cfg.icon_px,
             Rc::clone(&launcher_history),
+            launcher_cfg.sections,
         );
         launcher_results.scroller.add_css_class("bread-drawer-scroller");
 
@@ -963,6 +980,22 @@ impl SimpleComponent for App {
         widgets.drawer_box.set_overflow(gtk4::Overflow::Hidden);
         widgets.drawer_box.set_size_request(-1, 0);
 
+        // ── Query-mode results (plan §7 phase 6c: `=` calc, `>` cmd, `.`
+        // url) ───────────────────────────────────────────────────────────
+        // A second, small list living alongside `launcher_results.scroller`
+        // in the same drawer — only one of the two is ever visible at a
+        // time (see `connect_changed` below). Built unconditionally, same
+        // as `launcher_results` itself, but only ever APPENDED into
+        // `drawer_box` for an embedded launcher: every other theme must
+        // keep `drawer_box` exactly as childless as it already is (see the
+        // comment above `bar_modules.for_each_in_slot(&bar_slots.drawer, ..)`).
+        let mode_list = gtk4::ListBox::new();
+        mode_list.set_selection_mode(gtk4::SelectionMode::Browse);
+        mode_list.set_visible(false);
+        if launcher_cfg.mode == bread_theme::shell::LauncherMode::Embedded {
+            widgets.drawer_box.append(&mode_list);
+        }
+
         // ── Capsule expand/collapse + search wiring (theme 04/spotlight) ──
         // Effectively a no-op under every other theme: `launcher_entry`
         // never receives focus if it's never in a slot, so `open_fn` is
@@ -971,18 +1004,53 @@ impl SimpleComponent for App {
         // capsule shell (drawer height, entry placeholder/alignment,
         // keyboard focus) is this file's own.
         let anim: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
+        // Search-state width (plan §7 phase 6c: `[launcher].search_width`,
+        // `04-spotlight.html`'s `.searching .capsule { width: 520px }`) —
+        // a separate animation from the drawer's own height, both driven
+        // by `bread_theme::anim::spring_to` independently.
+        let anim_width: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
         let launcher_open: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        // The click-away scrim's dead zone (item B, see `DRAWER_MAX_HEIGHT_PX`'s
+        // own doc comment) — the capsule row's own theme-default dismiss
+        // offset (52px: `bar.window.height` + `bar.window.margin.top`) plus
+        // the drawer's own max content height, so the scrim's clickable
+        // region can never reach up into a rendered result row.
+        let capsule_dismiss_margin: i32 = theme::shell_theme()
+            .surfaces()
+            .get("breadbar-dismiss")
+            .map(|s| s.offset.first().copied().unwrap_or(0.0) as i32)
+            .unwrap_or(52)
+            + DRAWER_MAX_HEIGHT_PX;
 
         let open_fn: Rc<dyn Fn()> = Rc::new({
             let drawer_box = widgets.drawer_box.clone();
             let anim = Rc::clone(&anim);
+            let anim_width = Rc::clone(&anim_width);
             let launcher_open = Rc::clone(&launcher_open);
             let entry = launcher_entry.clone();
+            let root = root.clone();
+            let panels = panels.clone();
+            let idle_width = launcher_cfg.width;
+            let search_width = launcher_cfg.search_width;
             move || {
                 if !launcher_open.get() {
                     launcher_open.set(true);
                     entry.add_css_class("searching");
                     gtk4::prelude::EntryExt::set_alignment(&entry, 0.0);
+                    // `.searching` on the root itself (plan §7 phase 6c):
+                    // toggles `[launcher].search_radius` via CSS (see
+                    // theme.rs's `window.breadbar.searching` rule) and
+                    // marks the width animation's starting point below.
+                    root.add_css_class("searching");
+                    let current_width = root.width();
+                    let from = if current_width > 0 { current_width } else { idle_width };
+                    animate_capsule_width(&root, &anim_width, from, search_width);
+                    // Item B: click-away scrim. Shown at a fixed dead-zone
+                    // offset (`capsule_dismiss_margin`), never the live
+                    // drawer height — see that constant's own doc comment
+                    // for why a live-tracking offset would risk swallowing
+                    // clicks meant for a result row.
+                    panels.show_capsule_dismiss(capsule_dismiss_margin);
                 }
                 let target = drawer_target_height(&drawer_box);
                 let current = drawer_box.size_request().1;
@@ -992,9 +1060,13 @@ impl SimpleComponent for App {
         let close_fn: Rc<dyn Fn()> = Rc::new({
             let drawer_box = widgets.drawer_box.clone();
             let anim = Rc::clone(&anim);
+            let anim_width = Rc::clone(&anim_width);
             let launcher_open = Rc::clone(&launcher_open);
             let entry = launcher_entry.clone();
             let root_for_focus = root.clone();
+            let root_for_width = root.clone();
+            let panels = panels.clone();
+            let idle_width = launcher_cfg.width;
             move || {
                 if !launcher_open.get() {
                     return;
@@ -1006,6 +1078,10 @@ impl SimpleComponent for App {
                 if placeholder_clock {
                     entry.set_placeholder_text(Some(&bar::clock::time()));
                 }
+                root_for_width.remove_css_class("searching");
+                let current_width = root_for_width.width();
+                animate_capsule_width(&root_for_width, &anim_width, current_width, idle_width);
+                panels.hide_dismiss();
                 let current = drawer_box.size_request().1;
                 animate_drawer_height(&drawer_box, &anim, current, 0);
                 // `keyboard = "on_demand"` (plan §7) ties the layer-shell
@@ -1015,11 +1091,55 @@ impl SimpleComponent for App {
             }
         });
 
+        panels.set_on_dismiss({
+            let close_fn = Rc::clone(&close_fn);
+            move || close_fn()
+        });
+
+        // Which of the four query modes is currently driving `mode_list`
+        // (plan §7 phase 6c) — read by `key_ctrl` below to route Up/Down/
+        // Return at the right list, and whether that mode's row is even
+        // selectable (an info-only row, e.g. an empty calc expression,
+        // never is). `launcher_cfg.modes` gates which prefixes actually
+        // switch mode: a prefix this theme doesn't list in `modes` falls
+        // through to a literal Apps query, prefix character and all.
+        let active_mode: Rc<Cell<bread_launcher::QueryKind>> =
+            Rc::new(Cell::new(bread_launcher::QueryKind::Apps));
+        let mode_selectable: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        let modes = launcher_cfg.modes.clone();
+
         {
             let results = launcher_results.clone();
+            let mode_list = mode_list.clone();
             let open_fn = Rc::clone(&open_fn);
+            let active_mode = Rc::clone(&active_mode);
+            let mode_selectable = Rc::clone(&mode_selectable);
             launcher_entry.connect_changed(move |entry| {
-                results.set_query(entry.text().as_str());
+                let text = entry.text();
+                let parsed = bread_launcher::parse_query(&text);
+                let mode_name = match parsed.kind {
+                    bread_launcher::QueryKind::Calc => "calc",
+                    bread_launcher::QueryKind::Cmd => "cmd",
+                    bread_launcher::QueryKind::Url => "url",
+                    bread_launcher::QueryKind::Apps => "apps",
+                };
+                let kind = if modes.iter().any(|m| m == mode_name) {
+                    parsed.kind
+                } else {
+                    bread_launcher::QueryKind::Apps
+                };
+                active_mode.set(kind);
+                if kind == bread_launcher::QueryKind::Apps {
+                    mode_list.set_visible(false);
+                    results.scroller.set_visible(true);
+                    mode_selectable.set(false);
+                    results.set_query(text.as_str());
+                } else {
+                    results.scroller.set_visible(false);
+                    let selectable = populate_mode_list(&mode_list, &parsed);
+                    mode_selectable.set(selectable);
+                    mode_list.set_visible(true);
+                }
                 open_fn();
             });
         }
@@ -1031,7 +1151,10 @@ impl SimpleComponent for App {
         }
         {
             let results = launcher_results.clone();
+            let mode_list = mode_list.clone();
             let close_fn = Rc::clone(&close_fn);
+            let active_mode = Rc::clone(&active_mode);
+            let mode_selectable = Rc::clone(&mode_selectable);
             let key_ctrl = gtk4::EventControllerKey::new();
             // CAPTURE, not the default BUBBLE. A GtkEntry handles Return in the
             // target phase itself — it emits `activate` and returns TRUE, which
@@ -1043,6 +1166,37 @@ impl SimpleComponent for App {
             key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
             key_ctrl.connect_key_pressed(move |_, key, _, _| {
                 use gtk4::gdk::Key;
+                if active_mode.get() != bread_launcher::QueryKind::Apps {
+                    // Calc/Cmd/Url (plan §7 phase 6c): Up/Down move the
+                    // (possibly single-row) `mode_list` selection; Return
+                    // runs whatever `mode_row_action` finds on the
+                    // selected row — nothing, for a calc result or an
+                    // empty prompt, since those rows carry none.
+                    return match key {
+                        Key::Escape => {
+                            close_fn();
+                            gtk4::glib::Propagation::Stop
+                        }
+                        Key::Down if mode_selectable.get() => {
+                            listbox_select_next(&mode_list);
+                            gtk4::glib::Propagation::Stop
+                        }
+                        Key::Up if mode_selectable.get() => {
+                            listbox_select_prev(&mode_list);
+                            gtk4::glib::Propagation::Stop
+                        }
+                        Key::Return | Key::KP_Enter => {
+                            if let Some(row) = mode_list.selected_row() {
+                                if let Some(action) = mode_row_action(&row) {
+                                    run_mode_action(&action);
+                                    close_fn();
+                                }
+                            }
+                            gtk4::glib::Propagation::Stop
+                        }
+                        _ => gtk4::glib::Propagation::Proceed,
+                    };
+                }
                 match key {
                     Key::Escape => {
                         close_fn();
@@ -1072,6 +1226,17 @@ impl SimpleComponent for App {
                 }
             });
             launcher_entry.add_controller(key_ctrl);
+        }
+        // Click on a mode_list row (a `>`-mode command or the `.`-mode
+        // "open this URL" prompt) acts too, same as a result row's click.
+        {
+            let close_fn = Rc::clone(&close_fn);
+            mode_list.connect_row_activated(move |_, row| {
+                if let Some(action) = mode_row_action(row) {
+                    run_mode_action(&action);
+                    close_fn();
+                }
+            });
         }
         // Row click launches too, same as breadbox's own overlay.
         {
@@ -1188,6 +1353,12 @@ impl SimpleComponent for App {
         if init.primary {
             bar::tray::spawn_watcher(sender.clone());
             widgets::client::spawn(sender.clone());
+            // `bread.command.box.open` (plan §7 phase 6c): one subscriber,
+            // same reasoning as `widgets::client::spawn` above — a keybind
+            // should focus ONE capsule, not every satellite monitor's.
+            // A no-op call under every theme but spotlight (see the
+            // module's own doc comment).
+            launcher_command::spawn(sender.clone());
             // Optional (plan §10, Phase 2 item 6): live theme.toml/extra.css
             // token reload, the same way a pywal palette change already
             // hot-reloads via `apply_app_css`. One watch per process, so
@@ -1514,6 +1685,9 @@ impl SimpleComponent for App {
             }
             AppInput::DismissPanels => {
                 self.panels.hide_all();
+            }
+            AppInput::OpenLauncher => {
+                self.launcher_entry.grab_focus();
             }
         }
     }
@@ -2259,6 +2433,30 @@ fn animate_drawer_height(
     *anim.borrow_mut() = Some(id);
 }
 
+/// Drives the capsule's own window width from `from` to `to` over 360ms
+/// (plan §7 phase 6c: `[launcher].search_width`, `04-spotlight.html`'s
+/// `.searching .capsule { width: 520px }`) — the same `spring_to` +
+/// `set_size_request` technique `animate_drawer_height` uses for the
+/// drawer's height, applied to the root window itself instead of a child
+/// box. Unlike a drawer collapse, width never animates toward a negative
+/// target (idle/search widths are both positive theme values), so there is
+/// no analogous "clamp to 0" concern here.
+fn animate_capsule_width(
+    root: &gtk4::ApplicationWindow,
+    anim: &Rc<std::cell::RefCell<Option<gtk4::TickCallbackId>>>,
+    from: i32,
+    to: i32,
+) {
+    if let Some(id) = anim.borrow_mut().take() {
+        id.remove();
+    }
+    let target = root.clone();
+    let id = bread_theme::anim::spring_to(root, from, to, 360.0, move |w| {
+        target.set_size_request(w.max(0), -1);
+    });
+    *anim.borrow_mut() = Some(id);
+}
+
 /// The drawer's natural content height right now, capped at the demo's own
 /// 420px (`04-spotlight.html`: `.searching .results { max-height: 420px }`)
 /// — `ResultsList`'s scroller already self-caps at 480px
@@ -2266,8 +2464,180 @@ fn animate_drawer_height(
 /// spotlight-specific ceiling on top of that shared one, not a replacement
 /// for it.
 fn drawer_target_height(drawer_box: &gtk4::Box) -> i32 {
-    let (_, natural, _, _) = drawer_box.measure(gtk4::Orientation::Vertical, -1);
-    natural.min(420)
+    // Deliberately never measures `drawer_box` itself. `animate_drawer_height`'s
+    // tick callback calls `drawer_box.set_size_request(-1, h)` on every
+    // frame, and GTK clamps a widget's own `measure()` result up to at
+    // least its own explicit size request — so once an animation has run
+    // even one frame, `drawer_box.measure()` reports that frame's forced
+    // height (or the spring's overshoot past it), not whatever its
+    // children actually need next. This bit spotlight's new query-mode
+    // rows directly: switching from the (tall) app list to a one-row calc
+    // result measured "437" instead of "~33", because the PREVIOUS
+    // animation frame had already forced `drawer_box` to 437px.
+    //
+    // Summing each currently-visible child's own natural height instead
+    // sidesteps this entirely — `launcher_results.scroller` and
+    // `mode_list` never get an explicit size request of their own, so
+    // their `measure()` always reflects their actual current content.
+    let mut total = 0;
+    let mut child = drawer_box.first_child();
+    while let Some(c) = child {
+        if c.is_visible() {
+            let (_, natural, _, _) = c.measure(gtk4::Orientation::Vertical, -1);
+            total += natural;
+        }
+        child = c.next_sibling();
+    }
+    total.min(DRAWER_MAX_HEIGHT_PX)
+}
+
+// ── Query-mode rows (plan §7 phase 6c) ──────────────────────────────────
+//
+// `mode_list`'s rows are NOT `bread_launcher::DesktopEntry`-backed
+// (`bread_launcher::gtk::row_entry` returns `None` for every one of
+// these), so they're built/read here rather than through that crate.
+
+/// A single-line, non-interactive row — the calc result, or a "nothing
+/// typed yet" placeholder. Reuses `.app-name` so it inherits the same
+/// `.bread-drawer row` typography `bread-launcher`'s own rows get.
+fn mode_info_row(text: &str) -> gtk4::ListBoxRow {
+    let row = gtk4::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+    let lbl = gtk4::Label::new(Some(text));
+    lbl.add_css_class("app-name");
+    lbl.set_xalign(0.0);
+    row.set_child(Some(&lbl));
+    row
+}
+
+/// A single-line, actionable row (a `>`-mode command, or the `.`-mode
+/// "open this URL" prompt) — Enter/click spawns `action` once resolved by
+/// [`run_mode_action`].
+fn mode_action_row(text: &str, action: ModeAction) -> gtk4::ListBoxRow {
+    let row = gtk4::ListBoxRow::new();
+    let lbl = gtk4::Label::new(Some(text));
+    lbl.add_css_class("app-name");
+    lbl.set_xalign(0.0);
+    row.set_child(Some(&lbl));
+    unsafe { row.set_data("mode_action", action) };
+    row
+}
+
+/// What Enter/click on a [`mode_action_row`] does. Two variants, not one
+/// shell-command string, so a `.`-mode URL (arbitrary user-typed text)
+/// never passes through `bash -c` at all — only a `>`-mode command's own
+/// fixed, trusted `exec` string does.
+#[derive(Clone)]
+enum ModeAction {
+    RunShell(&'static str),
+    OpenUrl(String),
+}
+
+fn mode_row_action(row: &gtk4::ListBoxRow) -> Option<ModeAction> {
+    unsafe { row.data::<ModeAction>("mode_action").map(|p| p.as_ref().clone()) }
+}
+
+fn run_mode_action(action: &ModeAction) {
+    match action {
+        ModeAction::RunShell(cmd) => {
+            let _ = std::process::Command::new("bash")
+                .args(["-c", cmd])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        ModeAction::OpenUrl(url) => {
+            // No scheme-adding shell involved — `xdg-open` gets the raw
+            // argument, so nothing in a `.`-mode query is ever parsed as
+            // shell syntax.
+            let target = if url.contains("://") {
+                url.clone()
+            } else {
+                format!("https://{url}")
+            };
+            let _ = std::process::Command::new("xdg-open")
+                .arg(target)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+    }
+}
+
+/// Moves `list`'s selection to the next/previous row — unlike
+/// `bread_launcher::gtk::ResultsList::select_next`/`select_prev`, `mode_list`
+/// never has hidden rows to skip (it's cleared and rebuilt from scratch on
+/// every query change), so this is the plain, un-filtered version.
+fn listbox_select_next(list: &gtk4::ListBox) {
+    let cur = list.selected_row().map(|r| r.index()).unwrap_or(-1);
+    if let Some(row) = list.row_at_index(cur + 1) {
+        list.select_row(Some(&row));
+    }
+}
+
+fn listbox_select_prev(list: &gtk4::ListBox) {
+    let cur = list.selected_row().map(|r| r.index()).unwrap_or(0);
+    if cur > 0 {
+        if let Some(row) = list.row_at_index(cur - 1) {
+            list.select_row(Some(&row));
+        }
+    }
+}
+
+/// Clears `mode_list` and rebuilds it for `parsed` — the calc result,
+/// filtered `>`-mode commands, or the `.`-mode "open this URL" prompt.
+/// Returns whether anything is now selectable (a real command/URL row, not
+/// just an info row) so the caller knows whether Return has anything to do.
+fn populate_mode_list(mode_list: &gtk4::ListBox, parsed: &bread_launcher::ParsedQuery) -> bool {
+    while let Some(row) = mode_list.row_at_index(0) {
+        mode_list.remove(&row);
+    }
+    match parsed.kind {
+        bread_launcher::QueryKind::Calc => {
+            match bread_launcher::eval_calc(&parsed.value) {
+                Some(result) => mode_list.append(&mode_info_row(&format!("= {result}"))),
+                None => mode_list.append(&mode_info_row("=")),
+            }
+            false
+        }
+        bread_launcher::QueryKind::Cmd => {
+            let matches = bread_launcher::filter_commands(
+                &parsed.value,
+                bread_launcher::builtin_commands(),
+            );
+            if matches.is_empty() {
+                mode_list.append(&mode_info_row("No matching commands"));
+                false
+            } else {
+                for cmd in &matches {
+                    mode_list.append(&mode_action_row(cmd.name, ModeAction::RunShell(cmd.exec)));
+                }
+                if let Some(first) = mode_list.row_at_index(0) {
+                    mode_list.select_row(Some(&first));
+                }
+                true
+            }
+        }
+        bread_launcher::QueryKind::Url => {
+            if parsed.value.is_empty() {
+                mode_list.append(&mode_info_row("."));
+                false
+            } else {
+                mode_list.append(&mode_action_row(
+                    &format!("Open {}", parsed.value),
+                    ModeAction::OpenUrl(parsed.value.clone()),
+                ));
+                if let Some(first) = mode_list.row_at_index(0) {
+                    mode_list.select_row(Some(&first));
+                }
+                true
+            }
+        }
+        bread_launcher::QueryKind::Apps => false,
+    }
 }
 
 fn popover_tab(label: &str) -> gtk4::ToggleButton {

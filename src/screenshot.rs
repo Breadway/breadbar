@@ -53,6 +53,13 @@ const KNOWN_VIEWS: &[&str] = &[
     // capsule, collapsed" under spotlight specifically.
     "capsule-collapsed",
     "capsule-expanded",
+    // Phase 6c: query sections and the `=` calc mode — see `dispatch`'s
+    // two new match arms below. "capsule-expanded" already exercises the
+    // search-state width/radius change (item E: it types a query, which
+    // now also drives `open_fn`'s `.searching` root class + capsule-width
+    // spring animation), so that gap doesn't need its own view.
+    "capsule-sections",
+    "capsule-calc",
 ];
 
 #[derive(Parser)]
@@ -228,6 +235,53 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                     // settle, so the drawer's size_request (and the actual
                     // on-screen layer-shell surface it grows) has reached
                     // its final height before grabbing pixels.
+                    gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                        let drawer_h = drawer_box.size_request().1.max(0);
+                        let capture_h = bar_height + drawer_h;
+                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                    });
+                });
+            });
+        }
+        "capsule-sections" => {
+            // Focus with NO query typed — the idle browse view
+            // (`ResultsList::new`'s "Recent"/"Apps" header rows are visible
+            // from construction; `set_query` is what would hide them, and
+            // it's never called here). Same settle timing as
+            // "capsule-expanded", just without the `entry.set_text` step.
+            let entry = handles.launcher_entry;
+            let drawer_box = handles.drawer_box;
+            root.connect_map(move |_| {
+                let output = output.clone();
+                let entry = entry.clone();
+                let drawer_box = drawer_box.clone();
+                gtk4::glib::timeout_add_local_once(PRE_POPUP_DELAY, move || {
+                    entry.grab_focus();
+                    let output = output.clone();
+                    let drawer_box = drawer_box.clone();
+                    gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                        let drawer_h = drawer_box.size_request().1.max(0);
+                        let capture_h = bar_height + drawer_h;
+                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                    });
+                });
+            });
+        }
+        "capsule-calc" => {
+            // `=` mode (item C): the drawer's `mode_list` shows a single
+            // evaluated result row instead of `launcher_results.scroller`
+            // (see `populate_mode_list`'s `QueryKind::Calc` arm).
+            let entry = handles.launcher_entry;
+            let drawer_box = handles.drawer_box;
+            root.connect_map(move |_| {
+                let output = output.clone();
+                let entry = entry.clone();
+                let drawer_box = drawer_box.clone();
+                gtk4::glib::timeout_add_local_once(PRE_POPUP_DELAY, move || {
+                    entry.grab_focus();
+                    entry.set_text("=6*7");
+                    let output = output.clone();
+                    let drawer_box = drawer_box.clone();
                     gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
                         let drawer_h = drawer_box.size_request().1.max(0);
                         let capture_h = bar_height + drawer_h;
