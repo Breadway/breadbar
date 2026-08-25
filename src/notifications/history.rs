@@ -180,8 +180,12 @@ pub fn build_window(store: Store) -> Ui {
     // Overrides `[surfaces."breadbar-notif"].width` (320px, the live-toast
     // popup's width — see `surface::apply`'s doc comment): the history
     // window genuinely wants a different width on the same namespace, and
-    // that isn't something the manifest schema models today.
+    // that isn't something the manifest schema models today. Both calls
+    // must be overridden, not just `set_default_width` — `apply()` also
+    // pins `set_size_request` to the toast's 320px, and a bare width alone
+    // would lose to that pin the same way it lost to a wide child before.
     window.set_default_width(360);
+    window.set_size_request(360, -1);
     window.set_keyboard_mode(KeyboardMode::OnDemand);
     crate::theme::bind_auto(&window);
 

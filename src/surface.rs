@@ -19,12 +19,15 @@ use gtk4_layer_shell::{Edge, Layer, LayerShell};
 /// gtk4-layer-shell's own defaults rather than panicking, matching every
 /// other "malformed/incomplete theme" fallback in this system.
 ///
-/// Does not set `set_default_width` for a namespace shared by more than one
-/// window with genuinely different widths (`breadbar-notif`'s live toast is
-/// 320px, its history sibling is 360px, and only the toast's width is
-/// modeled in `[surfaces.*]` — see the Phase 0 constant inventory); callers
-/// that need a different width than the theme's own set it explicitly
-/// afterward.
+/// The width applied here is not authoritative for a namespace shared by
+/// more than one window with genuinely different widths (`breadbar-notif`'s
+/// live toast is 320px, its history sibling is 360px, and only the toast's
+/// width is modeled in `[surfaces.*]` — see the Phase 0 constant inventory);
+/// callers that need a different width than the theme's own set it
+/// explicitly afterward. Because a `Px` width is pinned with BOTH
+/// `set_default_width` and `set_size_request` (see below — the latter is
+/// what actually holds against a wide child), such a caller must override
+/// both, not just `set_default_width`, or the pin from here wins.
 pub fn apply(window: &gtk4::Window, namespace: &str) {
     let theme = crate::theme::shell_theme();
     let Some(surf) = theme.surfaces().get(namespace) else {
@@ -74,5 +77,12 @@ pub fn apply(window: &gtk4::Window, namespace: &str) {
 
     if let SurfaceWidth::Px(px) = surf.width {
         window.set_default_width(px);
+        // set_default_width alone is only a preference — a wide child (an
+        // unwrapped app-name label, or a long summary/body before GTK has
+        // any allocation narrower than its natural width to wrap against)
+        // overrides it, so the window renders wider than the theme's
+        // requested px and stops matching the theme. Same trap, same fix,
+        // as main.rs's capsule `Width::Px` handling — see its comment.
+        window.set_size_request(px, -1);
     }
 }
