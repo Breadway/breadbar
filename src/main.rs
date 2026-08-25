@@ -1705,7 +1705,31 @@ impl SimpleComponent for App {
                 self.panels.hide_all();
             }
             AppInput::OpenLauncher => {
-                self.launcher_entry.grab_focus();
+                // Only the primary instance subscribes to the open command
+                // (`launcher_command::spawn`), but `self.monitor` here is
+                // whichever output was focused ONCE, at this instance's own
+                // `init()` — baked in at process start, not re-resolved on
+                // every keybind press. If the user has since moved focus to
+                // a different monitor, blindly grabbing focus on `self`
+                // would open the capsule on the wrong screen. Re-resolve
+                // the focused monitor now and route to whichever instance
+                // actually owns it.
+                let satellite_names: Vec<&str> =
+                    self.satellites.iter().map(|(n, _)| n.as_str()).collect();
+                let focused = primary_hypr_monitor();
+                match resolve_launcher_route(focused.as_deref(), &self.monitor, &satellite_names)
+                {
+                    LauncherRoute::Satellite(name) => {
+                        // resolve_launcher_route only returns a name present in
+                        // satellite_names, so this lookup cannot miss.
+                        if let Some((_, ctrl)) = self.satellites.iter().find(|(n, _)| *n == name) {
+                            ctrl.sender().emit(AppInput::OpenLauncher);
+                        }
+                    }
+                    LauncherRoute::Local => {
+                        self.launcher_entry.grab_focus();
+                    }
+                }
             }
         }
     }
@@ -2847,6 +2871,35 @@ fn primary_hypr_monitor() -> Option<String> {
         .map(|m| m.name.clone())
 }
 
+/// Where `AppInput::OpenLauncher` should be actually handled: locally (this
+/// instance grabs its own capsule's focus), or forwarded to a specific
+/// satellite instance. Pure decision logic, split out of the `update` match
+/// arm so it's unit-testable without a live `App`/GTK/Hyprland stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LauncherRoute {
+    Local,
+    Satellite(String),
+}
+
+/// `focused`: the currently-focused Hyprland monitor, re-queried at
+/// keybind-fire time (`None` if Hyprland's monitor query failed, e.g.
+/// screenshot mode). `own`: this instance's own monitor, fixed at `init()`.
+/// `satellites`: names of monitors this (necessarily primary) instance
+/// tracks a `Controller<App>` for.
+///
+/// Falls back to `Local` whenever forwarding isn't possible or isn't
+/// needed, so a caller can always make forward progress: no focused
+/// monitor, the focused monitor is this instance's own, or the focused
+/// monitor has no tracked satellite yet.
+fn resolve_launcher_route(focused: Option<&str>, own: &str, satellites: &[&str]) -> LauncherRoute {
+    match focused {
+        Some(name) if name != own && satellites.contains(&name) => {
+            LauncherRoute::Satellite(name.to_string())
+        }
+        _ => LauncherRoute::Local,
+    }
+}
+
 fn hypr_monitor_names() -> Vec<String> {
     hypr_monitors_live()
         .into_iter()
@@ -2936,4 +2989,43 @@ fn drop_satellite(satellites: &mut Vec<(String, Controller<App>)>, name: &str) {
             true
         }
     });
+}
+
+#[cfg(test)]
+mod launcher_route_tests {
+    use super::{resolve_launcher_route, LauncherRoute};
+
+    #[test]
+    fn focused_monitor_is_own_stays_local() {
+        assert_eq!(
+            resolve_launcher_route(Some("eDP-1"), "eDP-1", &["DVI-I-1"]),
+            LauncherRoute::Local
+        );
+    }
+
+    #[test]
+    fn focused_monitor_is_tracked_satellite_forwards() {
+        assert_eq!(
+            resolve_launcher_route(Some("DVI-I-1"), "eDP-1", &["DVI-I-1"]),
+            LauncherRoute::Satellite("DVI-I-1".to_string())
+        );
+    }
+
+    #[test]
+    fn focused_monitor_with_no_tracked_satellite_falls_back_local() {
+        // e.g. reconcile hasn't caught up with a very recent hotplug yet.
+        assert_eq!(
+            resolve_launcher_route(Some("HDMI-A-1"), "eDP-1", &["DVI-I-1"]),
+            LauncherRoute::Local
+        );
+    }
+
+    #[test]
+    fn no_focused_monitor_falls_back_local() {
+        // Hyprland's monitor query failed (screenshot mode, hyprctl missing).
+        assert_eq!(
+            resolve_launcher_route(None, "eDP-1", &["DVI-I-1"]),
+            LauncherRoute::Local
+        );
+    }
 }
