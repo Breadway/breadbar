@@ -507,7 +507,11 @@ pub fn apply() {
 }
 
 thread_local! {
-    static SHELL_THEME_MONITOR: RefCell<Option<gtk4::gio::FileMonitor>> =
+    // `bread_theme::shell::ThemeWatch`, not a bare `gio::FileMonitor`: the
+    // watch now re-arms itself onto a new theme's directory when the active
+    // theme id changes underneath it (see that type's doc comment), so the
+    // handle we keep alive is opaque, not a single fixed monitor.
+    static SHELL_THEME_MONITOR: RefCell<Option<bread_theme::shell::ThemeWatch>> =
         const { RefCell::new(None) };
 }
 
