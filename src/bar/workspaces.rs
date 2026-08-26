@@ -277,6 +277,13 @@ struct Geom {
 struct TrailInner {
     tick: Option<gtk4::TickCallbackId>,
     geom: Geom,
+    /// Last width/height measured from a button that was actually allocated.
+    /// A row rebuild (switching to an empty workspace makes Hyprland create
+    /// and destroy it) can leave every button unallocated for a frame, and
+    /// without a remembered size the trail had nothing safe to animate from
+    /// and fell back to an instant `place()` — which is what made a switch
+    /// snap instead of move.
+    natural: Option<(f64, f64)>,
 }
 
 /// Overlay + Fixed pill sitting *behind* the workspace buttons. The
@@ -317,6 +324,7 @@ impl WorkspaceTrail {
 
         let inner = Rc::new(RefCell::new(TrailInner {
             tick: None,
+            natural: None,
             geom: Geom {
                 x: 0.0,
                 y: 0.0,
@@ -418,6 +426,7 @@ impl WorkspaceTrail {
         } else {
             None
         };
+        let cached = st.natural;
         drop(st);
 
         // Width must always come from a button that is CURRENTLY IN THE ROW.
@@ -447,19 +456,24 @@ impl WorkspaceTrail {
         // Taking position from the live geometry and width from the source
         // button's natural size keeps the motion continuous while making width
         // a pure function of which button we started from.
-        // `natural` is None only if BOTH buttons are detached, in which case
-        // there is no sane width to animate from and the caller falls back to
-        // an instant `place()`. There is deliberately no path that returns the
-        // live width.
-        match (live, natural) {
-            (Some(live), Some(natural)) => Some(Geom {
+        if let Some(n) = natural {
+            self.inner.borrow_mut().natural = Some((n.w, n.h));
+        }
+        // Only x comes from the live geometry. That is what makes an
+        // interrupted switch continue from where the pill currently is instead
+        // of jumping back. y/w/h always come from a real button: taking y from
+        // a mid-animation or post-rebuild geometry is what made the pill sit
+        // low, and taking w from it is what let the width compound.
+        let size = natural.map(|n| (n.w, n.h)).or(cached);
+        match (live, natural, size) {
+            (Some(live), _, Some((w, h))) => Some(Geom {
                 x: live.x,
-                y: live.y,
-                w: natural.w,
-                h: natural.h,
+                y: natural.map(|n| n.y).unwrap_or(live.y),
+                w,
+                h,
             }),
-            (None, natural) => natural,
-            (Some(_), None) => None,
+            (None, Some(natural), _) => Some(natural),
+            _ => None,
         }
     }
 }
