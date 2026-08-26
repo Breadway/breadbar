@@ -255,6 +255,14 @@ impl SimpleComponent for App {
 
                 #[name = "center_box"]
                 gtk::CenterBox {
+                    // Fill the bar's height. Without this the CenterBox takes
+                    // only its natural height and sits at the TOP of the vbox,
+                    // leaving the remainder as dead space along the bottom
+                    // edge — so every valign:Center child centred within a
+                    // short box rather than within the bar, and the whole row
+                    // rode high. Regression from wrapping the bar row in a
+                    // vbox to gain the drawer slot.
+                    set_vexpand: true,
                 },
 
                 #[name = "drawer_box"]
@@ -506,7 +514,11 @@ impl SimpleComponent for App {
         clock_box.set_valign(gtk4::Align::Center);
         clock_box.set_vexpand(false);
         // Varela Round's em box sits optically high in the 44px island.
-        clock_box.set_margin_top(3);
+        // No compensating margin: this +3 existed to nudge the clock down
+        // against the mis-centred CenterBox above. With the row now filling
+        // the bar height and centring properly, the same offset would push
+        // the clock 3px BELOW everything else.
+        clock_box.set_margin_top(0);
         for digit in &clock_digits {
             clock_box.append(digit);
         }
