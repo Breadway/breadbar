@@ -90,6 +90,28 @@ fn load_css() -> String {
     // and unconditional-but-unused block below), so this being "accent" vs
     // "green" vs "pink" per theme has no visible effect on them.
     let accent_from = tokens.accent_from();
+    // `accent_to` (Trail's own gradient end stop) and `accent2` (a second,
+    // independent accent — daylight's amber equaliser, distinct from its
+    // teal workspace-trail) — both palette token names, never hex, same
+    // reasoning as `accent_from` above.
+    let accent_to = tokens.accent_to();
+    let accent2 = tokens.accent2();
+
+    // Axis 1 (daylight, plan §11 phase 7): `tokens.light()` — see that
+    // method's doc comment (bread-theme) for the full reasoning. Every
+    // surface/ink pair in this stylesheet through spotlight hardcoded
+    // `@bg` (a FIXED, never-pywal-derived dark hex — see
+    // `bread_theme::palette`'s `FIXED_BACKGROUND`) as the translucent
+    // surface fill and `@on-bg` (that fixed dark colour's computed-legible,
+    // therefore always near-white, ink) as the text/wash colour. That is
+    // exactly backwards for an ink-on-paper theme: `panel`/`ink` swap which
+    // of those two FIXED, anti-correlated tokens plays which role. This is
+    // NOT a general "pick any light surface colour" mechanism — it works
+    // only because `@bg` is pinned dark and `@on-bg` is its computed
+    // opposite, by construction, regardless of pywal. See the task report
+    // for the full inventory of every site this swap had to reach.
+    let light = tokens.light();
+    let (panel, ink): (&str, &str) = if light { ("@on-bg", "@bg") } else { ("@bg", "@on-bg") };
     // `[launcher].search_radius` (plan §7 phase 6c) — `LauncherMode::
     // Embedded` only (spotlight); `.launcher().radius` itself already
     // equals `radius_bar` for that theme (see its own theme.toml comment),
@@ -108,12 +130,56 @@ fn load_css() -> String {
     // horizontal padding too: the flush bar's demo padding (`0 12px`,
     // symmetric) differs from the island's own asymmetric `0 8px 0 6px`.
     let flush = tokens.bar_border() == "bottom";
-    let window_border = if flush {
-        "border: none; border-bottom: 1px solid alpha(@on-bg, 0.07);".to_string()
+    // Axis 3 (daylight, plan §11 phase 7): `bar_border == "segmented"` —
+    // `window.breadbar` itself draws NO fill/border/radius/shadow at all
+    // (fully transparent); the bar's three slot-group containers
+    // (`workspace_row`/`center_area`/`stats_box`, each carrying a
+    // `.bar-segment` class added unconditionally in main.rs) draw their own
+    // pill surfaces instead — see `segment_css` below. This is what lets
+    // one GTK window read as three detached floating pills rather than one
+    // continuous strip; see the task report for exactly what this can and
+    // can't express (the window is still ONE input-hit-testable surface —
+    // clicking in a transparent gap between pills does not click through to
+    // whatever's behind the bar, only true multi-window segmentation would
+    // do that).
+    let segmented = tokens.bar_border() == "segmented";
+    let window_chrome = if segmented {
+        "background-color: transparent; border: none; box-shadow: none;".to_string()
+    } else if flush {
+        format!(
+            "background-color: alpha({panel}, {bg_alpha}); border: none; \
+             border-bottom: 1px solid alpha({ink}, 0.07);"
+        )
     } else {
-        "border: 1px solid alpha(@on-bg, 0.08);".to_string()
+        format!("background-color: alpha({panel}, {bg_alpha}); border: 1px solid alpha({ink}, 0.08);")
     };
-    let centerbox_padding = if flush { "0 12px" } else { "0 8px 0 6px" };
+    let bar_radius = if segmented {
+        "0px".to_string()
+    } else {
+        radius_bar.clone()
+    };
+    let centerbox_padding = if flush || segmented { "0 14px" } else { "0 8px 0 6px" };
+    // The three detached pills themselves — a no-op empty rule under every
+    // non-segmented theme, so `.bar-segment` (added unconditionally to all
+    // three slot-group boxes in main.rs) renders nothing extra for them.
+    // Demo: `.seg { background: rgba(255,255,255,.94); border: 1px solid
+    // rgba(26,29,34,.10); border-radius: 14px;
+    // box-shadow: 0 2px 10px rgba(26,29,34,.13), 0 0 0 .5px rgba(255,255,255,.7) inset }`.
+    // Safe to pair a real box-shadow with an unblurred surface (axis 4:
+    // daylight's own `[compositor.breadbar].blur = false`) — a box-shadow
+    // above a BLURRED, `ignore_alpha`d surface is the shadow-halo bug fixed
+    // in breadbox by removing the shadow outright; with blur off there is
+    // no blur pass to catch this rectangle inside.
+    let segment_css = if segmented {
+        format!(
+            ".bar-segment {{ background-color: alpha({panel}, {bg_alpha}); \
+                 border: 1px solid alpha({ink}, 0.10); border-radius: {radius_bar}; \
+                 box-shadow: 0 2px 10px alpha({ink}, 0.13); }}\
+             "
+        )
+    } else {
+        String::new()
+    };
 
     // Radius for `.stat-pair` (vol/wifi/battery/hamburger chips): radius_sm
     // for liquid-motion (9px) and glass-workbench (6px, exact match to that
@@ -169,15 +235,25 @@ fn load_css() -> String {
         // it's also used but for a different, already-correct reason.
         // Reported: "the pills on liquid motion just look off".
         bread_theme::shell::WorkspaceStyle::Trail => format!(
-            ".workspace-trail {{ background-image: linear-gradient(90deg, @accent, @teal);\
-                 background-color: @accent; border-radius: {radius_sm}; }}\
-             .workspace-btn {{ background: transparent; opacity: 0.36; color: @on-bg;\
+            // `@{{accent_from}}`/`@{{accent_to}}`, not the literal
+            // `@accent`/`@teal` this hardcoded through spotlight: harmless
+            // while every Trail-style theme's own accent_from/accent_to
+            // happened to BE "accent"/"teal" (liquid-motion — the only
+            // other Trail theme so far), but daylight sets
+            // accent_from = accent_to = "teal" for a FLAT fill, and the old
+            // hardcode would have painted a stray blue-to-teal gradient
+            // over it regardless of that setting. See Tokens::accent_to's
+            // doc comment (bread-theme) — this is the fix that finally
+            // consumes it for real.
+            ".workspace-trail {{ background-image: linear-gradient(90deg, @{accent_from}, @{accent_to});\
+                 background-color: @{accent_from}; border-radius: {radius_sm}; }}\
+             .workspace-btn {{ background: transparent; opacity: 0.36; color: {ink};\
                  border-radius: {radius_sm}; border: none; outline: none; box-shadow: none;\
                  min-width: 28px; min-height: {chip_height_px}; margin: 0; padding: 0 7px;\
                  font-size: 22px; font-weight: bold;\
                  transition: opacity 0.22s {spring_settle},\
                      background-color 0.22s {spring_settle}; }}\
-             .workspace-btn:hover {{ opacity: 0.85; background: alpha(@on-bg, 0.08); }}\
+             .workspace-btn:hover {{ opacity: 0.85; background: alpha({ink}, 0.08); }}\
              .workspace-btn.occupied {{ opacity: 0.78; }}\
              .workspace-btn.active {{ background: transparent; color: @on-accent; opacity: 1; }}\
              .workspace-btn.active:hover {{ background: transparent; }}\
@@ -186,14 +262,14 @@ fn load_css() -> String {
         bread_theme::shell::WorkspaceStyle::Pill => {
             let accent = theme.tokens().accent_from();
             format!(
-                ".workspace-btn {{ background: transparent; opacity: 1; color: alpha(@on-bg, 0.4);\
+                ".workspace-btn {{ background: transparent; opacity: 1; color: alpha({ink}, 0.4);\
                      border-radius: {radius_sm}; border: none; outline: none; box-shadow: none;\
                      min-width: 22px; min-height: {chip_height_px}; margin: 0; padding: 0 6px;\
                      font-size: 12px; font-weight: 600;\
                      transition: background-color 0.22s {spring_settle},\
                          color 0.22s {spring_settle}, opacity 0.22s {spring_settle}; }}\
-                 .workspace-btn:hover {{ background: alpha(@on-bg, 0.08); }}\
-                 .workspace-btn.occupied {{ color: alpha(@on-bg, 0.8); }}\
+                 .workspace-btn:hover {{ background: alpha({ink}, 0.08); }}\
+                 .workspace-btn.occupied {{ color: alpha({ink}, 0.8); }}\
                  .workspace-btn:not(.occupied):not(.active) {{ opacity: 0.35; }}\
                  .workspace-btn.active {{ background: @{accent}; color: @on-accent; opacity: 1; }}\
                  .workspace-btn.active:hover {{ background: @{accent}; }}\
@@ -221,12 +297,12 @@ fn load_css() -> String {
                 // constant's own doc comment for why. This min-height
                 // exists mainly so the property isn't silently absent from
                 // the stylesheet a reader would expect to define it.
-                ".workspace-dot {{ background-color: alpha(@on-bg, 0.35); color: transparent;\
+                ".workspace-dot {{ background-color: alpha({ink}, 0.35); color: transparent;\
                      border-radius: {radius_pill}; border: none; outline: none; box-shadow: none;\
                      min-height: 9px; margin: 0; padding: 0;\
                      transition: background-color 0.25s {spring_settle},\
                          opacity 0.25s {spring_settle}; }}\
-                 .workspace-dot:hover {{ background-color: alpha(@on-bg, 0.55); }}\
+                 .workspace-dot:hover {{ background-color: alpha({ink}, 0.55); }}\
                  .workspace-dot:not(.occupied):not(.active) {{ opacity: 0.35; }}\
                  .workspace-dot.active {{ background-color: @{accent}; opacity: 1; }}\
                  .workspace-dot.active:hover {{ background-color: @{accent}; }}",
@@ -254,8 +330,7 @@ fn load_css() -> String {
             this class at all. */\
          @keyframes bar-in {{ from {{ opacity: 0; }} }}\
          .bar-entrance {{ animation: bar-in 0.4s {spring_settle} both; }}\
-         window.breadbar {{ background-color: alpha(@bg, {bg_alpha}); color: @on-bg;\
-             border-radius: {radius_bar}; {window_border}\
+         window.breadbar {{ color: {ink}; border-radius: {bar_radius}; {window_chrome}\
              transition: border-radius 0.3s {spring_settle}; }}\
          /* `[launcher].search_radius` (plan §7 phase 6c, spotlight only —\
             `launcher_entry` never gets focus under any other theme, so\
@@ -269,6 +344,7 @@ fn load_css() -> String {
             identical CSS either way. */\
          window.breadbar > box > centerbox {{ padding: {centerbox_padding}; }}\
          window.breadbar button {{ min-height: 0; min-width: 0; }}\
+         {segment_css}\
          {workspace_css}\
          .clock-box {{ padding: 0 4px; }}\
          .clock-label {{ font-size: 24px; font-weight: bold; letter-spacing: 0.04em;\
@@ -315,8 +391,8 @@ fn load_css() -> String {
              min-height: {chip_height_px};\
              transition: background-color 0.22s {spring_settle},\
                  opacity 0.18s ease; }}\
-         .stat-pair:hover {{ background: alpha(@on-bg, 0.12); }}\
-         .stat-pair:active {{ background: alpha(@on-bg, 0.18); }}\
+         .stat-pair:hover {{ background: alpha({ink}, 0.12); }}\
+         .stat-pair:active {{ background: alpha({ink}, 0.18); }}\
          /* No border-radius override here (was a hardcoded 999px, making\
             wifi/hamburger — the only two `.icon-only` chips — fully\
             circular while their row neighbours vol/battery stayed a\
@@ -335,13 +411,13 @@ fn load_css() -> String {
          .stat-pair.icon-only .stat-icon {{ margin: 0; }}\
          .bt-icon {{ margin-right: 8px; }}
          separator.bar-sep {{ min-height: 12px; min-width: 1px; margin: 0 10px 0 2px;\
-             background: alpha(@on-bg, 0.10); }}\
-         window.breadbar-notification {{ background-color: transparent; color: @on-bg; }}\
-         window.breadbar-history {{ background-color: alpha(@bg, 0.70); color: @on-bg;\
-             border-radius: {radius}; border: 1px solid alpha(@on-bg, 0.10);\
+             background: alpha({ink}, 0.10); }}\
+         window.breadbar-notification {{ background-color: transparent; color: {ink}; }}\
+         window.breadbar-history {{ background-color: alpha({panel}, 0.70); color: {ink};\
+             border-radius: {radius}; border: 1px solid alpha({ink}, 0.10);\
              animation: pop-in 0.45s {spring} both; }}\
-         .notification-card {{ background: alpha(@bg, 0.70); color: @on-bg; border-radius: {radius};\
-             padding: {pad}; margin-bottom: 8px; border: 1px solid alpha(@on-bg, 0.10);\
+         .notification-card {{ background: alpha({panel}, 0.70); color: {ink}; border-radius: {radius};\
+             padding: {pad}; margin-bottom: 8px; border: 1px solid alpha({ink}, 0.10);\
              border-left: 3px solid transparent;\
              animation: notif-in 0.45s {spring_settle} both; }}\
          .notification-card.urgency-critical {{ border-left-color: @red; }}\
@@ -358,19 +434,19 @@ fn load_css() -> String {
             add vertical bulk the approved demo's own card never has. */\
          .notification-dismiss {{ min-width: 18px; min-height: 18px; padding: 0;\
              margin: 2px; border-radius: {radius_pill}; background: transparent;\
-             color: @on-bg; opacity: 0.45; font-size: 12px; font-weight: bold;\
+             color: {ink}; opacity: 0.45; font-size: 12px; font-weight: bold;\
              border: none; outline: none; box-shadow: none;\
              transition: background-color 0.18s {spring_settle}, opacity 0.18s ease; }}\
-         .notification-dismiss:hover {{ opacity: 1; background: alpha(@on-bg, 0.16); }}\
-         .notification-dismiss:active {{ background: alpha(@on-bg, 0.24); }}\
+         .notification-dismiss:hover {{ opacity: 1; background: alpha({ink}, 0.16); }}\
+         .notification-dismiss:active {{ background: alpha({ink}, 0.24); }}\
          .history-title {{ font-weight: bold; font-size: 13px; }}\
          .history-close {{ padding: 2px 8px; }}\
          .history-empty {{ opacity: 0.5; padding: 8px 0; }}\
          .history-time {{ opacity: 0.5; font-size: 11px; }}\
          .history-body {{ opacity: 0.75; }}\
          .history-card {{ margin-bottom: 6px; }}\
-         window.breadbar-osd {{ background-color: alpha(@bg, 0.70); color: @on-bg;\
-             border-radius: {radius_pill}; border: 1px solid alpha(@on-bg, 0.10);\
+         window.breadbar-osd {{ background-color: alpha({panel}, 0.70); color: {ink};\
+             border-radius: {radius_pill}; border: 1px solid alpha({ink}, 0.10);\
              animation: osd-in 0.4s {spring_settle} both; }}\
          .osd-icon {{ opacity: 0.85; margin-right: 8px; }}\
          .osd-icon-muted {{ opacity: 0.35; }}\
@@ -379,8 +455,8 @@ fn load_css() -> String {
              border-radius: 3px; min-height: 6px; }}\
          progressbar.osd-bar trough progress {{ background-image: none; background-color: @accent;\
              border-radius: 3px; min-height: 6px; }}\
-         window.breadbar-panel {{ background-color: alpha(@bg, 0.72); color: @on-bg;\
-             border-radius: 14px; border: 1px solid alpha(@on-bg, 0.12); }}\
+         window.breadbar-panel {{ background-color: alpha({panel}, 0.72); color: {ink};\
+             border-radius: 14px; border: 1px solid alpha({ink}, 0.12); }}\
          window.breadbar-dismiss, .breadbar-dismiss-hit {{\
              background-color: alpha(#000000, 0.02); }}\
          .popover-caret {{ min-height: 2px; margin: 2px 4px 10px; border-radius: 2px;\
@@ -389,9 +465,9 @@ fn load_css() -> String {
              animation: caret-draw 0.45s {spring} both; }}\
          .wifi-popover-inner {{ min-width: 228px; padding: {pad}; }}\
          window.wifi-popover button {{ min-height: 0; min-width: 0; }}\
-         .popover-tab-row {{ background: alpha(@on-bg, 0.06); border-radius: 10px;\
+         .popover-tab-row {{ background: alpha({ink}, 0.06); border-radius: 10px;\
              padding: 3px; margin-bottom: 10px; }}\
-         .popover-tab {{ background: transparent; color: @on-bg; border: none; box-shadow: none;\
+         .popover-tab {{ background: transparent; color: {ink}; border: none; box-shadow: none;\
              outline: none; border-radius: 999px; padding: 0 14px; min-height: 32px;\
              font-size: 17px; font-weight: bold; opacity: 0.55;\
              transition: background-color 0.22s {spring_settle},\
@@ -408,7 +484,7 @@ fn load_css() -> String {
              outline: none; border-radius: 10px; padding: 0 12px; min-height: 42px;\
              transition: background-color 0.18s {spring_settle}; }}\
          .wifi-popover-row label {{ font-size: 18px; }}\
-         .wifi-popover-row:hover {{ background: alpha(@on-bg, 0.08); }}\
+         .wifi-popover-row:hover {{ background: alpha({ink}, 0.08); }}\
          .wifi-popover-row-active {{ background: alpha(@accent, 0.14); color: @accent; }}\
          .wifi-popover-row-active:hover {{ background: alpha(@accent, 0.20); }}\
          .row-in {{ animation: row-in 0.32s {spring} both; }}\
@@ -424,18 +500,18 @@ fn load_css() -> String {
          switch.bt-switch:checked:hover {{ min-width: 42px; min-height: 24px; padding: 2px;\
              border: none; outline: none; box-shadow: none; background-image: none;\
              border-radius: 99px; }}\
-         switch.bt-switch {{ background-color: alpha(@on-bg, 0.14);\
+         switch.bt-switch {{ background-color: alpha({ink}, 0.14);\
              transition: background-color 0.25s {spring_settle}; }}\
          switch.bt-switch:checked {{ background-color: @accent; }}\
          switch.bt-switch slider {{ min-width: 20px; min-height: 20px; margin: 0;\
              border-radius: 99px; border: none; outline: none; box-shadow: none;\
-             background-image: none; background-color: @on-bg; }}\
-         window.wifi-add-dialog {{ background-color: alpha(@bg, 0.70); color: @on-bg; min-width: 240px;\
-             border-radius: {radius}; border: 1px solid alpha(@on-bg, 0.10);\
+             background-image: none; background-color: {ink}; }}\
+         window.wifi-add-dialog {{ background-color: alpha({panel}, 0.70); color: {ink}; min-width: 240px;\
+             border-radius: {radius}; border: 1px solid alpha({ink}, 0.10);\
              animation: pop-in 0.45s {spring} both; }}\
-         window.wifi-add-dialog headerbar {{ background-color: alpha(@bg, 0.70); color: @on-bg;\
+         window.wifi-add-dialog headerbar {{ background-color: alpha({panel}, 0.70); color: {ink};\
              border-top-left-radius: {radius}; border-top-right-radius: {radius};\
-             border-bottom: 1px solid alpha(@on-bg, 0.10); box-shadow: none; }}\
+             border-bottom: 1px solid alpha({ink}, 0.10); box-shadow: none; }}\
          .confirm-button {{ background-color: @accent; color: @on-accent; }}\
          .confirm-button:hover {{ background-color: alpha(@accent, 0.85); }}\
          /* min-height: decision #1 — the media chip is a bar chip like\
@@ -443,10 +519,10 @@ fn load_css() -> String {
             to its own eq-bar/label content. */\
          .media-widget {{ border-radius: 10px; padding: 4px 8px; min-height: {chip_height_px};\
              transition: background-color 0.22s {spring_settle}; }}\
-         .media-widget:hover {{ background: alpha(@on-bg, 0.08); }}\
+         .media-widget:hover {{ background: alpha({ink}, 0.08); }}\
          .media-widget.media-in {{ animation: row-in 0.4s {spring} both; }}\
          .media-eq {{ min-height: 14px; margin-right: 4px; }}\
-         .media-eq-bar {{ min-width: 3px; min-height: 5px; background-color: @accent;\
+         .media-eq-bar {{ min-width: 3px; min-height: 5px; background-color: @{accent2};\
              border-radius: 2px; }}\
          .media-widget.playing .media-eq-bar {{\
              animation: media-eq 0.85s ease-in-out infinite alternate; }}\
@@ -457,7 +533,7 @@ fn load_css() -> String {
          .media-controls {{ padding: 4px; }}\
          .media-btn {{ min-width: 32px; padding: 4px 8px; border-radius: {radius_sm};\
              transition: background-color 0.18s ease; }}\
-         .media-btn:hover {{ background: alpha(@on-bg, 0.10); }}\
+         .media-btn:hover {{ background: alpha({ink}, 0.10); }}\
          /* No padding/border-radius/min-width/min-height here (was\
             `padding: 5px 8px; border-radius: 10px; min-width: 0;\
             min-height: 0`): the hamburger is the only button carrying both\
@@ -475,8 +551,8 @@ fn load_css() -> String {
              background: transparent; border: none; outline: none; box-shadow: none;\
              transition: background-color 0.22s {spring_settle},\
                  opacity 0.18s ease; }}\
-         .control-panel-btn:hover {{ opacity: 1; background: alpha(@on-bg, 0.10); }}\
-         .control-panel-btn:active {{ background: alpha(@on-bg, 0.16); }}\
+         .control-panel-btn:hover {{ opacity: 1; background: alpha({ink}, 0.10); }}\
+         .control-panel-btn:active {{ background: alpha({ink}, 0.16); }}\
          .control-panel {{ }}\
          .control-panel-inner {{ min-width: 248px; padding: {pad}; }}\
          .sys-grid {{ margin: 2px 0 6px; }}\
@@ -488,7 +564,7 @@ fn load_css() -> String {
          .control-panel-row-label {{ font-size: 16px; opacity: 0.78; }}\
          .control-panel-slider {{ margin: 0; padding: 0; min-height: 18px; }}\
          scale.control-panel-slider trough {{ min-height: 6px; border-radius: 99px;\
-             background-image: none; background-color: alpha(@on-bg, 0.12);\
+             background-image: none; background-color: alpha({ink}, 0.12);\
              border: none; outline: none; box-shadow: none; }}\
          scale.control-panel-slider highlight {{ min-height: 6px; border-radius: 99px;\
              background-image: none; background-color: @accent; }}\
@@ -499,14 +575,14 @@ fn load_css() -> String {
          .sink-row label {{ font-size: 15px; }}\
          .power-row {{ margin-top: 8px; }}\
          .power-btn {{ min-width: 0; min-height: 0; padding: 8px 10px; border-radius: 8px;\
-             background: alpha(@on-bg, 0.08); font-size: 13px; border: none;\
+             background: alpha({ink}, 0.08); font-size: 13px; border: none;\
              outline: none; box-shadow: none;\
              transition: background-color 0.2s {spring_settle}; }}\
-         .power-btn:hover {{ background: alpha(@on-bg, 0.14); }}\
+         .power-btn:hover {{ background: alpha({ink}, 0.14); }}\
          .power-btn:active {{ background: alpha(@accent, 0.22); }}\
          .notification-action {{ transition: background-color 0.18s ease; }}\
          .tray-btn {{ transition: opacity 0.2s ease, background-color 0.2s ease; }}\
-         separator {{ margin: 4px 0; background: alpha(@on-bg, 0.10); }}\
+         separator {{ margin: 4px 0; background: alpha({ink}, 0.10); }}\
          /* Lua-declared widgets (see Documentation.md's Widgets §style): the\
             slot rule below is what the four inline `.bread-widget-slot`\
             containers in main.rs rely on for the same 12px stat-pair rhythm\
@@ -562,20 +638,20 @@ fn load_css() -> String {
             are built regardless of the active theme (see main.rs's \"Assemble\"\
             section), just never placed in a slot outside spotlight, so these\
             rules render nothing on liquid-motion/glass-workbench. */\
-         .launcher-entry {{ background: transparent; color: @on-bg; border: none;\
+         .launcher-entry {{ background: transparent; color: {ink}; border: none;\
              outline: none; box-shadow: none; caret-color: @{accent_from};\
              font-size: 13px; font-weight: 500; letter-spacing: 0.06em;\
              padding: 0; margin: 0; min-height: 0; }}\
          .launcher-entry.searching {{ font-size: 15px; letter-spacing: 0; }}\
          .bread-drawer {{ min-height: 0; }}\
-         .bread-drawer.open {{ border-top: 1px solid alpha(@on-bg, 0.08);\
+         .bread-drawer.open {{ border-top: 1px solid alpha({ink}, 0.08);\
              margin-top: 6px; padding-top: 2px; }}\
          .bread-drawer listbox {{ background: transparent; padding: 2px 0; }}\
          .bread-drawer row {{ padding: 8px 14px; border-radius: {radius_sm};\
-             color: @on-bg; background-color: transparent; }}\
-         .bread-drawer row:hover {{ background-color: alpha(@on-bg, 0.08); }}\
+             color: {ink}; background-color: transparent; }}\
+         .bread-drawer row:hover {{ background-color: alpha({ink}, 0.08); }}\
          .bread-drawer row:selected {{ background-color: alpha(@{accent_from}, 0.18);\
-             color: @on-bg; }}\
+             color: {ink}; }}\
          .bread-drawer .app-name {{ font-size: 14px; font-weight: 500; }}\
          .bread-drawer .app-muted {{ opacity: 0.45; font-size: 11px; }}\
          /* `[launcher].sections` (plan §7 phase 6c) — the idle drawer's\
@@ -587,21 +663,20 @@ fn load_css() -> String {
          .section-header-label {{ font-size: 11px; font-weight: 600;\
              letter-spacing: 0.08em; text-transform: uppercase;\
              opacity: 0.45; }}",
-        radius = radius,
-        radius_search = radius_search,
-        radius_bar = radius_bar,
-        radius_sm = radius_sm,
-        radius_pill = radius_pill,
-        chip_radius = chip_radius,
-        chip_height_px = chip_height_px,
-        pad = pad,
-        spring = spring,
-        spring_settle = spring_settle,
-        window_border = window_border,
-        centerbox_padding = centerbox_padding,
-        workspace_css = workspace_css,
-        bg_alpha = bg_alpha,
-        accent_from = accent_from,
+        // Implicit capture (2021 edition) for every `{name}` above: each
+        // matches an in-scope `let` binding of the same name (`radius`,
+        // `spring`, `ink`, `panel`, `bar_radius`, `window_chrome`,
+        // `segment_css`, `accent_from`, `accent2`, ...) rather than a hand-
+        // maintained `name = name,` list — axis 1's `panel`/`ink` swap and
+        // axis 3's `segment_css`/`window_chrome`/`bar_radius` locals both
+        // needed a growing, easy-to-desync explicit list to stay in step
+        // with the string body above; switching the whole call to implicit
+        // capture removes that failure mode instead of extending it further.
+        // (`radius_bar`, `flush`, `light`, `segmented`, `window_border`
+        // itself, and `accent_to` are each read by name ABOVE this literal,
+        // not inside it, so they're deliberately absent here — an unused
+        // implicit-capture name is a hard compile error, same discipline
+        // this crate already applies to unread `theme.toml` keys.)
     )
 }
 

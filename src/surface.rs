@@ -1,12 +1,16 @@
 //! Applies a `[surfaces.<namespace>]` entry (plan §4/§6, Phase 2) to a
 //! satellite layer-shell window: anchor, margin (from `offset`), width and
-//! layer. Deliberately narrow — it only understands the three anchor shapes
+//! layer. Deliberately narrow — it only understands the four anchor shapes
 //! breadbar's four built-in surfaces actually use today ("breadbar-notif",
 //! "breadbar-osd", "breadbar-panel", "breadbar-dismiss": `top_right`,
-//! `bottom_centre`, `fill`), not a general anchor DSL (the plan's own
-//! anti-goal, §2). `exclusive` zone and `keyboard` mode aren't part of the
-//! `[surfaces.*]` schema (`bread_theme::shell::Surface` has no such fields)
-//! and stay hardcoded at each call site, same as before this refactor.
+//! `bottom_right`, `bottom_centre`, `fill`), not a general anchor DSL (the
+//! plan's own anti-goal, §2). `bottom_right` was added for daylight (plan
+//! §11 phase 7, axis 2) — the first bottom-anchored bar, whose satellites
+//! need to hug the bottom-right corner the way every top-anchored theme's
+//! already hug the top-right one. `exclusive` zone and `keyboard` mode
+//! aren't part of the `[surfaces.*]` schema (`bread_theme::shell::Surface`
+//! has no such fields) and stay hardcoded at each call site, same as before
+//! this refactor.
 
 use bread_theme::shell::SurfaceWidth;
 use gtk4::prelude::*;
@@ -54,6 +58,23 @@ pub fn apply(window: &gtk4::Window, namespace: &str) {
             window.set_margin(Edge::Right, right);
             window.set_margin(Edge::Top, top);
         }
+        // Axis 2 (daylight): every theme through spotlight anchors its bar
+        // to the TOP, so `top_right` always put breadbar-notif/
+        // breadbar-panel naturally close to the bar. A bottom-anchored bar
+        // has nothing in the original three shapes that keeps its
+        // satellites near it — `top_right` would land them at the opposite
+        // corner of the screen from the dock they belong to. Mirrors
+        // `top_right` exactly, just on the bottom edge.
+        "bottom_right" => {
+            window.set_anchor(Edge::Bottom, true);
+            window.set_anchor(Edge::Right, true);
+            // offset = [right, bottom], same convention as top_right's
+            // [right, top].
+            let right = surf.offset.first().copied().unwrap_or(0.0) as i32;
+            let bottom = surf.offset.get(1).copied().unwrap_or(0.0) as i32;
+            window.set_margin(Edge::Right, right);
+            window.set_margin(Edge::Bottom, bottom);
+        }
         "bottom_centre" => {
             window.set_anchor(Edge::Bottom, true);
             let bottom = surf.offset.first().copied().unwrap_or(0.0) as i32;
@@ -63,15 +84,24 @@ pub fn apply(window: &gtk4::Window, namespace: &str) {
             for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
                 window.set_anchor(edge, true);
             }
-            // Only a top margin is meaningful here — a fullscreen click-away
-            // scrim that starts below the bar rather than covering it.
+            // offset = [top, bottom] — a fullscreen click-away scrim that
+            // leaves a gap clear of the bar on whichever edge the bar
+            // actually anchors to. Every theme through spotlight anchors
+            // top, so only `offset[0]` (top) was ever meaningful before
+            // daylight; a single-value `offset` (every existing theme's
+            // manifest) still means exactly what it always did, since
+            // `offset.get(1)` falls back to 0 — a bottom-anchored theme is
+            // the first to give this a real, nonzero bottom value instead.
             let top = surf.offset.first().copied().unwrap_or(0.0) as i32;
+            let bottom = surf.offset.get(1).copied().unwrap_or(0.0) as i32;
             window.set_margin(Edge::Top, top);
+            window.set_margin(Edge::Bottom, bottom);
         }
         other => eprintln!(
             "breadbar: surfaces.{namespace}.anchor = \"{other}\" is not one of \
-             top_right|bottom_centre|fill — breadbar's satellite windows don't \
-             understand any other shape yet, leaving this window unanchored"
+             top_right|bottom_right|bottom_centre|fill — breadbar's satellite \
+             windows don't understand any other shape yet, leaving this window \
+             unanchored"
         ),
     }
 

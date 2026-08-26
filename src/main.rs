@@ -66,6 +66,108 @@ macro_rules! capsule_trace {
 /// how tall the drawer currently is.
 const DRAWER_MAX_HEIGHT_PX: i32 = 420;
 
+/// `bar.window.exclusive` resolved to a layer-shell exclusive-zone pixel
+/// value (axis 2, daylight). `Exclusive::Auto` reserves `height` plus the
+/// margin on whichever edge the bar is actually anchored to — `margin.top`
+/// for every theme through spotlight (all top-anchored), `margin.bottom`
+/// for daylight's bottom-anchored dock. Before daylight this always read
+/// `margin.top` unconditionally, which happened to be correct for every
+/// existing theme (a bottom-anchored bar had never shipped, so
+/// `margin.bottom` was always 0 and never observed) but reserved 12px too
+/// little for daylight (`height` alone, not `height + margin.bottom`) —
+/// tiled windows would have run up under the last 12px of the floating
+/// dock. Extracted to a pure function so this is unit-testable without a
+/// live layer-shell surface.
+fn exclusive_zone_for(spec: &bread_theme::shell::WindowSpec) -> i32 {
+    let anchor_margin = if spec.anchors.iter().any(|a| a == "bottom") {
+        spec.margin.bottom
+    } else {
+        spec.margin.top
+    };
+    match spec.exclusive {
+        Exclusive::Auto => spec.height + anchor_margin,
+        Exclusive::None => -1,
+        Exclusive::Px(px) => px,
+    }
+}
+
+#[cfg(test)]
+mod exclusive_zone_tests {
+    use super::exclusive_zone_for;
+    use bread_theme::shell::{Exclusive, Margin, Width, WindowSpec};
+
+    fn spec(anchors: &[&str], height: i32, margin: Margin, exclusive: Exclusive) -> WindowSpec {
+        WindowSpec {
+            anchors: anchors.iter().map(|s| s.to_string()).collect(),
+            width: Width::Fill,
+            height,
+            margin,
+            exclusive,
+            keyboard: bread_theme::shell::Keyboard::None,
+            layer: "top".to_string(),
+        }
+    }
+
+    #[test]
+    fn top_anchored_auto_reserves_height_plus_top_margin() {
+        let s = spec(
+            &["top", "left", "right"],
+            44,
+            Margin {
+                top: 12,
+                left: 16,
+                right: 16,
+                bottom: 0,
+            },
+            Exclusive::Auto,
+        );
+        assert_eq!(exclusive_zone_for(&s), 56);
+    }
+
+    #[test]
+    fn bottom_anchored_auto_reserves_height_plus_bottom_margin_not_top() {
+        // The daylight case: margin.top is 0 (nothing reserved there), the
+        // real floating gap is margin.bottom.
+        let s = spec(
+            &["bottom", "left", "right"],
+            40,
+            Margin {
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 12,
+            },
+            Exclusive::Auto,
+        );
+        assert_eq!(exclusive_zone_for(&s), 52);
+    }
+
+    #[test]
+    fn none_is_no_reservation_regardless_of_anchor() {
+        let s = spec(
+            &["bottom"],
+            40,
+            Margin::default(),
+            Exclusive::None,
+        );
+        assert_eq!(exclusive_zone_for(&s), -1);
+    }
+
+    #[test]
+    fn explicit_px_wins_over_computed_auto_value() {
+        let s = spec(
+            &["bottom", "left", "right"],
+            40,
+            Margin {
+                bottom: 12,
+                ..Margin::default()
+            },
+            Exclusive::Px(99),
+        );
+        assert_eq!(exclusive_zone_for(&s), 99);
+    }
+}
+
 pub struct BarInit {
     pub screenshot: Option<screenshot::ScreenshotRequest>,
     pub monitor: Option<String>,
@@ -324,6 +426,13 @@ impl SimpleComponent for App {
         root.set_margin(Edge::Top, window_spec.margin.top);
         root.set_margin(Edge::Left, window_spec.margin.left);
         root.set_margin(Edge::Right, window_spec.margin.right);
+        // `Margin::bottom` (axis 2, daylight): every builtin before daylight
+        // anchored top and left this at its struct default of 0, which is
+        // exactly why this call was missing entirely — see that field's own
+        // doc comment (bread-theme) for the gap this closes. A bottom-
+        // anchored theme's floating gap off the screen edge IS this margin,
+        // the same way a top-anchored theme's is `margin.top`.
+        root.set_margin(Edge::Bottom, window_spec.margin.bottom);
         // `Width::Fill` (Island/Edge): unset, exactly as before this
         // change — the surface stretches to the anchored left/right edges
         // on its own, with no explicit width request needed. `Width::Px`
@@ -342,13 +451,18 @@ impl SimpleComponent for App {
             // regardless of what the app catalog contains.
             root.set_size_request(px, -1);
         }
-        // "auto" reserves height + top margin so tiled clients sit below the
-        // gap — see WindowSpec::exclusive's doc comment (bread-theme).
-        let exclusive_zone = match window_spec.exclusive {
-            Exclusive::Auto => window_spec.height + window_spec.margin.top,
-            Exclusive::None => -1,
-            Exclusive::Px(px) => px,
-        };
+        // "auto" reserves height + the margin on the ANCHORED edge, so
+        // tiled clients sit clear of the gap — see WindowSpec::exclusive's
+        // doc comment (bread-theme). Every theme before daylight anchored
+        // top, so `margin.top` was the only edge that ever mattered here;
+        // reading it unconditionally under a bottom-anchored bar reserved
+        // only `height` (40px), 12px short of the dock's real footprint
+        // (`height` + `margin.bottom`) — tiled windows would have run up
+        // into the last 12px of the floating dock. `margin_for_exclusive`
+        // picks whichever edge's margin actually borders the reserved
+        // strip, same reasoning `exclusive_zone_for`'s own doc comment
+        // (tested standalone) spells out.
+        let exclusive_zone = exclusive_zone_for(&window_spec);
         root.set_exclusive_zone(exclusive_zone);
         // ANIMATION WORK #3: bar entrance on first map, Liquid Motion
         // only. The flush glass-workbench bar has no floating margin to
@@ -433,6 +547,13 @@ impl SimpleComponent for App {
         let workspace_trail = bar::workspaces::WorkspaceTrail::new();
         let workspace_box = workspace_trail.buttons.clone();
         let workspace_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        // `.bar-segment` (axis 3, daylight): a no-op class under every other
+        // theme (theme.rs only ever emits a `.bar-segment` CSS rule when
+        // `bar_border == "segmented"` — see its `segment_css` local) —
+        // added unconditionally here, same as `center_area`/`stats_box`
+        // below, so the Rust side never has to branch on the active theme
+        // id to know which boxes are "the three segments".
+        workspace_row.add_css_class("bar-segment");
         workspace_row.set_margin_start(8);
         workspace_row.set_valign(gtk4::Align::Center);
         workspace_row.set_vexpand(false);
@@ -685,6 +806,7 @@ impl SimpleComponent for App {
         // Center area: [media_widget · widgets · clock · widgets]
         let center_area = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
         center_area.add_css_class("center-area");
+        center_area.add_css_class("bar-segment");
         center_area.set_valign(gtk4::Align::Center);
         center_area.set_vexpand(false);
         // `media_widget`/`clock_box` and any `widget:*` entries interleaved
@@ -695,6 +817,7 @@ impl SimpleComponent for App {
         // Demo order: [vol 64] [wifi] [bat 83] [☰]
         let stats_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
         stats_box.add_css_class("stats-box");
+        stats_box.add_css_class("bar-segment");
         stats_box.set_margin_end(2);
         stats_box.set_valign(gtk4::Align::Center);
         stats_box.set_vexpand(false);
