@@ -38,6 +38,26 @@ use std::rc::Rc;
 const LAUNCHER_APP_ID: &str = "box";
 const LAUNCHER_LAUNCHED_EVENT: &str = "bread.box.launched";
 
+/// Diagnostic trace for the capsule's open/close/focus wiring, gated
+/// behind an env var so it costs nothing by default. Three previous fixes
+/// for the "opens itself at startup with no focus" bug all failed because
+/// nothing could observe which path actually fired on a real desktop —
+/// this makes that observable: `BREADBAR_CAPSULE_DEBUG=1 breadbar` prints
+/// every call to `open_fn`/`close_fn` and every signal that could lead to
+/// one, with enough context (source, open state) to tell a legitimate
+/// user-driven open from an accidental one after the fact.
+fn capsule_debug_enabled() -> bool {
+    std::env::var_os("BREADBAR_CAPSULE_DEBUG").is_some()
+}
+
+macro_rules! capsule_trace {
+    ($($arg:tt)*) => {
+        if capsule_debug_enabled() {
+            eprintln!("[capsule] {}", format!($($arg)*));
+        }
+    };
+}
+
 /// The drawer's own content-height ceiling (`04-spotlight.html`: `.searching
 /// .results { max-height: 420px }`) — see [`drawer_target_height`]. Also
 /// used to size the click-away scrim's dead zone (see `open_fn` in `init`):
@@ -83,6 +103,14 @@ pub struct App {
     // text stomped (it wouldn't be visible anyway once there's real text,
     // but matches the demo's own `if (!open) q.placeholder = t;` guard).
     launcher_open: Rc<Cell<bool>>,
+    // `AppInput::OpenLauncher`'s local-route arm needs to actually open the
+    // capsule, not just move keyboard focus onto `launcher_entry` — focus
+    // alone stopped opening it when `connect_enter`'s `open_fn()` call was
+    // removed (see that handler's own comment for why: it was the
+    // mechanism behind the startup-open bug). This is `init`'s `open_fn`,
+    // stored so the hotkey/command path can call it directly, the same way
+    // the click gesture and `connect_changed` do at their own call sites.
+    launcher_open_fn: Rc<dyn Fn()>,
 
     // ── Stats bar ─────────────────────────────────────────────────────────
     // Island chrome matches the Liquid Motion demo: volume / wifi / battery
@@ -189,9 +217,14 @@ pub enum AppInput {
     // `bread.command.box.open` (plan §7 phase 6c, `launcher_command`
     // module): only ever dispatched when the active theme's launcher is
     // `Embedded` — `launcher_command::spawn` never subscribes otherwise.
-    // Focuses `launcher_entry`, which the existing `EventControllerFocus`
-    // (`connect_enter`) already turns into an `open_fn()` call, the same
-    // path a mouse click into the entry takes.
+    // Focuses `launcher_entry` AND calls `self.launcher_open_fn()`
+    // directly (its handler below) — the hotkey/command itself is the
+    // real-user-input signal, the same status a mouse click into the
+    // entry has at its own call site. Deliberately does NOT rely on
+    // `grab_focus()` triggering `EventControllerFocus::connect_enter` to
+    // open it as a side effect any more; that indirection was the actual
+    // mechanism behind the startup-open bug (see `connect_enter`'s own
+    // comment in `init`).
     OpenLauncher,
 }
 
@@ -1065,6 +1098,15 @@ impl SimpleComponent for App {
         // by `bread_theme::anim::spring_to` independently.
         let anim_width: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
         let launcher_open: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        // Set around every PROGRAMMATIC `launcher_entry.set_text(...)` call
+        // (close_fn's reset-to-empty today; any future one belongs here
+        // too) so `connect_changed` below can tell "the user typed a
+        // character" from "code changed the buffer" and only ever opens
+        // the capsule for the former — see that handler's own comment.
+        // Gates the SIGNAL itself rather than hunting every caller that
+        // could fire it, so no future programmatic `set_text` can reopen
+        // the capsule by accident, whether or not one does today.
+        let programmatic_text_change: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         // The click-away scrim's dead zone (item B, see `DRAWER_MAX_HEIGHT_PX`'s
         // own doc comment) — the capsule row's own theme-default dismiss
         // offset (52px: `bar.window.height` + `bar.window.margin.top`) plus
@@ -1089,6 +1131,7 @@ impl SimpleComponent for App {
             let search_width = launcher_cfg.search_width;
             let monitor_name_for_dismiss = monitor_name.clone();
             move || {
+                capsule_trace!("open_fn() called, was_open={}", launcher_open.get());
                 if !launcher_open.get() {
                     launcher_open.set(true);
                     // Reveal before measuring/animating: while hidden the box
@@ -1139,14 +1182,23 @@ impl SimpleComponent for App {
             let root_for_width = root.clone();
             let panels = panels.clone();
             let idle_width = launcher_cfg.width;
+            let programmatic_text_change = Rc::clone(&programmatic_text_change);
             move || {
+                capsule_trace!("close_fn() called, was_open={}", launcher_open.get());
                 if !launcher_open.get() {
                     return;
                 }
                 launcher_open.set(false);
                 entry.remove_css_class("searching");
                 gtk4::prelude::EntryExt::set_alignment(&entry, 0.5);
+                // Resetting the buffer here is a PROGRAMMATIC change, not a
+                // user keystroke — flagged so `connect_changed` below
+                // doesn't treat "close_fn cleared the query" as "the user
+                // typed", which would immediately reopen what this
+                // function is in the middle of closing.
+                programmatic_text_change.set(true);
                 entry.set_text("");
+                programmatic_text_change.set(false);
                 if placeholder_clock {
                     entry.set_placeholder_text(Some(&bar::clock::time()));
                 }
@@ -1186,8 +1238,21 @@ impl SimpleComponent for App {
             let open_fn = Rc::clone(&open_fn);
             let active_mode = Rc::clone(&active_mode);
             let mode_selectable = Rc::clone(&mode_selectable);
+            let programmatic_text_change = Rc::clone(&programmatic_text_change);
             launcher_entry.connect_changed(move |entry| {
+                // `changed` fires for EVERY buffer mutation, programmatic
+                // ones included — `close_fn`'s own `entry.set_text("")`
+                // among them. Without this guard that reset re-enters this
+                // handler and its unconditional `open_fn()` below reopens
+                // the capsule close_fn is still in the middle of closing.
+                // This is the fix for "changed a moment ago". Real typing
+                // never sets the flag, so it always reaches `open_fn()`.
+                if programmatic_text_change.get() {
+                    capsule_trace!("connect_changed: skipped (programmatic set_text)");
+                    return;
+                }
                 let text = entry.text();
+                capsule_trace!("connect_changed: user input, text={text:?}");
                 let parsed = bread_launcher::parse_query(&text);
                 let mode_name = match parsed.kind {
                     bread_launcher::QueryKind::Calc => "calc",
@@ -1212,13 +1277,37 @@ impl SimpleComponent for App {
                     mode_selectable.set(selectable);
                     mode_list.set_visible(true);
                 }
+                // Reached only for a real keystroke (the guard above
+                // already returned for a programmatic reset) — matches the
+                // reference model's `q.addEventListener("input", () => {
+                // if (!open) setOpen(true); ... })`: typing is itself a
+                // real-user-input signal that opens the capsule.
                 open_fn();
             });
         }
         {
-            let open_fn = Rc::clone(&open_fn);
+            // Deliberately does NOT call `open_fn()`. It used to — that
+            // was the actual mechanism behind "opens itself with no
+            // focus": ANYTHING that moved keyboard focus onto
+            // `launcher_entry`, including GTK's own auto-focus-on-map of
+            // the first focusable widget in a window, opened the capsule
+            // as a side effect. `set_can_focus(false)` (constructor,
+            // above) already closes that specific hole, but leaving this
+            // handler wired to `open_fn` kept the same footgun loaded for
+            // the next path that calls `grab_focus()` on this entry for
+            // any reason. Both real-input paths that DO want to open now
+            // call `open_fn()` themselves at their own call site (the
+            // click gesture below, `AppInput::OpenLauncher`'s handler) —
+            // opening is a direct consequence of the user's action, not a
+            // side effect of a focus-change event that could have come
+            // from anywhere. What's left here is pure diagnostics: under
+            // `BREADBAR_CAPSULE_DEBUG=1`, seeing "focus entered" with no
+            // preceding "open_fn() called" trace is exactly the signature
+            // a future accidental-open regression would leave.
             let focus_ctrl = gtk4::EventControllerFocus::new();
-            focus_ctrl.connect_enter(move |_| open_fn());
+            focus_ctrl.connect_enter(move |_| {
+                capsule_trace!("focus_ctrl: entry gained keyboard focus");
+            });
             launcher_entry.add_controller(focus_ctrl);
         }
         // "you can't close it using escape unless you are focused on the
@@ -1242,10 +1331,19 @@ impl SimpleComponent for App {
         // same two-liner for the hotkey/command path.
         {
             let entry_for_click = launcher_entry.clone();
+            let open_fn = Rc::clone(&open_fn);
             let click = gtk4::GestureClick::new();
             click.connect_pressed(move |_, _, _, _| {
+                capsule_trace!("click gesture: pressed");
                 entry_for_click.set_can_focus(true);
                 entry_for_click.grab_focus();
+                // Called directly here rather than left to fire as a side
+                // effect of `grab_focus()` moving keyboard focus (that was
+                // `focus_ctrl.connect_enter`'s job until this same pass
+                // removed it) — a real click is itself the user-input
+                // signal that should open the capsule, not merely a way to
+                // produce a focus-change event that then does.
+                open_fn();
             });
             launcher_entry.add_controller(click);
         }
@@ -1394,6 +1492,7 @@ impl SimpleComponent for App {
             clock_plain_lbl,
             launcher_entry,
             launcher_open,
+            launcher_open_fn: open_fn,
             system_stats_box,
             system_sep,
             cpu_pair,
