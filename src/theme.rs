@@ -112,6 +112,37 @@ fn load_css() -> String {
     // for the full inventory of every site this swap had to reach.
     let light = tokens.light();
     let (panel, ink): (&str, &str) = if light { ("@on-bg", "@bg") } else { ("@bg", "@on-bg") };
+    // The notification/history/OSD/wifi-add-dialog cards (0.70) and the
+    // control/wifi/media popover window (0.72) hardcode their own alpha
+    // literals independent of `tokens.bg_alpha()` — reasonable for a dark
+    // "glass" surface (0.70-0.72 alpha over a dark fill still reads as
+    // deliberately translucent glass), but daylight's demo draws these as
+    // fully OPAQUE paper (`.note`/`.osd { background: var(--paper) }`, no
+    // alpha at all) — at the old 0.70 literal, daylight's near-white
+    // `{panel}` fill instead reads as pale, background-tinted glass, which
+    // is exactly the "physical object" read the design brief calls for
+    // NOT doing. Swapping these two literals wholesale to `{bg_alpha}`
+    // would also move liquid-motion/glass-workbench/spotlight's own
+    // rendering (0.70/0.72 -> 0.72/0.82 for spotlight) — a real, visible
+    // regression the task rules out — so this only substitutes `bg_alpha`
+    // (0.94 for daylight) in for `light` themes and keeps the exact prior
+    // literal for every other theme.
+    let card_alpha = if light { bg_alpha } else { 0.70 };
+    let panel_surface_alpha = if light { bg_alpha } else { 0.72 };
+    // The OSD/widget-node progress troughs' UNFILLED track is
+    // `alpha(@accent, 0.25)` — a teal-at-25%-alpha tint that reads as a
+    // faint, visible track against a dark pill (every theme through
+    // spotlight), but is nearly indistinguishable from daylight's own
+    // near-white pill (confirmed empirically: the OSD volume slider's
+    // empty track was barely visible against its own paper background).
+    // `{ink}`-based for light themes gives a neutral faint-dark track
+    // instead, independent of whatever hue the accent happens to be;
+    // every other theme's literal `alpha(@accent, 0.25)` is unchanged.
+    let trough_bg = if light {
+        format!("alpha({ink}, 0.14)")
+    } else {
+        "alpha(@accent, 0.25)".to_string()
+    };
     // `[launcher].search_radius` (plan §7 phase 6c) — `LauncherMode::
     // Embedded` only (spotlight); `.launcher().radius` itself already
     // equals `radius_bar` for that theme (see its own theme.toml comment),
@@ -343,7 +374,13 @@ fn load_css() -> String {
             on nesting depth, liquid-motion/glass-workbench render byte-\
             identical CSS either way. */\
          window.breadbar > box > centerbox {{ padding: {centerbox_padding}; }}\
-         window.breadbar button {{ min-height: 0; min-width: 0; }}\
+         /* `color` here for the same reason `window.breadbar-panel button`\
+            (below) needs it: a real GtkButton's own text (the bar's\
+            hamburger, `.control-panel-btn`) doesn't inherit `color` from\
+            this window — the shared, ecosystem-wide `button {{ color:\
+            @on-surface }}` rule (lib.rs) matches it directly first. See\
+            that rule's own comment for the full explanation. */\
+         window.breadbar button {{ min-height: 0; min-width: 0; color: {ink}; }}\
          {segment_css}\
          {workspace_css}\
          .clock-box {{ padding: 0 4px; }}\
@@ -413,10 +450,10 @@ fn load_css() -> String {
          separator.bar-sep {{ min-height: 12px; min-width: 1px; margin: 0 10px 0 2px;\
              background: alpha({ink}, 0.10); }}\
          window.breadbar-notification {{ background-color: transparent; color: {ink}; }}\
-         window.breadbar-history {{ background-color: alpha({panel}, 0.70); color: {ink};\
+         window.breadbar-history {{ background-color: alpha({panel}, {card_alpha}); color: {ink};\
              border-radius: {radius}; border: 1px solid alpha({ink}, 0.10);\
              animation: pop-in 0.45s {spring} both; }}\
-         .notification-card {{ background: alpha({panel}, 0.70); color: {ink}; border-radius: {radius};\
+         .notification-card {{ background: alpha({panel}, {card_alpha}); color: {ink}; border-radius: {radius};\
              padding: {pad}; margin-bottom: 8px; border: 1px solid alpha({ink}, 0.10);\
              border-left: 3px solid transparent;\
              animation: notif-in 0.45s {spring_settle} both; }}\
@@ -445,18 +482,38 @@ fn load_css() -> String {
          .history-time {{ opacity: 0.5; font-size: 11px; }}\
          .history-body {{ opacity: 0.75; }}\
          .history-card {{ margin-bottom: 6px; }}\
-         window.breadbar-osd {{ background-color: alpha({panel}, 0.70); color: {ink};\
+         window.breadbar-osd {{ background-color: alpha({panel}, {card_alpha}); color: {ink};\
              border-radius: {radius_pill}; border: 1px solid alpha({ink}, 0.10);\
              animation: osd-in 0.4s {spring_settle} both; }}\
          .osd-icon {{ opacity: 0.85; margin-right: 8px; }}\
          .osd-icon-muted {{ opacity: 0.35; }}\
          progressbar.osd-bar {{ min-height: 6px; }}\
-         progressbar.osd-bar trough {{ background-image: none; background-color: alpha(@accent, 0.25);\
+         progressbar.osd-bar trough {{ background-image: none; background-color: {trough_bg};\
              border-radius: 3px; min-height: 6px; }}\
          progressbar.osd-bar trough progress {{ background-image: none; background-color: @accent;\
              border-radius: 3px; min-height: 6px; }}\
-         window.breadbar-panel {{ background-color: alpha({panel}, 0.72); color: {ink};\
+         window.breadbar-panel {{ background-color: alpha({panel}, {panel_surface_alpha}); color: {ink};\
              border-radius: 14px; border: 1px solid alpha({ink}, 0.12); }}\
+         /* A real GtkButton's own label text does NOT inherit `color` from\
+            an ancestor window: `bread_theme::stylesheet()`'s shared,\
+            ecosystem-wide `button {{ color: @on-surface }}` rule (lib.rs,\
+            applied to every bread app before this file's CSS layers on\
+            top) matches the button element directly, and a direct match\
+            always beats inheritance regardless of specificity. `@on-surface`\
+            is `ink_on(@surface)`, and `@surface` is `bread_theme::palette`'s\
+            FIXED_SURFACE constant — pinned dark, same as `@bg` — so every\
+            button's label (power row, hamburger, wifi/bluetooth popover\
+            rows, the add-network dialog's Cancel/Connect) rendered\
+            near-white regardless of the active shell theme. Invisible-but-\
+            correct on every dark theme through spotlight; confirmed\
+            empirically as near-invisible ghost text under daylight (isolated\
+            `bread-capture` control-panel screenshot, pre-fix). One rule,\
+            scoped by ancestor class so its specificity beats the shared\
+            unscoped `button` rule, instead of patching each `.power-btn`/\
+            `.control-panel-btn`/`.wifi-popover-row`/etc. class individually. */\
+         window.breadbar-panel button, window.wifi-popover button,\
+         window.wifi-add-dialog button, window.breadbar-notification button,\
+         window.breadbar-history button {{ color: {ink}; }}\
          window.breadbar-dismiss, .breadbar-dismiss-hit {{\
              background-color: alpha(#000000, 0.02); }}\
          .popover-caret {{ min-height: 2px; margin: 2px 4px 10px; border-radius: 2px;\
@@ -506,10 +563,10 @@ fn load_css() -> String {
          switch.bt-switch slider {{ min-width: 20px; min-height: 20px; margin: 0;\
              border-radius: 99px; border: none; outline: none; box-shadow: none;\
              background-image: none; background-color: {ink}; }}\
-         window.wifi-add-dialog {{ background-color: alpha({panel}, 0.70); color: {ink}; min-width: 240px;\
+         window.wifi-add-dialog {{ background-color: alpha({panel}, {card_alpha}); color: {ink}; min-width: 240px;\
              border-radius: {radius}; border: 1px solid alpha({ink}, 0.10);\
              animation: pop-in 0.45s {spring} both; }}\
-         window.wifi-add-dialog headerbar {{ background-color: alpha({panel}, 0.70); color: {ink};\
+         window.wifi-add-dialog headerbar {{ background-color: alpha({panel}, {card_alpha}); color: {ink};\
              border-top-left-radius: {radius}; border-top-right-radius: {radius};\
              border-bottom: 1px solid alpha({ink}, 0.10); box-shadow: none; }}\
          .confirm-button {{ background-color: @accent; color: @on-accent; }}\
@@ -595,7 +652,7 @@ fn load_css() -> String {
             of Adwaita's default blue-on-gray, and let `style.color` retint\
             that fill the same way it retints label/icon text. */\
          .bread-widget-slot {{ margin-right: 12px; }}\
-         progressbar.bread-widget-node trough {{ background-image: none; background-color: alpha(@accent, 0.25); border-radius: 3px; min-height: 6px; }}\
+         progressbar.bread-widget-node trough {{ background-image: none; background-color: {trough_bg}; border-radius: 3px; min-height: 6px; }}\
          progressbar.bread-widget-node trough progress {{ background-image: none; background-color: @accent; border-radius: 3px; min-height: 6px; }}\
          progressbar.bread-widget-node.bread-color-fg trough progress {{ background-color: @fg; }}\
          progressbar.bread-widget-node.bread-color-dim trough progress {{ background-color: alpha(@fg, 0.6); }}\
@@ -681,16 +738,47 @@ fn load_css() -> String {
 }
 
 /// Returns the ink colour for icon tinting in the stats bar — the same
-/// luminance-picked colour the bar's text uses, so icons stay legible on the bar
-/// whatever lightness pywal gives the background.
+/// luminance-picked colour the bar's text uses, so icons stay legible on the
+/// bar whatever lightness pywal gives the background.
+///
+/// FIXED — axis 1, daylight: this used to be unconditionally
+/// `ink_on(&load_palette().background)`. `load_palette().background` is
+/// `bread_theme::palette::FIXED_BACKGROUND` (`"#0c0c0c"`), pinned dark
+/// regardless of pywal OR the active shell theme (see that constant's own
+/// doc comment) — so this always resolved to the SAME near-white value,
+/// baked directly into a rasterised SVG texture at icon-build time
+/// (`svg_texture_sized`, the only call site), completely outside CSS and
+/// therefore untouched by `load_css`'s own `panel`/`ink` swap. Every icon
+/// built through [`crate::svg_image`]/[`crate::svg_texture`] (volume, wifi,
+/// battery, hamburger, media transport, the OSD glyph) was near-white on
+/// every existing (dark) theme, which read as correct by construction —
+/// until daylight's near-white paper pills made the SAME near-white glyph
+/// nearly invisible against its own background. Confirmed empirically
+/// (isolated `bread-capture` OSD-volume screenshot, pre-fix) before this
+/// fix. Mirrors `load_css`'s own `ink` local exactly: the dark theme's
+/// unchanged `ink_on(background)` (near-white), or — for a light theme —
+/// `background` itself (the fixed dark hex IS the correct dark ink, the
+/// same identity `load_css`'s `ink = "@bg"` case relies on).
 pub fn fg_color() -> String {
-    ink_on(&load_palette().background).to_string()
+    let p = load_palette();
+    if shell_theme().tokens().light() {
+        p.background.clone()
+    } else {
+        ink_on(&p.background).to_string()
+    }
 }
 
-/// Ink colour for the given Hyprland output's wallpaper palette.
+/// Ink colour for the given Hyprland output's wallpaper palette. See
+/// [`fg_color`]'s doc comment for the same light-theme fix; kept in step
+/// even though this accessor has no call site today.
 #[allow(dead_code)]
 pub fn fg_color_for(output: &str) -> String {
-    ink_on(&load_palette_for(output).background).to_string()
+    let p = load_palette_for(output);
+    if shell_theme().tokens().light() {
+        p.background.clone()
+    } else {
+        ink_on(&p.background).to_string()
+    }
 }
 
 /// Bind this window (and its popover children) to `output`'s palette.

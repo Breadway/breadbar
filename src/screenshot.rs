@@ -152,17 +152,40 @@ fn bar_capture_height() -> i32 {
     window.height + window.margin.top
 }
 
+/// Y-origin for the `bar`/`capsule-collapsed` capture rectangle (axis 2,
+/// daylight). Every theme through spotlight anchors top, so the bar's own
+/// pixels always start at the canvas's own top edge (`y = 0`) — that's what
+/// every existing call site here hardcoded. A bottom-anchored bar's real
+/// on-screen footprint is instead the LAST `bar_capture_height()` pixels of
+/// the canvas; capturing from `y = 0` unchanged grabs the isolated
+/// compositor's empty background/gradient near the top of the output and
+/// misses the actual bar entirely (confirmed empirically while verifying
+/// this task — `bread-capture --app breadbar --view bar` under
+/// `BREAD_SHELL_THEME=daylight` returned a plain gradient with no dock in
+/// frame at all, before this fix). `canvas_height` is the capture canvas's
+/// own height (`req.height`, i.e. `--height`/`isolate_height`), not this
+/// crate's own bar height.
+fn bar_capture_y(canvas_height: i32, bar_height: i32) -> i32 {
+    let window = crate::theme::shell_theme().window().clone();
+    if window.anchors.iter().any(|a| a == "bottom") {
+        (canvas_height - bar_height).max(0)
+    } else {
+        0
+    }
+}
+
 pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles: Handles) {
     let output = req.output;
     let (width, height) = (req.width as i32, req.height as i32);
     let bar_height = bar_capture_height();
+    let bar_y = bar_capture_y(height, bar_height);
 
     match req.view.as_str() {
         "bar" => {
             root.connect_map(move |_| {
                 let output = output.clone();
                 gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
-                    finish(bread_screenshots::capture_region(0, 0, width, bar_height, &output));
+                    finish(bread_screenshots::capture_region(0, bar_y, width, bar_height, &output));
                 });
             });
         }
@@ -207,7 +230,7 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
             root.connect_map(move |_| {
                 let output = output.clone();
                 gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
-                    finish(bread_screenshots::capture_region(0, 0, width, bar_height, &output));
+                    finish(bread_screenshots::capture_region(0, bar_y, width, bar_height, &output));
                 });
             });
         }
