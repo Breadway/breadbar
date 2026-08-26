@@ -413,13 +413,40 @@ impl WorkspaceTrail {
 
     fn from_geom(&self, from: Option<&gtk4::Button>) -> Option<Geom> {
         let st = self.inner.borrow();
-        // A leftover mid-stretch can be as wide as the whole row — never
-        // treat that as the start of the next animation.
-        if self.pill.is_visible() && st.geom.w > 0.5 && st.geom.w <= MAX_CHIP_W {
-            return Some(st.geom);
-        }
+        let live = if self.pill.is_visible() && st.geom.w > 0.5 {
+            Some(st.geom)
+        } else {
+            None
+        };
         drop(st);
-        from.and_then(|b| button_geom(b, &self.host).map(inset_pill))
+
+        let natural = from.and_then(|b| button_geom(b, &self.host).map(inset_pill));
+
+        // Continuity without accumulation.
+        //
+        // Interrupting an in-flight stretch should carry the pill's CURRENT
+        // POSITION into the next animation, so a rapid sequence of switches
+        // reads as one continuous movement. It must not carry the current
+        // WIDTH: mid-stretch the pill deliberately spans both the old and new
+        // buttons, and `ease_overshoot` (c = 1.4) pushes it wider still past
+        // the target. Feeding that span back in as the next `from` made each
+        // interrupted switch start wider than the last, so spamming workspace
+        // switches grew the pill until it hit MAX_CHIP_W — which only capped
+        // the runaway, it never stopped the compounding.
+        //
+        // Taking position from the live geometry and width from the source
+        // button's natural size keeps the motion continuous while making width
+        // a pure function of which button we started from.
+        match (live, natural) {
+            (Some(live), Some(natural)) => Some(Geom {
+                x: live.x,
+                y: live.y,
+                w: natural.w,
+                h: natural.h,
+            }),
+            (Some(live), None) if live.w <= MAX_CHIP_W => Some(live),
+            (_, natural) => natural,
+        }
     }
 }
 
