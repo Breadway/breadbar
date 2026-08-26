@@ -1,4 +1,8 @@
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 use gtk4::prelude::*;
 use gtk4_layer_shell::LayerShell;
@@ -174,6 +178,15 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
     container.append(&pbar);
 
     let dismiss_token = Rc::new(Cell::new(0u32));
+    // OSD fill overshoot (ANIMATION WORK #5): current fraction (as a whole
+    // percent, matching `anim::spring_to`'s `i32` interpolation), the
+    // in-flight tick callback (so a fast double-tap of volume-up cancels the
+    // previous run instead of fighting it), and a generation token so a
+    // superseded run's queued second leg (see `animate_osd_fill` below)
+    // never applies after a newer event has already taken over.
+    let fill_pct = Rc::new(Cell::new(0i32));
+    let fill_anim: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
+    let fill_token = Rc::new(Cell::new(0u32));
 
     while let Some(event) = rx.recv().await {
         let (icon_svg, pct, muted) = match event {
@@ -188,7 +201,7 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
         } else {
             icon.remove_css_class("osd-icon-muted");
         }
-        pbar.set_fraction(pct as f64 / 100.0);
+        animate_osd_fill(&pbar, &fill_pct, &fill_anim, &fill_token, pct);
         window.set_visible(true);
 
         let token = dismiss_token.get().wrapping_add(1);
@@ -202,6 +215,79 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
             }
         });
     }
+}
+
+/// How many percentage points the fill runs past its real target before
+/// easing back — subtle, matching the rest of the theme's "spring" motion
+/// rather than a dramatic bounce.
+const OSD_OVERSHOOT_PCT: i32 = 4;
+/// Leg 1 (toward the overshoot point) / leg 2 (settling back onto the real
+/// target) durations. Two legs, not one: `anim::spring_to` clamps every
+/// frame to `[min(from, to), max(from, to)]` (see its own doc comment and
+/// tests) specifically so a caller like the capsule drawer can never end up
+/// with a negative size request — which also means a single `spring_to`
+/// call can *never* visibly overshoot `to`, no matter how much the
+/// underlying curve wants to. Chaining two calls — first to a point past
+/// the target, then back onto it — is what actually produces the overshoot.
+const OSD_LEG1_MS: f64 = 160.0;
+const OSD_LEG2_MS: f64 = 200.0;
+
+/// Animates `pbar`'s fraction from wherever `current` says it currently is
+/// to `target`, overshooting slightly past it and settling back — see the
+/// constants above for why this takes two `spring_to` legs instead of one.
+/// Cancels any run already in flight (a fast double volume-step must
+/// continue from the current visual position, not fight or restart it) and
+/// stamps a fresh generation token so a superseded run's leg 2, queued via
+/// `timeout_add_local_once` below, is a no-op if it fires after a newer
+/// call has already taken over.
+fn animate_osd_fill(
+    pbar: &gtk4::ProgressBar,
+    current: &Rc<Cell<i32>>,
+    anim: &Rc<RefCell<Option<gtk4::TickCallbackId>>>,
+    token: &Rc<Cell<u32>>,
+    target: u8,
+) {
+    if let Some(id) = anim.borrow_mut().take() {
+        id.remove();
+    }
+    let my_token = token.get().wrapping_add(1);
+    token.set(my_token);
+
+    let from = current.get();
+    let to = i32::from(target);
+    if from == to {
+        pbar.set_fraction(f64::from(to) / 100.0);
+        return;
+    }
+    let overshoot = if to > from {
+        (to + OSD_OVERSHOOT_PCT).min(100)
+    } else {
+        (to - OSD_OVERSHOOT_PCT).max(0)
+    };
+
+    let leg1_bar = pbar.clone();
+    let leg1_current = current.clone();
+    let id = bread_theme::anim::spring_to(pbar, from, overshoot, OSD_LEG1_MS, move |v| {
+        leg1_current.set(v);
+        leg1_bar.set_fraction(f64::from(v) / 100.0);
+    });
+    *anim.borrow_mut() = Some(id);
+
+    let leg2_bar = pbar.clone();
+    let leg2_current = current.clone();
+    let leg2_anim = anim.clone();
+    let leg2_token = token.clone();
+    gtk4::glib::timeout_add_local_once(Duration::from_millis(OSD_LEG1_MS as u64), move || {
+        if leg2_token.get() != my_token {
+            return; // superseded by a newer OSD event before leg 1 finished
+        }
+        let inner_bar = leg2_bar.clone();
+        let id = bread_theme::anim::spring_to(&leg2_bar, overshoot, to, OSD_LEG2_MS, move |v| {
+            leg2_current.set(v);
+            inner_bar.set_fraction(f64::from(v) / 100.0);
+        });
+        *leg2_anim.borrow_mut() = Some(id);
+    });
 }
 
 fn create_window() -> gtk4::Window {
