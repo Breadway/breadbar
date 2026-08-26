@@ -397,7 +397,34 @@ fn make_card(spec: CardSpec<'_>) -> gtk4::Box {
         content.add_controller(gesture);
     }
 
-    card.append(&content);
+    // NOTIFICATION INTERACTION #A: a direct dismiss control. Floated in
+    // the card's top-right corner via an Overlay rather than a full extra
+    // header row, so it doesn't add vertical bulk the approved demo's own
+    // card never has (see the `.notification-dismiss` CSS in theme.rs).
+    // `collect_interactive` (this module) picks it up the same way it
+    // picks up the action/reply buttons below, by walking the real widget
+    // tree — it doesn't need to know this button lives one level deeper,
+    // inside the overlay, than they do.
+    let overlay = gtk4::Overlay::new();
+    overlay.set_child(Some(&content));
+
+    let dismiss_btn = gtk4::Button::with_label("×");
+    dismiss_btn.add_css_class("notification-dismiss");
+    dismiss_btn.set_halign(gtk4::Align::End);
+    dismiss_btn.set_valign(gtk4::Align::Start);
+    let dismiss_invoke = Invoke {
+        conn: spec.conn.clone(),
+        cards: spec.cards.clone(),
+        cards_box: spec.cards_box.clone(),
+        window: spec.window.clone(),
+        id: spec.id,
+    };
+    dismiss_btn.connect_clicked(move |_| {
+        dismiss_card(dismiss_invoke.clone());
+    });
+    overlay.add_overlay(&dismiss_btn);
+
+    card.append(&overlay);
 
     let visible: Vec<&Action> = spec
         .actions
@@ -494,6 +521,22 @@ fn invoke_action(invoke: Invoke, key: &str) {
     let key = key.to_string();
     relm4::spawn_local(async move {
         emit_action(&invoke.conn, invoke.id, &key).await;
+        if dismiss(&invoke.cards_box, &invoke.window, &invoke.cards, invoke.id) {
+            emit_closed(&invoke.conn, invoke.id, close_reason::DISMISSED_BY_USER).await;
+        }
+    });
+}
+
+/// NOTIFICATION INTERACTION #A: the card's own dismiss button. Unlike
+/// `invoke_action`, this never emits `ActionInvoked` — there's no action
+/// key here, the user just closed the toast unprompted — only the
+/// spec-mandated `NotificationClosed(id, reason)`, with
+/// `close_reason::DISMISSED_BY_USER` (freedesktop value 2, "dismissed by
+/// the user") so clients are told properly, same reason code
+/// `invoke_action` above and `submit_reply` below already use for their
+/// own user-initiated dismissals.
+fn dismiss_card(invoke: Invoke) {
+    relm4::spawn_local(async move {
         if dismiss(&invoke.cards_box, &invoke.window, &invoke.cards, invoke.id) {
             emit_closed(&invoke.conn, invoke.id, close_reason::DISMISSED_BY_USER).await;
         }
