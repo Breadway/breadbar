@@ -133,8 +133,19 @@ pub struct App {
     bar_cpu_lbl: gtk4::Label,
     bar_ram_lbl: gtk4::Label,
     gpu_lbl: gtk4::Label,
-    vol_lbl: gtk4::Label,
-    bat_lbl: gtk4::Label,
+    // Odometer-style digit chips (plan: "ODOMETER DIGITS FOR NUMERIC
+    // CHIPS") — reuses the clock's `make_clock_digits`/`flip_clock_digits`
+    // machinery (see `make_digit_chip`/`flip_digit_chip` below), so the
+    // volume/battery numbers roll per-digit instead of snapping. `Rc<RefCell<..>>`,
+    // not a plain `Vec`, because the label set is also mutated from the
+    // control panel's volume-slider `connect_value_changed` closure (set up
+    // in `init`, before `self` exists) as well as from `update`'s
+    // `StatsUpdate` handler — both need to see and replace the same digit
+    // set.
+    vol_lbl: gtk4::Box,
+    vol_digits: Rc<RefCell<Vec<gtk4::Label>>>,
+    bat_lbl: gtk4::Box,
+    bat_digits: Rc<RefCell<Vec<gtk4::Label>>>,
     bat_img: gtk4::Image,
     bat_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
     ac_img: gtk4::Image,
@@ -407,8 +418,10 @@ impl SimpleComponent for App {
         let mem_lbl = stat_label();
         let pwr_lbl = stat_label();
         let gpu_lbl = stat_label();
-        let vol_lbl = stat_label();
-        let bat_lbl = stat_label();
+        let vol_lbl = digit_chip_box();
+        let vol_digits: Rc<RefCell<Vec<gtk4::Label>>> = Rc::new(RefCell::new(Vec::new()));
+        let bat_lbl = digit_chip_box();
+        let bat_digits: Rc<RefCell<Vec<gtk4::Label>>> = Rc::new(RefCell::new(Vec::new()));
 
         let vol_img = svg_image(ICON_VOLUME);
         vol_img.add_css_class("stat-icon");
@@ -678,7 +691,7 @@ impl SimpleComponent for App {
         let vol_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         vol_box.add_css_class("stat-pair");
         bar_chip(&vol_box);
-        vol_lbl.add_css_class("stat-label");
+        bar_chip(&vol_lbl);
         vol_box.append(&vol_img);
         vol_box.append(&vol_lbl);
         // Appended in "Assemble" below, per `[bar.slots].right`.
@@ -687,7 +700,7 @@ impl SimpleComponent for App {
         bat_box.add_css_class("stat-pair");
         bar_chip(&bat_box);
         bat_img.add_css_class("stat-icon");
-        bat_lbl.add_css_class("stat-label");
+        bar_chip(&bat_lbl);
         ac_img.add_css_class("stat-icon");
         bat_box.append(&bat_img);
         bat_box.append(&bat_lbl);
@@ -902,8 +915,19 @@ impl SimpleComponent for App {
 
         let loading_v = panel_loading.clone();
         let vol_lbl_live = vol_lbl.clone();
+        let vol_digits_live = vol_digits.clone();
         panel_vol_slider.connect_value_changed(move |s| {
-            vol_lbl_live.set_label(&format!("{:.0}", s.value() * 100.0));
+            // No flip animation here, deliberately: a slider drag fires
+            // this on every pointer-move tick, and re-playing the
+            // digit-flip keyframe that fast would read as a flicker, not a
+            // roll. `set_digit_chip` just swaps the label text/count in
+            // place; `flip_digit_chip` (used by the `StatsUpdate` poll
+            // below) is the one that actually animates.
+            set_digit_chip(
+                &vol_lbl_live,
+                &mut vol_digits_live.borrow_mut(),
+                &format!("{:.0}", s.value() * 100.0),
+            );
             if loading_v.get() {
                 return;
             }
@@ -1518,7 +1542,9 @@ impl SimpleComponent for App {
             bar_ram_lbl,
             gpu_lbl,
             vol_lbl,
+            vol_digits,
             bat_lbl,
+            bat_digits,
             bat_img,
             bat_textures,
             ac_img,
@@ -1745,9 +1771,13 @@ impl SimpleComponent for App {
                 }
                 self.system_sep.set_visible(false);
 
-                tick_label(&self.vol_lbl, &stats.volume_pct.to_string());
+                flip_digit_chip(
+                    &self.vol_lbl,
+                    &mut self.vol_digits.borrow_mut(),
+                    &stats.volume_pct.to_string(),
+                );
                 self.vol_lbl.set_tooltip_text(Some(&format!("volume {}%", stats.volume_pct)));
-                tick_label(&self.bat_lbl, &stats.bat);
+                flip_digit_chip(&self.bat_lbl, &mut self.bat_digits.borrow_mut(), &stats.bat);
                 if let Some(tex) = self.bat_textures.get(&(stats.bat_icon.as_ptr() as usize)) {
                     self.bat_img.set_paintable(Some(tex));
                 }
@@ -2656,12 +2686,87 @@ fn flip_clock_digits(digits: &[gtk4::Label], time: &str) {
     }
 }
 
-fn tick_label(lbl: &gtk4::Label, text: &str) {
-    if lbl.label().as_str() == text {
+/// Container for a [`make_digit_chip`]/[`flip_digit_chip`]-driven numeric
+/// chip (volume, battery) — a plain horizontal box, same shape as
+/// `vol_box`/`bat_box`'s existing icon+label chips, that gets one
+/// `.stat-digit` label per character instead of a single `gtk4::Label`.
+fn digit_chip_box() -> gtk4::Box {
+    gtk4::Box::new(gtk4::Orientation::Horizontal, 0)
+}
+
+/// One `.stat-digit` label per character of `text` — the `stat-label`
+/// styled counterpart of `make_clock_digits`, reused so volume/battery
+/// chips can roll per-digit the same way the clock does (plan: "ODOMETER
+/// DIGITS FOR NUMERIC CHIPS"). Not the clock's own `.clock-digit` class:
+/// that carries the clock's much larger `font-size`, wrong for a bar chip.
+fn make_digit_chip(text: &str) -> Vec<gtk4::Label> {
+    text.chars()
+        .map(|ch| {
+            let lbl = gtk4::Label::new(Some(&ch.to_string()));
+            lbl.add_css_class("stat-label");
+            lbl.add_css_class("stat-digit");
+            lbl.set_valign(gtk4::Align::Center);
+            lbl.set_vexpand(false);
+            lbl.set_yalign(0.5);
+            lbl
+        })
+        .collect()
+}
+
+/// Tears down `container`'s current digit labels and rebuilds them for
+/// `text` from scratch — the shared fallback [`set_digit_chip`] and
+/// [`flip_digit_chip`] both take when the character count changes (`9` ->
+/// `10`), including the very first call, when `digits` starts empty. No
+/// per-position diff makes sense across different lengths, so this never
+/// animates.
+fn rebuild_digit_chip(container: &gtk4::Box, digits: &mut Vec<gtk4::Label>, text: &str) {
+    for lbl in digits.drain(..) {
+        container.remove(&lbl);
+    }
+    *digits = make_digit_chip(text);
+    for lbl in digits.iter() {
+        container.append(lbl);
+    }
+}
+
+/// Replaces `container`'s digit labels with `text`'s, with NO animation —
+/// used for the volume slider's live drag feedback (`connect_value_changed`
+/// fires on every pointer-move tick; replaying the flip keyframe that fast
+/// would read as a flicker). [`flip_digit_chip`] below is the animated
+/// counterpart, driven by the `StatsUpdate` poll instead.
+fn set_digit_chip(container: &gtk4::Box, digits: &mut Vec<gtk4::Label>, text: &str) {
+    let chars: Vec<char> = text.chars().collect();
+    if digits.len() != chars.len() {
+        rebuild_digit_chip(container, digits, text);
         return;
     }
-    lbl.set_label(text);
-    play_once(lbl, "tick", 360);
+    for (lbl, ch) in digits.iter().zip(chars.iter()) {
+        let next = ch.to_string();
+        if lbl.label().as_str() != next {
+            lbl.set_label(&next);
+        }
+    }
+}
+
+/// The animated counterpart of [`set_digit_chip`]: same rebuild-on-length-
+/// change fallback, but on a same-length update it plays the `flip`
+/// keyframe (`digit-flip`, the same one the clock uses) only on the
+/// characters that actually changed — same convention as
+/// `flip_clock_digits`.
+fn flip_digit_chip(container: &gtk4::Box, digits: &mut Vec<gtk4::Label>, text: &str) {
+    let chars: Vec<char> = text.chars().collect();
+    if digits.len() != chars.len() {
+        rebuild_digit_chip(container, digits, text);
+        return;
+    }
+    for (lbl, ch) in digits.iter().zip(chars.iter()) {
+        let next = ch.to_string();
+        if lbl.label().as_str() == next {
+            continue;
+        }
+        lbl.set_label(&next);
+        play_once(lbl, "flip", 350);
+    }
 }
 
 fn reveal_media(widget: &gtk4::Box, show: bool) {

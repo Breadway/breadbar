@@ -271,6 +271,15 @@ fn load_css() -> String {
          .date-label {{ font-size: 12px; opacity: 0.48; letter-spacing: 0.04em; }}\
          .stat-label {{ font-size: 14px; letter-spacing: 0.02em; opacity: 0.92; }}\
          .stat-label.tick {{ animation: digit-flip 0.35s {spring} both; }}\
+         /* Odometer digit chips (volume/battery, ANIMATION WORK #2): one\
+            `.stat-label` per character instead of one label for the whole\
+            number, each with a fixed min-width so a `9` -> `10` or\
+            `8` -> `9` transition doesn't jitter the chip's overall width\
+            as narrower/wider glyphs swap in. `.flip` reuses the exact\
+            `digit-flip` keyframe + timing the clock's `.clock-digit.flip`\
+            already plays. */\
+         .stat-digit {{ min-width: 9px; padding: 0; margin: 0; }}\
+         .stat-digit.flip {{ animation: digit-flip 0.35s {spring} both; }}\
          .stats-box {{ margin-right: 0; }}\
          /* Radius was a hardcoded 10px here regardless of theme — right by\
             coincidence for liquid-motion's demo (`.chip {{ border-radius:\
