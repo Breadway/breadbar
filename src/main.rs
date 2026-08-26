@@ -350,6 +350,58 @@ impl SimpleComponent for App {
             Exclusive::Px(px) => px,
         };
         root.set_exclusive_zone(exclusive_zone);
+        // ANIMATION WORK #3: bar entrance on first map, Liquid Motion
+        // only. The flush glass-workbench bar has no floating margin to
+        // slide from (it sits edge-to-edge against the screen), so it
+        // gets nothing; spotlight's capsule already has its own width/
+        // drawer motion in flight during a real search, so stacking a
+        // margin spring underneath that felt like fighting it rather than
+        // adding to it — it gets a plain opacity fade instead (the
+        // `bar-entrance` CSS class, added unconditionally by both arms
+        // below; only liquid-motion also gets the margin spring).
+        //
+        // This animates the SURFACE's own layer-shell top margin via
+        // `anim::spring_to`, not a CSS property, deliberately: `theme.rs`
+        // has no `margin-top` transition/keyframe reachable from here
+        // that wouldn't also require moving `root_vbox`'s or
+        // `center_box`'s own CSS margin, which — unlike an outer
+        // layer-shell margin, a compositor-level surface placement, not a
+        // GTK box-model property at all — WOULD perturb every descendant
+        // widget's own measured size, including the workspace row's.
+        // `WorkspaceTrail::place()`'s single-shot initial geometry sample
+        // is a documented previous crash site for exactly that: `ws-in`'s
+        // margin-top keyframe on a first-build button raced that sample
+        // and froze the trail pill low (see the `!is_first_build` guard
+        // and its comment, a few hundred lines below, for the full
+        // story). A layer-shell margin change repositions the whole
+        // surface on screen without touching any widget's own box model,
+        // so `compute_bounds(host)`'s host-local coordinates — the trail's
+        // whole coordinate system — never see it move at all, by
+        // construction rather than by luck.
+        let theme_id = theme::shell_theme().id().to_string();
+        if theme_id == "liquid-motion" {
+            const BAR_ENTRANCE_DROP: i32 = 18;
+            let target_top = window_spec.margin.top;
+            let start_top = (target_top - BAR_ENTRANCE_DROP).max(0);
+            root.set_margin(Edge::Top, start_top);
+            root.add_css_class("bar-entrance");
+            let played = Rc::new(Cell::new(false));
+            root.connect_map(move |win| {
+                // Guard against replaying on a later remap (e.g. a
+                // satellite hidden/reshown — see `root.set_visible(false)`
+                // a few lines below for the unbound-satellite case): this
+                // is a first-paint entrance, not a reveal animation.
+                if played.replace(true) {
+                    return;
+                }
+                let target = win.clone();
+                bread_theme::anim::spring_to(win, start_top, target_top, 420.0, move |v| {
+                    target.set_margin(Edge::Top, v);
+                });
+            });
+        } else if theme_id == "spotlight" {
+            root.add_css_class("bar-entrance");
+        }
         // breadbar never called `set_keyboard_mode` before Phase 2 — it
         // relied on gtk4-layer-shell's own default (`KeyboardMode::None`),
         // which is exactly what the builtin manifest's `keyboard = "none"`

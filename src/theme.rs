@@ -243,6 +243,17 @@ fn load_css() -> String {
          @keyframes row-in {{ from {{ opacity: 0; margin-top: 8px; }} to {{ opacity: 1; margin-top: 0; }} }}\
          @keyframes digit-flip {{ from {{ opacity: 0; margin-top: 7px; }} to {{ opacity: 1; margin-top: 0; }} }}\
          @keyframes caret-draw {{ from {{ margin-right: 200px; opacity: 0.2; }} to {{ margin-right: 4px; opacity: 1; }} }}\
+         /* ANIMATION WORK #3, bar entrance on first map: opacity ONLY —\
+            no margin/geometry term — so this can never perturb any\
+            descendant's own box-model size (see main.rs's own long\
+            comment on this, next to where `bar-entrance` gets added, for\
+            why that matters to the workspace trail specifically).\
+            Liquid Motion additionally springs the surface's own\
+            layer-shell top margin via `anim::spring_to` in Rust, which\
+            this keyframe knows nothing about; glass-workbench never adds\
+            this class at all. */\
+         @keyframes bar-in {{ from {{ opacity: 0; }} }}\
+         .bar-entrance {{ animation: bar-in 0.4s {spring_settle} both; }}\
          window.breadbar {{ background-color: alpha(@bg, {bg_alpha}); color: @on-bg;\
              border-radius: {radius_bar}; {window_border}\
              transition: border-radius 0.3s {spring_settle}; }}\
