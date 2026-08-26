@@ -408,6 +408,18 @@ impl WorkspaceTrail {
             } else {
                 (to_g, true)
             };
+            // Squash-and-stretch (ANIMATION WORK #1): compress the pill's
+            // height a few px while it's mid-flight and let it spring back
+            // — slightly taller than normal, then settling — as it lands,
+            // so the trail reads as having weight instead of sliding like a
+            // rigid box. A pure post-process on top of the already-correct
+            // x/w/y trajectory above, applied only to the frame actually
+            // painted (`g`) — never fed back into `TrailInner::natural`
+            // (`from_geom`'s own width/height memory for the *next*
+            // animation), which stays driven solely by real button geometry
+            // as before. Skipped on the final `done` frame so the resting
+            // geometry is exactly `to_g`, unperturbed.
+            let g = if done { g } else { squash_geom(g, squash_factor(elapsed)) };
             apply_geom(&host, &pill, &inner, &g);
             if done {
                 inner.borrow_mut().tick = None;
@@ -576,4 +588,89 @@ fn ease_overshoot(t: f64) -> f64 {
     let c = 1.4;
     let t1 = t - 1.0;
     1.0 + t1 * t1 * ((c + 1.0) * t1 + c)
+}
+
+/// Lowest fraction of the resting height the pill compresses to, at the
+/// peak of the stretch phase (fastest travel).
+const SQUASH_MIN: f64 = 0.80;
+
+/// The squash-and-stretch height multiplier for a given point in
+/// `stretch`'s own STRETCH_MS-then-SNAP_MS timeline: eases DOWN to
+/// `SQUASH_MIN` across the stretch phase (using the same `ease` curve the
+/// width stretch already uses), then eases back UP to 1.0 across the snap
+/// phase using `ease_overshoot` — which legitimately overshoots past 1.0
+/// partway through, so the pill also plumps up slightly taller than its
+/// resting height right before settling, the same "spring" read the width
+/// snap already has. Past both phases (a caller-side `elapsed` this large
+/// only happens if something calls this after `stretch`'s own `done` cutoff)
+/// this is exactly 1.0, i.e. a no-op.
+fn squash_factor(elapsed: f64) -> f64 {
+    if elapsed < STRETCH_MS {
+        lerp(1.0, SQUASH_MIN, ease(elapsed / STRETCH_MS))
+    } else if elapsed < STRETCH_MS + SNAP_MS {
+        lerp(SQUASH_MIN, 1.0, ease_overshoot((elapsed - STRETCH_MS) / SNAP_MS))
+    } else {
+        1.0
+    }
+}
+
+/// Applies a height multiplier to `g`, keeping it vertically centred on
+/// `g`'s own centre (so the squash reads as compression, not a pill that
+/// sinks or rises) and leaving x/w untouched.
+fn squash_geom(g: Geom, factor: f64) -> Geom {
+    let h = g.h * factor;
+    Geom {
+        x: g.x,
+        y: g.y + (g.h - h) * 0.5,
+        w: g.w,
+        h,
+    }
+}
+
+#[cfg(test)]
+mod squash_tests {
+    use super::*;
+
+    #[test]
+    fn factor_starts_and_ends_at_one() {
+        assert!((squash_factor(0.0) - 1.0).abs() < 1e-9);
+        assert!((squash_factor(STRETCH_MS + SNAP_MS) - 1.0).abs() < 1e-9);
+        assert_eq!(squash_factor(STRETCH_MS + SNAP_MS + 500.0), 1.0);
+    }
+
+    #[test]
+    fn factor_dips_below_one_mid_stretch() {
+        let mid_stretch = STRETCH_MS * 0.5;
+        assert!(squash_factor(mid_stretch) < 1.0);
+        assert!(squash_factor(mid_stretch) >= SQUASH_MIN);
+    }
+
+    #[test]
+    fn squash_geom_keeps_the_vertical_centre_fixed() {
+        let g = Geom {
+            x: 10.0,
+            y: 20.0,
+            w: 30.0,
+            h: 26.0,
+        };
+        let centre = g.y + g.h * 0.5;
+        let squashed = squash_geom(g, 0.8);
+        assert!((squashed.h - 20.8).abs() < 1e-9);
+        assert!((squashed.y + squashed.h * 0.5 - centre).abs() < 1e-9);
+        assert_eq!(squashed.x, g.x);
+        assert_eq!(squashed.w, g.w);
+    }
+
+    #[test]
+    fn squash_geom_factor_one_is_identity() {
+        let g = Geom {
+            x: 1.0,
+            y: 2.0,
+            w: 3.0,
+            h: 4.0,
+        };
+        let out = squash_geom(g, 1.0);
+        assert_eq!(out.y, g.y);
+        assert_eq!(out.h, g.h);
+    }
 }
