@@ -341,6 +341,17 @@ fn load_css() -> String {
          .notification-action {{ padding: 2px 8px; font-size: 11px; border-radius: {radius_sm}; }}\
          .notification-reply {{ margin-top: 6px; }}\
          .notification-reply-entry {{ min-width: 0; }}\
+         /* NOTIFICATION INTERACTION #A: a direct dismiss control, floated\
+            in the card's top-right corner via an Overlay (see popup.rs's\
+            `make_card`) rather than a full extra header row, so it doesn't\
+            add vertical bulk the approved demo's own card never has. */\
+         .notification-dismiss {{ min-width: 18px; min-height: 18px; padding: 0;\
+             margin: 2px; border-radius: {radius_pill}; background: transparent;\
+             color: @on-bg; opacity: 0.45; font-size: 12px; font-weight: bold;\
+             border: none; outline: none; box-shadow: none;\
+             transition: background-color 0.18s {spring_settle}, opacity 0.18s ease; }}\
+         .notification-dismiss:hover {{ opacity: 1; background: alpha(@on-bg, 0.16); }}\
+         .notification-dismiss:active {{ background: alpha(@on-bg, 0.24); }}\
          .history-title {{ font-weight: bold; font-size: 13px; }}\
          .history-close {{ padding: 2px 8px; }}\
          .history-empty {{ opacity: 0.5; padding: 8px 0; }}\

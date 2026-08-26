@@ -16,7 +16,7 @@ use crate::{bind_layer_monitor, theme};
 
 /// Outside this rectangle's local x/y span, the dismiss window's own real
 /// size (Wayland clips an input region to the surface's actual bounds, same
-/// as `surface::click_through`'s empty-region trick) — big enough to cover
+/// as `surface::set_hit_region`'s empty-region trick) — big enough to cover
 /// any realistic monitor layout, including a negative-origin secondary
 /// output (`hyprctl layers -j` reported `x: -1080` for this machine's own
 /// DVI-I-1). Centered on the origin so it's safe regardless of which way a
@@ -52,7 +52,7 @@ pub struct PanelSet {
     // exists and how it's computed. `None` = no hole, the plain
     // margin-based popover behaviour applies instead. Read inside
     // `dismiss`'s own `connect_map` (the input region can only be set once
-    // the surface is real — see `surface::click_through`'s doc comment for
+    // the surface is real — see `surface::set_hit_region`'s doc comment for
     // the same constraint) and, for the case where `dismiss` is already
     // mapped from a prior show, applied immediately too.
     dismiss_hole: DismissHole,
@@ -263,7 +263,7 @@ fn make_dismiss(monitor: &str, hole: &DismissHole) -> gtk4::Window {
     window.set_visible(false);
     // The underlying `GdkSurface` (and therefore `window.surface()`, which
     // `apply_dismiss_hole` needs) doesn't exist until the window is mapped
-    // — same constraint `surface::click_through` documents. This surface
+    // — same constraint `surface::set_hit_region` documents. This surface
     // gets hidden/shown repeatedly (every popover open/close, every
     // capsule search), and GTK4 unmaps-then-remaps a toplevel each time
     // its visibility toggles off then on, so re-applying here on every

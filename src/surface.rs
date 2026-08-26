@@ -87,27 +87,50 @@ pub fn apply(window: &gtk4::Window, namespace: &str) {
     }
 }
 
-/// Makes `window` fully click-through: an empty layer-shell input region
-/// means every pointer event passes to whatever is underneath instead of
-/// being consumed by this surface. Deliberately opt-in, not part of
-/// `apply()` — like `exclusive` zone and `keyboard` mode (see the module
-/// doc comment), this isn't a `[surfaces.*]` schema concept, and most of
-/// breadbar's satellites (history, the panel, the dismiss-scrim) genuinely
-/// need real hit-testing. Only a purely-informational surface — today just
-/// the notification toast — should call this.
+/// Sets `window`'s input region to the union of `widgets`' current
+/// allocations, each measured relative to `window` itself (the surface's
+/// own coordinate space, same as `bar::workspaces::button_geom`'s own
+/// `compute_bounds` call relative to its Fixed host) — everywhere else on
+/// the surface stays click-through. An empty (or all-invisible/all-
+/// unallocated) `widgets` slice is not a special case:
+/// `Region::create_rectangles(&[])` is already the fully click-through
+/// empty region — passing `&[]` here is exactly the old blanket
+/// `Region::create()` this function replaces (see git history around
+/// `notifications/popup.rs`'s "stop toast popups from stealing focus or
+/// blocking clicks" fix, and NOTIFICATION INTERACTION #B in the current
+/// task notes: a toast must never block clicks or steal focus from
+/// whatever's underneath it EXCEPT on its own buttons — an all-empty
+/// region made those unreachable too).
 ///
-/// Must be applied in a `connect_map` handler: the surface (and therefore
-/// `window.surface()`) doesn't exist until the window is mapped.
+/// Only meaningful after `window.surface()` exists (i.e. from
+/// `connect_map` onward — the surface doesn't exist before the window is
+/// mapped) and after `widgets` have a real allocation — a widget with no
+/// allocation yet (`compute_bounds` returning `None`) is simply skipped
+/// rather than contributing a garbage rectangle, so a call made one frame
+/// too early just yields a smaller-than-intended region for that one frame
+/// rather than a wrong one.
 ///
-/// This exists so a future migration of a surface's window-setup code
-/// (like the one from hand-rolled layer-shell calls to this module) can't
-/// silently drop a click-through requirement the way `breadbar-notif` did
-/// once already — see the git history of `notifications/popup.rs` around
-/// the "stop toast popups from stealing focus or blocking clicks" fix.
-pub fn click_through(window: &gtk4::Window) {
-    window.connect_map(|win| {
-        if let Some(surface) = win.surface() {
-            surface.set_input_region(Some(&gtk4::cairo::Region::create()));
-        }
-    });
+/// Callers are responsible for RECOMPUTING this every time the hittable
+/// set could have moved: a widget added or removed, or a layout pass (an
+/// entrance animation, a push-down reflow) still in flight. A stale region
+/// either swallows clicks meant for the window below or leaves a real
+/// button dead.
+pub fn set_hit_region(window: &gtk4::Window, widgets: &[gtk4::Widget]) {
+    let Some(surface) = window.surface() else {
+        return;
+    };
+    let rects: Vec<gtk4::cairo::RectangleInt> = widgets
+        .iter()
+        .filter(|w| w.is_visible())
+        .filter_map(|w| {
+            let b = w.compute_bounds(window)?;
+            Some(gtk4::cairo::RectangleInt::new(
+                b.x().floor() as i32,
+                b.y().floor() as i32,
+                b.width().ceil() as i32,
+                b.height().ceil() as i32,
+            ))
+        })
+        .collect();
+    surface.set_input_region(Some(&gtk4::cairo::Region::create_rectangles(&rects)));
 }
