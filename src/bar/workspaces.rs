@@ -369,7 +369,7 @@ impl WorkspaceTrail {
 
     pub fn stretch(&self, from: Option<&gtk4::Button>, to: &gtk4::Button) {
         self.cancel();
-        let Some(from_g) = self.from_geom(from) else {
+        let Some(from_g) = self.from_geom(from, to) else {
             self.place(to);
             return;
         };
@@ -411,7 +411,7 @@ impl WorkspaceTrail {
         self.inner.borrow_mut().tick = Some(id);
     }
 
-    fn from_geom(&self, from: Option<&gtk4::Button>) -> Option<Geom> {
+    fn from_geom(&self, from: Option<&gtk4::Button>, to: &gtk4::Button) -> Option<Geom> {
         let st = self.inner.borrow();
         let live = if self.pill.is_visible() && st.geom.w > 0.5 {
             Some(st.geom)
@@ -420,7 +420,17 @@ impl WorkspaceTrail {
         };
         drop(st);
 
-        let natural = from.and_then(|b| button_geom(b, &self.host).map(inset_pill));
+        // Width must always come from a button that is CURRENTLY IN THE ROW.
+        // Switching to an empty workspace makes Hyprland create and destroy it,
+        // which rebuilds the button row mid-animation and can leave `from`
+        // detached — `button_geom` then returns None. Falling back to the live
+        // geometry there handed the wide mid-stretch span straight back in,
+        // which is exactly the accumulation this function exists to prevent
+        // (reproduced by spamming between workspace 1 and an empty 6). The
+        // destination button is always live, so it is the correct fallback.
+        let natural = from
+            .and_then(|b| button_geom(b, &self.host).map(inset_pill))
+            .or_else(|| button_geom(to, &self.host).map(inset_pill));
 
         // Continuity without accumulation.
         //
@@ -437,6 +447,10 @@ impl WorkspaceTrail {
         // Taking position from the live geometry and width from the source
         // button's natural size keeps the motion continuous while making width
         // a pure function of which button we started from.
+        // `natural` is None only if BOTH buttons are detached, in which case
+        // there is no sane width to animate from and the caller falls back to
+        // an instant `place()`. There is deliberately no path that returns the
+        // live width.
         match (live, natural) {
             (Some(live), Some(natural)) => Some(Geom {
                 x: live.x,
@@ -444,8 +458,8 @@ impl WorkspaceTrail {
                 w: natural.w,
                 h: natural.h,
             }),
-            (Some(live), None) if live.w <= MAX_CHIP_W => Some(live),
-            (_, natural) => natural,
+            (None, natural) => natural,
+            (Some(_), None) => None,
         }
     }
 }

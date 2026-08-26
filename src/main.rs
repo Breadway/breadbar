@@ -1915,6 +1915,13 @@ impl SimpleComponent for App {
                         // below is a silent no-op.
                         self.launcher_entry.set_can_focus(true);
                         self.launcher_entry.grab_focus();
+                        // ...and then actually OPEN it. Focus alone no longer
+                        // opens the capsule: `connect_enter` used to call
+                        // `open_fn()`, which is precisely what made the capsule
+                        // open itself during window construction, so that path
+                        // was deliberately removed. Without this call the
+                        // keybind focuses the entry and leaves the drawer shut.
+                        (self.launcher_open_fn)();
                     }
                 }
             }
