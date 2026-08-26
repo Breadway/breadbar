@@ -1995,6 +1995,13 @@ impl App {
         self.workspace_trail.cancel();
         let prev: std::collections::HashSet<WorkspaceId> =
             self.button_map.keys().copied().collect();
+        // `button_map` only starts empty once — the very first call this
+        // App instance ever makes, before any workspace has ever been
+        // synced from Hyprland. A fully-emptied bar never happens after
+        // that (the active workspace's own row is always kept), so this
+        // doubles as a clean "is this the initial paint" signal without a
+        // dedicated flag — see its one use below.
+        let is_first_build = prev.is_empty();
         while let Some(child) = self.workspace_box.first_child() {
             self.workspace_box.remove(&child);
         }
@@ -2038,7 +2045,20 @@ impl App {
                     bar::workspaces::make_button(ws.id, &ws.name, self.active_ws, ws.windows > 0)
                 }
             };
-            if !prev.contains(&ws.id) {
+            // Never on the very first build (bug: "the [Trail] row sits
+            // ~5px low on first paint and only corrects after the first
+            // switch"). Root cause: `ws-in`'s `row-in` keyframe animates
+            // `margin-top` 8px → 0 over 320ms; `WorkspaceTrail::place`
+            // (called once, synchronously-ish, right after this loop for
+            // the initial row) samples each button's geometry via a
+            // single-shot tick callback that can fire while that margin
+            // is still mid-animation, freezing the trail pill a few px
+            // low until the next `place`/`stretch` call (the first real
+            // workspace switch) re-samples the by-then-settled layout.
+            // The demo itself never animates the initial row in at all
+            // (`OCC.forEach` builds plainly, only `place(0)` runs) — only
+            // *subsequently added* workspaces should ever play this.
+            if !is_first_build && !prev.contains(&ws.id) {
                 play_once(&btn, "ws-in", 360);
             }
             self.workspace_box.append(&btn);

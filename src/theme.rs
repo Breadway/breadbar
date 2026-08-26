@@ -35,6 +35,21 @@ pub fn set_shell_theme(theme: ShellTheme) {
     SHELL_THEME.with(|cell| *cell.borrow_mut() = Rc::new(theme));
 }
 
+/// The one bar-chip height every chip in the row shares (vol/wifi/battery/
+/// menu/media, and the workspace pills for Trail/Pill styles) — see the
+/// `chip_h` local in `load_css` for why this is a hardcoded per-`
+/// WorkspaceStyle` override rather than `Tokens::chip_height()`. Used both
+/// by that CSS and by `bar::workspaces::make_button`'s `set_size_request`,
+/// which otherwise still forces the stale token value as a hard GTK
+/// minimum that a CSS `min-height` alone cannot out-rank.
+pub fn approved_chip_height(style: bread_theme::shell::WorkspaceStyle) -> i64 {
+    use bread_theme::shell::WorkspaceStyle::*;
+    match style {
+        Trail => 26,
+        Pill | Dots => 22,
+    }
+}
+
 fn load_css() -> String {
     // breadbar-specific rules only — fonts, base colours, and generic widgets
     // come from the shared ecosystem stylesheet (applied first in `apply()`).
@@ -118,6 +133,24 @@ fn load_css() -> String {
         _ => radius_sm.clone(),
     };
 
+    // ONE chip highlight height per bar, vertically centred — every chip
+    // (vol/wifi/battery/menu/media, icon-only and labelled alike) shares
+    // it so their fills align, instead of each sizing to its own content
+    // box (reported: battery sits high, wifi/menu are taller than their
+    // neighbours). Liquid Motion 26px / Glass Workbench 22px / Spotlight
+    // 22px, per the approved demo spec.
+    //
+    // HARDCODED, not `tokens.chip_height()`: that token is `breadbar::
+    // CHIP_HEIGHT` (32) carried over from before this design pass and was
+    // never updated for the three builtin `theme.toml`s (32/20/36) — it
+    // predates and disagrees with the demo numbers above. bread-ecosystem
+    // is owned by a sibling agent this pass, so this stays a local
+    // override (same `WorkspaceStyle` this file already keys `chip_radius`
+    // off) rather than an edit to that repo's schema/manifests. Flagged in
+    // the task report: `chip_height` should become 26/22/22 upstream.
+    let chip_h = approved_chip_height(theme.modules().workspaces.style);
+    let chip_height_px = format!("{chip_h}px");
+
     // `modules.workspaces.style` (plan §11 Phase 5): "trail" (default,
     // liquid-motion) is exactly today's CSS, unchanged byte-for-byte —
     // dimmed/translucent buttons with the gradient trail overlay supplying
@@ -140,7 +173,7 @@ fn load_css() -> String {
                  background-color: @accent; border-radius: {radius_sm}; }}\
              .workspace-btn {{ background: transparent; opacity: 0.36; color: @on-bg;\
                  border-radius: {radius_sm}; border: none; outline: none; box-shadow: none;\
-                 min-width: 28px; min-height: 26px; margin: 0; padding: 0 7px;\
+                 min-width: 28px; min-height: {chip_height_px}; margin: 0; padding: 0 7px;\
                  font-size: 22px; font-weight: bold;\
                  transition: opacity 0.22s {spring_settle},\
                      background-color 0.22s {spring_settle}; }}\
@@ -155,7 +188,7 @@ fn load_css() -> String {
             format!(
                 ".workspace-btn {{ background: transparent; opacity: 1; color: alpha(@on-bg, 0.4);\
                      border-radius: {radius_sm}; border: none; outline: none; box-shadow: none;\
-                     min-width: 22px; min-height: 20px; margin: 0; padding: 0 6px;\
+                     min-width: 22px; min-height: {chip_height_px}; margin: 0; padding: 0 6px;\
                      font-size: 12px; font-weight: 600;\
                      transition: background-color 0.22s {spring_settle},\
                          color 0.22s {spring_settle}, opacity 0.22s {spring_settle}; }}\
@@ -253,7 +286,13 @@ fn load_css() -> String {
             radius_pill for spotlight, so every theme's stat chips round\
             the way that theme's *other* rounded chrome already does,\
             instead of all three sharing one borrowed hardcoded number. */\
-         .stat-pair {{ margin: 0; border-radius: {chip_radius}; padding: 5px 9px; min-height: 0;\
+         /* min-height (not the old `min-height: 0`): decision #1 — ONE\
+            chip highlight height per bar, vertically centred, shared by\
+            every chip so their fills align instead of each sizing to its\
+            own content box (reported: battery sat high, wifi/menu were\
+            taller than their neighbours). See `chip_height_px` above. */\
+         .stat-pair {{ margin: 0; border-radius: {chip_radius}; padding: 5px 9px;\
+             min-height: {chip_height_px};\
              transition: background-color 0.22s {spring_settle},\
                  opacity 0.18s ease; }}\
          .stat-pair:hover {{ background: alpha(@on-bg, 0.12); }}\
@@ -271,7 +310,7 @@ fn load_css() -> String {
             out (spotlight has no icon-only chip today, but would get the\
             same pill radius as its one `.stat-pair` sibling if it ever did). */\
          .stat-pair.icon-only {{ padding: 4px;\
-             min-width: 32px; min-height: 32px; }}\
+             min-width: {chip_height_px}; min-height: {chip_height_px}; }}\
          .stat-icon {{ margin-right: 6px; }}\
          .stat-pair.icon-only .stat-icon {{ margin: 0; }}\
          .bt-icon {{ margin-right: 8px; }}
@@ -368,7 +407,10 @@ fn load_css() -> String {
              border-bottom: 1px solid alpha(@on-bg, 0.10); box-shadow: none; }}\
          .confirm-button {{ background-color: @accent; color: @on-accent; }}\
          .confirm-button:hover {{ background-color: alpha(@accent, 0.85); }}\
-         .media-widget {{ border-radius: 10px; padding: 4px 8px; min-height: 0;\
+         /* min-height: decision #1 — the media chip is a bar chip like\
+            any other, so it shares the same row height instead of sizing\
+            to its own eq-bar/label content. */\
+         .media-widget {{ border-radius: 10px; padding: 4px 8px; min-height: {chip_height_px};\
              transition: background-color 0.22s {spring_settle}; }}\
          .media-widget:hover {{ background: alpha(@on-bg, 0.08); }}\
          .media-widget.media-in {{ animation: row-in 0.4s {spring} both; }}\
@@ -385,8 +427,20 @@ fn load_css() -> String {
          .media-btn {{ min-width: 32px; padding: 4px 8px; border-radius: {radius_sm};\
              transition: background-color 0.18s ease; }}\
          .media-btn:hover {{ background: alpha(@on-bg, 0.10); }}\
-         .control-panel-btn {{ padding: 5px 8px; margin: 0; border-radius: 10px;\
-             opacity: 0.92; font-size: 18px; line-height: 1; min-width: 0; min-height: 0;\
+         /* No padding/border-radius/min-width/min-height here (was\
+            `padding: 5px 8px; border-radius: 10px; min-width: 0;\
+            min-height: 0`): the hamburger is the only button carrying both\
+            `.stat-pair.icon-only` AND `.control-panel-btn`, and because\
+            this rule sits later in the cascade its hardcoded 10px radius\
+            and 0 min-size were silently winning over `.stat-pair`'s own\
+            `chip_radius`/`chip_height_px` — the exact hamburger-corner-\
+            mismatch bug decision #2 describes, and a second copy of\
+            decision #1's height bug, both reintroduced by\
+            this one class alone. Dropping the four properties lets\
+            `.stat-pair`/`.stat-pair.icon-only` cascade through unchanged,\
+            same fix shape as the icon-only border-radius removal above. */\
+         .control-panel-btn {{ margin: 0;\
+             opacity: 0.92; font-size: 18px; line-height: 1;\
              background: transparent; border: none; outline: none; box-shadow: none;\
              transition: background-color 0.22s {spring_settle},\
                  opacity 0.18s ease; }}\
@@ -508,6 +562,7 @@ fn load_css() -> String {
         radius_sm = radius_sm,
         radius_pill = radius_pill,
         chip_radius = chip_radius,
+        chip_height_px = chip_height_px,
         pad = pad,
         spring = spring,
         spring_settle = spring_settle,

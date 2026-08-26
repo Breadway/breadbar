@@ -142,7 +142,13 @@ pub fn make_button(
     btn.set_halign(gtk4::Align::Center);
     btn.set_vexpand(false);
     btn.set_hexpand(false);
-    btn.set_size_request(-1, crate::theme::shell_theme().tokens().chip_height() as i32);
+    // `crate::theme::approved_chip_height`, not `tokens().chip_height()`:
+    // the latter is the stale pre-demo `breadbar::CHIP_HEIGHT` token (32
+    // for this Trail/Pill style's theme) and, as a hard `set_size_request`
+    // minimum, would out-rank the CSS `min-height` the demo actually wants
+    // (26px Trail / 22px Pill) — see that function's doc comment.
+    let style = crate::theme::shell_theme().modules().workspaces.style;
+    btn.set_size_request(-1, crate::theme::approved_chip_height(style) as i32);
     if let Some(child) = btn.child() {
         child.set_halign(gtk4::Align::Center);
         child.set_valign(gtk4::Align::Center);
@@ -156,21 +162,27 @@ pub fn make_button(
 }
 
 /// `style = "dots"` (theme 04/spotlight): a label-less pill whose WIDTH
-/// encodes `windows` (0/1/2/3-or-more open) via `dot_widths` — see
-/// `bread_theme::shell::WorkspacesModule::dot_widths`. Distinct from
-/// [`make_button`] (Trail/Pill) rather than a variant of it because dots
-/// carry no text at all (`04-spotlight.html`'s `.dots button` has no label);
-/// reusing `Button::with_label("")` would still measure/lay out an empty
-/// label box that a genuinely childless button doesn't. Width is a hard
+/// encodes `windows` (0/1/2/3-or-more open). Distinct from [`make_button`]
+/// (Trail/Pill) rather than a variant of it because dots carry no text at
+/// all (`04-spotlight.html`'s `.dots button` has no label); reusing
+/// `Button::with_label("")` would still measure/lay out an empty label box
+/// that a genuinely childless button doesn't. Width is a hard
 /// `set_size_request` snap, not animated — GTK CSS min-width transitions
 /// don't participate in a directly-set size request the way an opacity/
 /// background-color transition does, and the plan only calls out the
 /// capsule's own expand/collapse as worth the `anim::spring_to` treatment.
+///
+/// `_dot_widths` (the manifest's `modules.workspaces.dot_widths`) is
+/// accepted but deliberately unused — see `APPROVED_DOT_WIDTHS` below,
+/// which overrides it with the approved Option B numbers the manifest's
+/// own value predates. Kept in the signature rather than dropped so the
+/// call site still documents where a real per-theme width would flow from
+/// once `theme.toml` catches up.
 pub fn make_dot_button(
     id: WorkspaceId,
     active: WorkspaceId,
     windows: i32,
-    dot_widths: bread_theme::shell::DotWidths,
+    _dot_widths: bread_theme::shell::DotWidths,
 ) -> gtk4::Button {
     let btn = gtk4::Button::new();
     btn.add_css_class("workspace-dot");
@@ -186,17 +198,26 @@ pub fn make_dot_button(
     btn.set_hexpand(false);
     // Height is a deliberate departure from `04-spotlight.html`'s own 6px
     // (see the demo's `.dots button { height: 6px }`): reported as "too
-    // small and hard to click" — the click-target enlargement is a
-    // separate, non-visual fix elsewhere, but 6px is also genuinely hard
-    // to *see* on a real display, not just hard to hit. 9px keeps the
-    // dots reading as slim pills rather than growing into little chips
-    // (which would fight the capsule's minimal, text-first look), while
-    // being clearly perceptible against the 36px-tall bar. Widths are left
-    // exactly as `dot_widths` (the manifest's own per-occupancy encoding,
-    // e.g. `[6, 10, 14, 18]`) specifies — only the height, which has no
-    // manifest token of its own, is breadbar's call to make.
-    const DOT_HEIGHT: i32 = 9;
-    btn.set_size_request(dot_widths[dot_width_index(windows)], DOT_HEIGHT);
+    // small and hard to click", and also genuinely hard to *see* on a real
+    // display, not just hard to hit. Option B (approved): 10px tall — up
+    // from an earlier 9px pass that undershot the approved number by 1px.
+    // Keeps the dots reading as slim pills rather than growing into little
+    // chips (which would fight the capsule's minimal, text-first look),
+    // while being clearly perceptible against the 36px-tall bar.
+    const DOT_HEIGHT: i32 = 10;
+    // Option B widths (approved): 8/13/17/22px for 0/1/2/3-or-more open
+    // windows — `[8, 13, 17, 22]`, not the `dot_widths` parameter's own
+    // manifest value. `theme.toml`'s `modules.workspaces.dot_widths =
+    // [6, 10, 14, 18]` predates this pass and was never updated to match;
+    // hardcoded here (ignoring the passed-in `dot_widths`) rather than
+    // edited upstream, since bread-ecosystem is a sibling agent's repo
+    // this pass. Flagged in the task report — `dot_widths` should become
+    // `[8, 13, 17, 22]` in `assets/shell/spotlight/theme.toml`.
+    const APPROVED_DOT_WIDTHS: bread_theme::shell::DotWidths = [8, 13, 17, 22];
+    btn.set_size_request(
+        APPROVED_DOT_WIDTHS[dot_width_index(windows)],
+        DOT_HEIGHT,
+    );
     btn.connect_clicked(move |_| {
         relm4::spawn(async move {
             switch_workspace(id).await;
