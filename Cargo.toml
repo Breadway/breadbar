@@ -10,17 +10,22 @@ keywords = ["wayland", "hyprland", "bar", "status-bar", "gtk4"]
 categories = ["gui"]
 
 [dependencies]
-bread-theme = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.4", features = ["gtk"] }
+bread-theme = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.5", features = ["gtk"] }
 # Widget rendering client: bread-utils::BreadClient (emit/request/subscribe)
 # for talking to breadd's IPC socket, and bread-shared purely for the
 # WidgetSpec/WidgetNode wire types so we deserialize into real structs
 # instead of hand-parsing serde_json::Value. See src/widgets/.
-bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.4", features = ["bread-client"] }
-# v0.8.0-rc.1 carries bread_shared::widget; keep this bread tag even if
-# ecosystem crates move independently.
-bread-shared = { git = "https://git.breadway.dev/Breadway/bread", tag = "v0.8.0-rc.1" }
+bread-utils = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.5", features = ["bread-client"] }
+# bread_shared::widget wire types; match the bread-shared tag bread-utils
+# pins (v0.8.0) so only one copy of bread-shared is linked.
+bread-shared = { git = "https://git.breadway.dev/Breadway/bread", tag = "v0.8.0" }
 # Capture primitives for `--screenshot` mode — see src/screenshot.rs.
-bread-screenshots = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.4" }
+bread-screenshots = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.5" }
+# Headless app-launcher core + GTK4 results-list widget (plan §3/§7): theme
+# 04/spotlight embeds the SAME `ResultsList` breadbox's overlay wraps, via
+# `bar::launcher_results` — one implementation, two hosts. `gtk` feature for
+# the results widget itself.
+bread-launcher = { git = "https://git.breadway.dev/Breadway/bread-ecosystem", tag = "v0.7.5", features = ["gtk"] }
 gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 relm4 = { version = "0.11", features = ["macros"] }

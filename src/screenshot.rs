@@ -45,6 +45,21 @@ const KNOWN_VIEWS: &[&str] = &[
     "osd-volume",
     "osd-brightness",
     "wifi-add-dialog",
+    // Theme 04/spotlight's capsule (plan §6b) — see `dispatch`'s two new
+    // match arms. "capsule-collapsed" captures the same region "bar"
+    // always has (bar_capture_height already reflects the active theme's
+    // own window height/margin); it exists as its own name purely so a
+    // verification script doesn't have to already know "bar" means "the
+    // capsule, collapsed" under spotlight specifically.
+    "capsule-collapsed",
+    "capsule-expanded",
+    // Phase 6c: query sections and the `=` calc mode — see `dispatch`'s
+    // two new match arms below. "capsule-expanded" already exercises the
+    // search-state width/radius change (item E: it types a query, which
+    // now also drives `open_fn`'s `.searching` root class + capsule-width
+    // spring animation), so that gap doesn't need its own view.
+    "capsule-sections",
+    "capsule-calc",
 ];
 
 #[derive(Parser)]
@@ -118,23 +133,59 @@ pub struct Handles {
     pub notification_window: Option<gtk4::Window>,
     /// Same deal as `notification_window`, via `osd::spawn(Some(kind))`.
     pub osd_window: Option<gtk4::Window>,
+    /// Theme 04/spotlight's capsule centre module — see the
+    /// "capsule-expanded" view, which focuses it and types a query to
+    /// drive the drawer open before capturing.
+    pub launcher_entry: gtk4::Entry,
+    /// The `drawer` slot's own container — read back after the open
+    /// animation settles so "capsule-expanded"'s capture height matches
+    /// however tall the results actually grew, rather than a guessed
+    /// constant.
+    pub drawer_box: gtk4::Box,
 }
 
 /// Capture height for the `bar` view: layer-shell top margin + widget
 /// height (the exclusive zone). Unlike the other views' full canvas,
 /// this never varies with `--width`/`--height`.
-const BAR_HEIGHT: i32 = crate::BAR_HEIGHT + crate::BAR_MARGIN_TOP;
+fn bar_capture_height() -> i32 {
+    let window = crate::theme::shell_theme().window().clone();
+    window.height + window.margin.top
+}
+
+/// Y-origin for the `bar`/`capsule-collapsed` capture rectangle (axis 2,
+/// daylight). Every theme through spotlight anchors top, so the bar's own
+/// pixels always start at the canvas's own top edge (`y = 0`) — that's what
+/// every existing call site here hardcoded. A bottom-anchored bar's real
+/// on-screen footprint is instead the LAST `bar_capture_height()` pixels of
+/// the canvas; capturing from `y = 0` unchanged grabs the isolated
+/// compositor's empty background/gradient near the top of the output and
+/// misses the actual bar entirely (confirmed empirically while verifying
+/// this task — `bread-capture --app breadbar --view bar` under
+/// `BREAD_SHELL_THEME=daylight` returned a plain gradient with no dock in
+/// frame at all, before this fix). `canvas_height` is the capture canvas's
+/// own height (`req.height`, i.e. `--height`/`isolate_height`), not this
+/// crate's own bar height.
+fn bar_capture_y(canvas_height: i32, bar_height: i32) -> i32 {
+    let window = crate::theme::shell_theme().window().clone();
+    if window.anchors.iter().any(|a| a == "bottom") {
+        (canvas_height - bar_height).max(0)
+    } else {
+        0
+    }
+}
 
 pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles: Handles) {
     let output = req.output;
     let (width, height) = (req.width as i32, req.height as i32);
+    let bar_height = bar_capture_height();
+    let bar_y = bar_capture_y(height, bar_height);
 
     match req.view.as_str() {
         "bar" => {
             root.connect_map(move |_| {
                 let output = output.clone();
                 gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
-                    finish(bread_screenshots::capture_region(0, 0, width, BAR_HEIGHT, &output));
+                    finish(bread_screenshots::capture_region(0, bar_y, width, bar_height, &output));
                 });
             });
         }
@@ -172,6 +223,95 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                 std::process::exit(1);
             };
             capture_standalone_window(window, output, width, height);
+        }
+        "capsule-collapsed" => {
+            // Identical to "bar" — see KNOWN_VIEWS's doc comment on why
+            // this has its own name anyway.
+            root.connect_map(move |_| {
+                let output = output.clone();
+                gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
+                    finish(bread_screenshots::capture_region(0, bar_y, width, bar_height, &output));
+                });
+            });
+        }
+        "capsule-expanded" => {
+            // Focus + a real query, the same way a person opens the
+            // capsule (`connect_changed`/`EventControllerFocus::enter` in
+            // main.rs's capsule wiring do the rest: `open_fn` runs,
+            // `results.set_query` filters, and `animate_drawer_height`
+            // grows `drawer_box`). Capture height is bar height + however
+            // tall the drawer actually settled, not a hardcoded guess —
+            // this stays correct even if `dot_widths`/font/entry-count
+            // numbers change later.
+            let entry = handles.launcher_entry;
+            let drawer_box = handles.drawer_box;
+            root.connect_map(move |_| {
+                let output = output.clone();
+                let entry = entry.clone();
+                let drawer_box = drawer_box.clone();
+                gtk4::glib::timeout_add_local_once(PRE_POPUP_DELAY, move || {
+                    entry.grab_focus();
+                    entry.set_text("f");
+                    let output = output.clone();
+                    let drawer_box = drawer_box.clone();
+                    // Past the 360ms spring_to run plus a normal capture
+                    // settle, so the drawer's size_request (and the actual
+                    // on-screen layer-shell surface it grows) has reached
+                    // its final height before grabbing pixels.
+                    gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                        let drawer_h = drawer_box.size_request().1.max(0);
+                        let capture_h = bar_height + drawer_h;
+                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                    });
+                });
+            });
+        }
+        "capsule-sections" => {
+            // Focus with NO query typed — the idle browse view
+            // (`ResultsList::new`'s "Recent"/"Apps" header rows are visible
+            // from construction; `set_query` is what would hide them, and
+            // it's never called here). Same settle timing as
+            // "capsule-expanded", just without the `entry.set_text` step.
+            let entry = handles.launcher_entry;
+            let drawer_box = handles.drawer_box;
+            root.connect_map(move |_| {
+                let output = output.clone();
+                let entry = entry.clone();
+                let drawer_box = drawer_box.clone();
+                gtk4::glib::timeout_add_local_once(PRE_POPUP_DELAY, move || {
+                    entry.grab_focus();
+                    let output = output.clone();
+                    let drawer_box = drawer_box.clone();
+                    gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                        let drawer_h = drawer_box.size_request().1.max(0);
+                        let capture_h = bar_height + drawer_h;
+                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                    });
+                });
+            });
+        }
+        "capsule-calc" => {
+            // `=` mode (item C): the drawer's `mode_list` shows a single
+            // evaluated result row instead of `launcher_results.scroller`
+            // (see `populate_mode_list`'s `QueryKind::Calc` arm).
+            let entry = handles.launcher_entry;
+            let drawer_box = handles.drawer_box;
+            root.connect_map(move |_| {
+                let output = output.clone();
+                let entry = entry.clone();
+                let drawer_box = drawer_box.clone();
+                gtk4::glib::timeout_add_local_once(PRE_POPUP_DELAY, move || {
+                    entry.grab_focus();
+                    entry.set_text("=6*7");
+                    let output = output.clone();
+                    let drawer_box = drawer_box.clone();
+                    gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                        let drawer_h = drawer_box.size_request().1.max(0);
+                        let capture_h = bar_height + drawer_h;
+                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                    });
+                });
+            });
         }
         "wifi-add-dialog" => {
             let anchor = handles.wifi_tab_btn;

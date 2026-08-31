@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use gtk4::prelude::*;
-use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+use gtk4_layer_shell::{KeyboardMode, LayerShell};
 use serde::{Deserialize, Serialize};
 
 use super::Urgency;
@@ -176,12 +176,16 @@ pub fn build_window(store: Store) -> Ui {
     window.add_css_class("breadbar-history");
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-notif"));
-    window.set_layer(Layer::Overlay);
-    window.set_anchor(Edge::Top, true);
-    window.set_anchor(Edge::Right, true);
-    window.set_margin(Edge::Top, crate::BAR_MARGIN_TOP + crate::BAR_HEIGHT + 8);
-    window.set_margin(Edge::Right, crate::BAR_MARGIN_SIDES);
+    crate::surface::apply(&window, "breadbar-notif");
+    // Overrides `[surfaces."breadbar-notif"].width` (320px, the live-toast
+    // popup's width — see `surface::apply`'s doc comment): the history
+    // window genuinely wants a different width on the same namespace, and
+    // that isn't something the manifest schema models today. Both calls
+    // must be overridden, not just `set_default_width` — `apply()` also
+    // pins `set_size_request` to the toast's 320px, and a bare width alone
+    // would lose to that pin the same way it lost to a wide child before.
     window.set_default_width(360);
+    window.set_size_request(360, -1);
     window.set_keyboard_mode(KeyboardMode::OnDemand);
     crate::theme::bind_auto(&window);
 

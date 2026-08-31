@@ -142,7 +142,13 @@ pub fn make_button(
     btn.set_halign(gtk4::Align::Center);
     btn.set_vexpand(false);
     btn.set_hexpand(false);
-    btn.set_size_request(-1, crate::CHIP_HEIGHT);
+    // `crate::theme::approved_chip_height`, not `tokens().chip_height()`:
+    // the latter is the stale pre-demo `breadbar::CHIP_HEIGHT` token (32
+    // for this Trail/Pill style's theme) and, as a hard `set_size_request`
+    // minimum, would out-rank the CSS `min-height` the demo actually wants
+    // (26px Trail / 22px Pill) — see that function's doc comment.
+    let style = crate::theme::shell_theme().modules().workspaces.style;
+    btn.set_size_request(-1, crate::theme::approved_chip_height(style) as i32);
     if let Some(child) = btn.child() {
         child.set_halign(gtk4::Align::Center);
         child.set_valign(gtk4::Align::Center);
@@ -153,6 +159,111 @@ pub fn make_button(
         });
     });
     btn
+}
+
+/// `style = "dots"` (theme 04/spotlight): a label-less pill whose WIDTH
+/// encodes `windows` (0/1/2/3-or-more open). Distinct from [`make_button`]
+/// (Trail/Pill) rather than a variant of it because dots carry no text at
+/// all (`04-spotlight.html`'s `.dots button` has no label); reusing
+/// `Button::with_label("")` would still measure/lay out an empty label box
+/// that a genuinely childless button doesn't. Width is a hard
+/// `set_size_request` snap, not animated — GTK CSS min-width transitions
+/// don't participate in a directly-set size request the way an opacity/
+/// background-color transition does, and the plan only calls out the
+/// capsule's own expand/collapse as worth the `anim::spring_to` treatment.
+///
+/// `_dot_widths` (the manifest's `modules.workspaces.dot_widths`) is
+/// accepted but deliberately unused — see `APPROVED_DOT_WIDTHS` below,
+/// which overrides it with the approved Option B numbers the manifest's
+/// own value predates. Kept in the signature rather than dropped so the
+/// call site still documents where a real per-theme width would flow from
+/// once `theme.toml` catches up.
+pub fn make_dot_button(
+    id: WorkspaceId,
+    active: WorkspaceId,
+    windows: i32,
+    _dot_widths: bread_theme::shell::DotWidths,
+) -> gtk4::Button {
+    let btn = gtk4::Button::new();
+    btn.add_css_class("workspace-dot");
+    if windows > 0 {
+        btn.add_css_class("occupied");
+    }
+    if id == active {
+        btn.add_css_class("active");
+    }
+    btn.set_valign(gtk4::Align::Center);
+    btn.set_halign(gtk4::Align::Center);
+    btn.set_vexpand(false);
+    btn.set_hexpand(false);
+    // Height is a deliberate departure from `04-spotlight.html`'s own 6px
+    // (see the demo's `.dots button { height: 6px }`): reported as "too
+    // small and hard to click", and also genuinely hard to *see* on a real
+    // display, not just hard to hit. Option B (approved): 10px tall — up
+    // from an earlier 9px pass that undershot the approved number by 1px.
+    // Keeps the dots reading as slim pills rather than growing into little
+    // chips (which would fight the capsule's minimal, text-first look),
+    // while being clearly perceptible against the 36px-tall bar.
+    const DOT_HEIGHT: i32 = 10;
+    // Option B widths (approved): 8/13/17/22px for 0/1/2/3-or-more open
+    // windows — `[8, 13, 17, 22]`, not the `dot_widths` parameter's own
+    // manifest value. `theme.toml`'s `modules.workspaces.dot_widths =
+    // [6, 10, 14, 18]` predates this pass and was never updated to match;
+    // hardcoded here (ignoring the passed-in `dot_widths`) rather than
+    // edited upstream, since bread-ecosystem is a sibling agent's repo
+    // this pass. Flagged in the task report — `dot_widths` should become
+    // `[8, 13, 17, 22]` in `assets/shell/spotlight/theme.toml`.
+    const APPROVED_DOT_WIDTHS: bread_theme::shell::DotWidths = [8, 13, 17, 22];
+    btn.set_size_request(
+        APPROVED_DOT_WIDTHS[dot_width_index(windows)],
+        DOT_HEIGHT,
+    );
+    btn.connect_clicked(move |_| {
+        relm4::spawn(async move {
+            switch_workspace(id).await;
+        });
+    });
+    btn
+}
+
+/// Maps an open-window count to a [`bread_theme::shell::DotWidths`] index:
+/// 0/1/2 pass through, 3-or-more all collapse onto index 3 (the demo's own
+/// `.dots button[data-n="3"]` never has a "4" variant). Pulled out of
+/// [`make_dot_button`] as its own pure function purely so it's testable
+/// without a GTK display — the isolated screenshot harness
+/// (`bread-capture`) has no Hyprland IPC, so it can never exercise a
+/// nonzero window count, and this is what stands in for that visual proof
+/// (see the task notes on that gap).
+fn dot_width_index(windows: i32) -> usize {
+    (windows.max(0) as usize).min(3)
+}
+
+#[cfg(test)]
+mod dot_width_tests {
+    use super::dot_width_index;
+
+    #[test]
+    fn zero_and_one_and_two_pass_through() {
+        assert_eq!(dot_width_index(0), 0);
+        assert_eq!(dot_width_index(1), 1);
+        assert_eq!(dot_width_index(2), 2);
+    }
+
+    #[test]
+    fn three_or_more_all_collapse_onto_index_three() {
+        assert_eq!(dot_width_index(3), 3);
+        assert_eq!(dot_width_index(4), 3);
+        assert_eq!(dot_width_index(50), 3);
+    }
+
+    #[test]
+    fn negative_windows_clamps_to_zero_rather_than_panicking() {
+        // Hyprland's `windows` count is unsigned (u16) in practice, but
+        // `make_dot_button` takes a plain i32 — a negative value must
+        // never underflow the `dot_widths` index and panic.
+        assert_eq!(dot_width_index(-1), 0);
+        assert_eq!(dot_width_index(i32::MIN), 0);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +277,13 @@ struct Geom {
 struct TrailInner {
     tick: Option<gtk4::TickCallbackId>,
     geom: Geom,
+    /// Last width/height measured from a button that was actually allocated.
+    /// A row rebuild (switching to an empty workspace makes Hyprland create
+    /// and destroy it) can leave every button unallocated for a frame, and
+    /// without a remembered size the trail had nothing safe to animate from
+    /// and fell back to an instant `place()` — which is what made a switch
+    /// snap instead of move.
+    natural: Option<(f64, f64)>,
 }
 
 /// Overlay + Fixed pill sitting *behind* the workspace buttons. The
@@ -206,6 +324,7 @@ impl WorkspaceTrail {
 
         let inner = Rc::new(RefCell::new(TrailInner {
             tick: None,
+            natural: None,
             geom: Geom {
                 x: 0.0,
                 y: 0.0,
@@ -258,7 +377,7 @@ impl WorkspaceTrail {
 
     pub fn stretch(&self, from: Option<&gtk4::Button>, to: &gtk4::Button) {
         self.cancel();
-        let Some(from_g) = self.from_geom(from) else {
+        let Some(from_g) = self.from_geom(from, to) else {
             self.place(to);
             return;
         };
@@ -289,6 +408,18 @@ impl WorkspaceTrail {
             } else {
                 (to_g, true)
             };
+            // Squash-and-stretch (ANIMATION WORK #1): compress the pill's
+            // height a few px while it's mid-flight and let it spring back
+            // — slightly taller than normal, then settling — as it lands,
+            // so the trail reads as having weight instead of sliding like a
+            // rigid box. A pure post-process on top of the already-correct
+            // x/w/y trajectory above, applied only to the frame actually
+            // painted (`g`) — never fed back into `TrailInner::natural`
+            // (`from_geom`'s own width/height memory for the *next*
+            // animation), which stays driven solely by real button geometry
+            // as before. Skipped on the final `done` frame so the resting
+            // geometry is exactly `to_g`, unperturbed.
+            let g = if done { g } else { squash_geom(g, squash_factor(elapsed)) };
             apply_geom(&host, &pill, &inner, &g);
             if done {
                 inner.borrow_mut().tick = None;
@@ -300,15 +431,65 @@ impl WorkspaceTrail {
         self.inner.borrow_mut().tick = Some(id);
     }
 
-    fn from_geom(&self, from: Option<&gtk4::Button>) -> Option<Geom> {
+    // `from` is a noun here (the source button we animate away from), not a
+    // conversion — `&self` is correct.
+    #[allow(clippy::wrong_self_convention)]
+    fn from_geom(&self, from: Option<&gtk4::Button>, to: &gtk4::Button) -> Option<Geom> {
         let st = self.inner.borrow();
-        // A leftover mid-stretch can be as wide as the whole row — never
-        // treat that as the start of the next animation.
-        if self.pill.is_visible() && st.geom.w > 0.5 && st.geom.w <= MAX_CHIP_W {
-            return Some(st.geom);
-        }
+        let live = if self.pill.is_visible() && st.geom.w > 0.5 {
+            Some(st.geom)
+        } else {
+            None
+        };
+        let cached = st.natural;
         drop(st);
-        from.and_then(|b| button_geom(b, &self.host).map(inset_pill))
+
+        // Width must always come from a button that is CURRENTLY IN THE ROW.
+        // Switching to an empty workspace makes Hyprland create and destroy it,
+        // which rebuilds the button row mid-animation and can leave `from`
+        // detached — `button_geom` then returns None. Falling back to the live
+        // geometry there handed the wide mid-stretch span straight back in,
+        // which is exactly the accumulation this function exists to prevent
+        // (reproduced by spamming between workspace 1 and an empty 6). The
+        // destination button is always live, so it is the correct fallback.
+        let natural = from
+            .and_then(|b| button_geom(b, &self.host).map(inset_pill))
+            .or_else(|| button_geom(to, &self.host).map(inset_pill));
+
+        // Continuity without accumulation.
+        //
+        // Interrupting an in-flight stretch should carry the pill's CURRENT
+        // POSITION into the next animation, so a rapid sequence of switches
+        // reads as one continuous movement. It must not carry the current
+        // WIDTH: mid-stretch the pill deliberately spans both the old and new
+        // buttons, and `ease_overshoot` (c = 1.4) pushes it wider still past
+        // the target. Feeding that span back in as the next `from` made each
+        // interrupted switch start wider than the last, so spamming workspace
+        // switches grew the pill until it hit MAX_CHIP_W — which only capped
+        // the runaway, it never stopped the compounding.
+        //
+        // Taking position from the live geometry and width from the source
+        // button's natural size keeps the motion continuous while making width
+        // a pure function of which button we started from.
+        if let Some(n) = natural {
+            self.inner.borrow_mut().natural = Some((n.w, n.h));
+        }
+        // Only x comes from the live geometry. That is what makes an
+        // interrupted switch continue from where the pill currently is instead
+        // of jumping back. y/w/h always come from a real button: taking y from
+        // a mid-animation or post-rebuild geometry is what made the pill sit
+        // low, and taking w from it is what let the width compound.
+        let size = natural.map(|n| (n.w, n.h)).or(cached);
+        match (live, natural, size) {
+            (Some(live), _, Some((w, h))) => Some(Geom {
+                x: live.x,
+                y: natural.map(|n| n.y).unwrap_or(live.y),
+                w,
+                h,
+            }),
+            (None, Some(natural), _) => Some(natural),
+            _ => None,
+        }
     }
 }
 
@@ -410,4 +591,89 @@ fn ease_overshoot(t: f64) -> f64 {
     let c = 1.4;
     let t1 = t - 1.0;
     1.0 + t1 * t1 * ((c + 1.0) * t1 + c)
+}
+
+/// Lowest fraction of the resting height the pill compresses to, at the
+/// peak of the stretch phase (fastest travel).
+const SQUASH_MIN: f64 = 0.80;
+
+/// The squash-and-stretch height multiplier for a given point in
+/// `stretch`'s own STRETCH_MS-then-SNAP_MS timeline: eases DOWN to
+/// `SQUASH_MIN` across the stretch phase (using the same `ease` curve the
+/// width stretch already uses), then eases back UP to 1.0 across the snap
+/// phase using `ease_overshoot` — which legitimately overshoots past 1.0
+/// partway through, so the pill also plumps up slightly taller than its
+/// resting height right before settling, the same "spring" read the width
+/// snap already has. Past both phases (a caller-side `elapsed` this large
+/// only happens if something calls this after `stretch`'s own `done` cutoff)
+/// this is exactly 1.0, i.e. a no-op.
+fn squash_factor(elapsed: f64) -> f64 {
+    if elapsed < STRETCH_MS {
+        lerp(1.0, SQUASH_MIN, ease(elapsed / STRETCH_MS))
+    } else if elapsed < STRETCH_MS + SNAP_MS {
+        lerp(SQUASH_MIN, 1.0, ease_overshoot((elapsed - STRETCH_MS) / SNAP_MS))
+    } else {
+        1.0
+    }
+}
+
+/// Applies a height multiplier to `g`, keeping it vertically centred on
+/// `g`'s own centre (so the squash reads as compression, not a pill that
+/// sinks or rises) and leaving x/w untouched.
+fn squash_geom(g: Geom, factor: f64) -> Geom {
+    let h = g.h * factor;
+    Geom {
+        x: g.x,
+        y: g.y + (g.h - h) * 0.5,
+        w: g.w,
+        h,
+    }
+}
+
+#[cfg(test)]
+mod squash_tests {
+    use super::*;
+
+    #[test]
+    fn factor_starts_and_ends_at_one() {
+        assert!((squash_factor(0.0) - 1.0).abs() < 1e-9);
+        assert!((squash_factor(STRETCH_MS + SNAP_MS) - 1.0).abs() < 1e-9);
+        assert_eq!(squash_factor(STRETCH_MS + SNAP_MS + 500.0), 1.0);
+    }
+
+    #[test]
+    fn factor_dips_below_one_mid_stretch() {
+        let mid_stretch = STRETCH_MS * 0.5;
+        assert!(squash_factor(mid_stretch) < 1.0);
+        assert!(squash_factor(mid_stretch) >= SQUASH_MIN);
+    }
+
+    #[test]
+    fn squash_geom_keeps_the_vertical_centre_fixed() {
+        let g = Geom {
+            x: 10.0,
+            y: 20.0,
+            w: 30.0,
+            h: 26.0,
+        };
+        let centre = g.y + g.h * 0.5;
+        let squashed = squash_geom(g, 0.8);
+        assert!((squashed.h - 20.8).abs() < 1e-9);
+        assert!((squashed.y + squashed.h * 0.5 - centre).abs() < 1e-9);
+        assert_eq!(squashed.x, g.x);
+        assert_eq!(squashed.w, g.w);
+    }
+
+    #[test]
+    fn squash_geom_factor_one_is_identity() {
+        let g = Geom {
+            x: 1.0,
+            y: 2.0,
+            w: 3.0,
+            h: 4.0,
+        };
+        let out = squash_geom(g, 1.0);
+        assert_eq!(out.y, g.y);
+        assert_eq!(out.h, g.h);
+    }
 }
