@@ -431,6 +431,9 @@ impl WorkspaceTrail {
         self.inner.borrow_mut().tick = Some(id);
     }
 
+    // `from` is a noun here (the source button we animate away from), not a
+    // conversion — `&self` is correct.
+    #[allow(clippy::wrong_self_convention)]
     fn from_geom(&self, from: Option<&gtk4::Button>, to: &gtk4::Button) -> Option<Geom> {
         let st = self.inner.borrow();
         let live = if self.pill.is_visible() && st.geom.w > 0.5 {

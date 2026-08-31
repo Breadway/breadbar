@@ -217,10 +217,16 @@ pub struct App {
     // ── Stats bar ─────────────────────────────────────────────────────────
     // Island chrome matches the Liquid Motion demo: volume / wifi / battery
     // / hamburger. CPU/RAM/power live in the control panel, not on the bar.
+    // Held to keep the control-panel sys-grid widgets alive for the App's
+    // lifetime; their parent boxes own them, so they're never read back.
+    #[allow(dead_code)]
     system_stats_box: gtk4::Box,
     system_sep: gtk4::Separator,
+    #[allow(dead_code)]
     cpu_pair: gtk4::Box,
+    #[allow(dead_code)]
     mem_pair: gtk4::Box,
+    #[allow(dead_code)]
     pwr_pair: gtk4::Box,
     gpu_pair: gtk4::Box,
     cpu_lbl: gtk4::Label,
