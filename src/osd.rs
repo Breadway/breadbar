@@ -1,6 +1,8 @@
 use std::{
     cell::{Cell, RefCell},
+    process::Child,
     rc::Rc,
+    sync::{Mutex, Once},
     time::Duration,
 };
 
@@ -20,6 +22,46 @@ enum OsdEvent {
 pub enum SampleKind {
     Volume,
     Brightness,
+}
+
+/// Live `pactl subscribe` children spawned by [`volume_watcher`]. Kept so a
+/// best-effort cleanup can kill them when breadbar exits: `pactl subscribe`
+/// blocks until the server connection dies, so without this every breadbar
+/// restart orphaned one that kept its PulseAudio connection open — until
+/// pipewire-pulse's client cap filled up and new clients (settings apps
+/// included) were refused, showing "no devices". Also reaped here, so a
+/// watcher that dies on its own never lingers as a zombie.
+static WATCHER_CHILDREN: Mutex<Vec<Child>> = Mutex::new(Vec::new());
+static REGISTER_EXIT_HOOK: Once = Once::new();
+
+extern "C" {
+    /// libc `atexit(3)`. Declared directly rather than pulling the libc
+    /// crate in for a single function.
+    fn atexit(cb: extern "C" fn()) -> i32;
+}
+
+extern "C" fn exit_cleanup() {
+    kill_watchers();
+}
+
+fn register_exit_hook() {
+    // Safety: `atexit` is provided by libc on every Linux target; the
+    // callback is a `static` C-ABI fn valid for the whole process.
+    unsafe {
+        let _ = atexit(exit_cleanup);
+    }
+}
+
+/// Kill any live `pactl subscribe` watcher children and reap them. Safe to
+/// call more than once (an already-dead child is a no-op). Runs from the
+/// process-exit hook and the SIGINT/SIGTERM handlers in `main`.
+pub fn kill_watchers() {
+    if let Ok(mut children) = WATCHER_CHILDREN.lock() {
+        for mut child in children.drain(..) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 impl SampleKind {
@@ -73,6 +115,14 @@ fn volume_watcher(tx: mpsc::Sender<OsdEvent>) {
     };
 
     let Some(stdout) = child.stdout.take() else { return };
+    // The child is meant to outlive this reader loop (it blocks until
+    // breadbar itself dies), so hand it to `kill_watchers` — the exit
+    // hook plus the SIGINT/SIGTERM handlers in main — instead of letting
+    // it orphan on restart.
+    REGISTER_EXIT_HOOK.call_once(register_exit_hook);
+    if let Ok(mut children) = WATCHER_CHILDREN.lock() {
+        children.push(child);
+    }
     let reader = BufReader::new(stdout);
 
     for line in reader.lines().map_while(Result::ok) {

@@ -3333,6 +3333,25 @@ fn main() {
         }
     });
 
+    // Best-effort cleanup when killed (Ctrl+C in the terminal, a dev-loop
+    // `kill`, systemd stop): kill the OSD's `pactl subscribe` children
+    // before exiting; the exit hook in osd.rs covers normal exits and
+    // panics. Without either, each breadbar restart orphaned a `pactl
+    // subscribe` holding its PulseAudio connection open until
+    // pipewire-pulse's client cap filled up and new clients — settings
+    // apps among them — were refused ("no devices in settings").
+    relm4::spawn(async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        let mut intr = signal(SignalKind::interrupt()).expect("SIGINT handler");
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = intr.recv() => {}
+        }
+        crate::osd::kill_watchers();
+        std::process::exit(0);
+    });
+
     // `with_args(vec![])` stops relm4 from handing our own --screenshot/
     // --output flags to GLib's option parser (`app.run()`'s default), which
     // would otherwise reject them as unrecognized before Cli::parse() above
