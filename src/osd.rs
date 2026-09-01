@@ -244,8 +244,7 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
             OsdEvent::Brightness { pct } => (crate::bar::stats::ICON_BRIGHTNESS, pct, false),
         };
 
-        icon.set_paintable(Some(&crate::svg_texture(icon_svg)));
-        crate::prepare_icon(&icon, crate::theme::shell_theme().tokens().icon_px() as i32);
+        crate::set_svg_icon(&icon, icon_svg);
         if muted {
             icon.add_css_class("osd-icon-muted");
         } else {

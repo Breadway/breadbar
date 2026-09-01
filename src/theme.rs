@@ -1,12 +1,29 @@
 use bread_theme::shell::ShellTheme;
-use bread_theme::{gtk as bgtk, ink_on, load_palette, load_palette_for, Palette};
-use gtk4::prelude::IsA;
+use bread_theme::{gtk as bgtk, ink_on, load_palette, Palette};
+use gtk4::glib::WeakRef;
+use gtk4::prelude::{Cast, IsA, ObjectExt};
 use gtk4::CssProvider;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 thread_local! {
     static USER_PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
+
+    // Every persistent (`bind_output`) window, kept as a weak ref so a
+    // dropped satellite monitor's windows fall out on the next sweep. On a
+    // shell-theme change (`reload`) each live one is re-bound so its
+    // per-output USER-10/USER-9 providers rebuild against the new theme —
+    // see `reload`'s doc comment for why `apply()` alone can't reach them.
+    static BOUND_WINDOWS: RefCell<Vec<(WeakRef<gtk4::Widget>, String)>> =
+        const { RefCell::new(Vec::new()) };
+
+    // Outputs already warned about a missing `palettes/<output>.json`, so
+    // the fallback-to-global-palette notice fires once per output, not once
+    // per window bound to it (bar + 4 panels + dialogs).
+    static PALETTE_FALLBACK_WARNED: RefCell<HashSet<String>> =
+        RefCell::new(HashSet::new());
+
     // Loaded lazily on first access and cached — the underlying
     // `bread_theme::shell::load()` call happens at most once per process,
     // not once per read site (plan §5/§6, Phase 2). Stored as an `Rc` so
@@ -26,11 +43,14 @@ pub fn shell_theme() -> Rc<ShellTheme> {
 }
 
 /// Replaces the shared shell theme in place. Only used by the optional
-/// `theme.toml` hot-reload watch (see `watch_hot_reload` below) — per plan
-/// §10, a window-spec change (anchors, margins, exclusive zone, keyboard)
-/// still needs a restart to take effect, since those are read once at
-/// window-construction time; only CSS token values re-resolve live, the
-/// next time `load_css` runs.
+/// `theme.toml` hot-reload watch (see `watch_hot_reload` below), which calls
+/// [`reload`] straight after — per plan §10, a window-spec change (anchors,
+/// margins, exclusive zone, keyboard) still needs a restart to take effect,
+/// since those are read once at window-construction time. CSS token values
+/// (radii, springs, alphas, workspace/clock style, the `light` axis) DO
+/// re-resolve live: [`reload`] re-runs [`apply`] *and* re-binds every
+/// persistent window so their widget-level per-output providers — which
+/// shadow the display-global one — rebuild against the new theme too.
 pub fn set_shell_theme(theme: ShellTheme) {
     SHELL_THEME.with(|cell| *cell.borrow_mut() = Rc::new(theme));
 }
@@ -110,6 +130,16 @@ fn load_css() -> String {
     // only because `@bg` is pinned dark and `@on-bg` is its computed
     // opposite, by construction, regardless of pywal. See the task report
     // for the full inventory of every site this swap had to reach.
+    //
+    // TODO(per-monitor-light): `tokens.light()` is a PROCESS-GLOBAL shell-
+    // theme flag, and `Palette` pins bg/surface/overlay/fg to fixed dark
+    // values for every output — so "per-monitor theming" today means
+    // per-wallpaper ACCENT HUES only. A light wallpaper on a secondary
+    // monitor still yields a dark bar there; dark-vs-daylight is one choice
+    // for all monitors. True per-monitor light/dark would need a per-output
+    // `light` resolve here AND per-output bg/ink in `bread_theme::palette` —
+    // a large design change, deliberately out of scope (documented as a
+    // known limitation in the per-monitor-theme-staleness PR).
     let light = tokens.light();
     let (panel, ink): (&str, &str) = if light { ("@on-bg", "@bg") } else { ("@bg", "@on-bg") };
     // The notification/history/OSD/wifi-add-dialog cards (0.70) and the
@@ -749,8 +779,8 @@ fn load_css() -> String {
 /// baked directly into a rasterised SVG texture at icon-build time
 /// (`svg_texture_sized`, the only call site), completely outside CSS and
 /// therefore untouched by `load_css`'s own `panel`/`ink` swap. Every icon
-/// built through [`crate::svg_image`]/[`crate::svg_texture`] (volume, wifi,
-/// battery, hamburger, media transport, the OSD glyph) was near-white on
+/// built through [`crate::svg_image`] (volume, wifi, battery, hamburger,
+/// media transport, the OSD glyph) was near-white on
 /// every existing (dark) theme, which read as correct by construction —
 /// until daylight's near-white paper pills made the SAME near-white glyph
 /// nearly invisible against its own background. Confirmed empirically
@@ -759,21 +789,26 @@ fn load_css() -> String {
 /// unchanged `ink_on(background)` (near-white), or — for a light theme —
 /// `background` itself (the fixed dark hex IS the correct dark ink, the
 /// same identity `load_css`'s `ink = "@bg"` case relies on).
+///
+/// NOT per-output, and correct today only by construction: the ink is
+/// derived purely from `Palette.background`, and `bread_theme::output`
+/// pins EVERY output's `background` to `FIXED_BACKGROUND` (per-output JSON
+/// stores accents only — `color1..6` — and `from_wal_json` always forces
+/// the fixed dark bg/surface/overlay/fg back in). So `load_palette()` and
+/// `load_palette_for(any_output)` yield byte-identical ink, and baking the
+/// global value into every monitor's icon textures happens to be right.
+/// A `fg_color_for(output)` accessor used to sit here for the day that
+/// stops being true; it was dead code (icons are baked by
+/// `crate::svg_texture_sized`, reached only via the free function
+/// `crate::svg_image`, which has no output name in scope — threading one
+/// through every call site across main.rs, osd.rs, panel.rs and the bar
+/// modules is the real fix and is out of scope here).
+// TODO(per-monitor-ink): if per-output palettes ever diverge beyond accents
+// (see the `light` axis being process-global, TODO in `load_css`), thread the
+// bound output name into `svg_texture_sized` and resolve ink via
+// `load_palette_for(output).background` instead of the global palette.
 pub fn fg_color() -> String {
     let p = load_palette();
-    if shell_theme().tokens().light() {
-        p.background.clone()
-    } else {
-        ink_on(&p.background).to_string()
-    }
-}
-
-/// Ink colour for the given Hyprland output's wallpaper palette. See
-/// [`fg_color`]'s doc comment for the same light-theme fix; kept in step
-/// even though this accessor has no call site today.
-#[allow(dead_code)]
-pub fn fg_color_for(output: &str) -> String {
-    let p = load_palette_for(output);
     if shell_theme().tokens().light() {
         p.background.clone()
     } else {
@@ -786,8 +821,60 @@ pub fn fg_color_for(output: &str) -> String {
 /// App CSS still uses `@accent` / `@on-bg` tokens; `bind_window_with_app_css`
 /// resolves them against that output. Display-level [`apply`] stays as the
 /// SIGHUP / single-output fallback.
+///
+/// The window is also recorded in `BOUND_WINDOWS` (weak) so [`reload`] can
+/// re-bind it when the shell theme changes — the per-output providers this
+/// installs at USER-10/USER-9 shadow the display-global one [`apply`]
+/// reloads, so nothing else would refresh them.
 pub fn bind_output(widget: &impl IsA<gtk4::Widget>, output: &str) {
+    warn_if_palette_missing(output);
     bgtk::bind_window_with_app_css(widget, output, load_css_for);
+
+    let w: gtk4::Widget = widget.clone().upcast();
+    BOUND_WINDOWS.with(|cell| {
+        let mut v = cell.borrow_mut();
+        // Drop dead entries and any prior registration for this same widget
+        // (re-bind on monitor move / repeated `bind_output`) before pushing.
+        v.retain(|(weak, _)| weak.upgrade().is_some_and(|other| other != w));
+        v.push((w.downgrade(), output.to_string()));
+    });
+}
+
+/// One-time notice when an output has no `palettes/<output>.json` and
+/// `bind_window`/`load_palette_for` will silently fall back to the global
+/// pywal palette — its bar then shows the primary monitor's accent, which
+/// is easy to misread as "per-monitor theming is broken". Fires once per
+/// output name for the process.
+fn warn_if_palette_missing(output: &str) {
+    let path = bread_theme::output_palette_path(output);
+    if path.exists() {
+        return;
+    }
+    PALETTE_FALLBACK_WARNED.with(|cell| {
+        if cell.borrow_mut().insert(output.to_string()) {
+            tracing::warn!(
+                output = %output,
+                path = %path.display(),
+                "no per-output palette; using the global palette for this monitor \
+                 (run `bread-theme generate-output {output} <wallpaper>` to give it its own accent)"
+            );
+        }
+    });
+}
+
+/// Re-bind every live persistent window against the current shell theme /
+/// per-output palette. Called by [`reload`].
+fn rebind_bound_windows() {
+    BOUND_WINDOWS.with(|cell| {
+        let mut v = cell.borrow_mut();
+        v.retain(|(weak, output)| match weak.upgrade() {
+            Some(w) => {
+                bgtk::bind_window_with_app_css(&w, output, load_css_for);
+                true
+            }
+            None => false,
+        });
+    });
 }
 
 /// Bind a satellite window (notification, history, OSD, wifi dialog) to
@@ -810,9 +897,36 @@ pub fn apply() {
     // re-reads the pywal palette each time so the bar recolours without restart.
     bgtk::apply_app_css(load_css);
 
+    // User override, at USER priority (beats every `bind_output` provider).
+    // This is a single DISPLAY-GLOBAL provider: `@name` colour references in
+    // it (`@accent`, `@on-bg`, …) resolve against the display-global
+    // `@define-color` block, i.e. the primary/global palette — NOT the
+    // per-monitor palette of whichever bar the rule paints. On a
+    // multi-monitor setup a `style.css` that hard-codes hex is applied
+    // identically everywhere (predictable); one that leans on `@accent`
+    // tracks the primary monitor only. Documented in README.
+    // TODO(per-monitor-user-css): to make `@accent` in user CSS follow each
+    // bar's own output, fold this file into `load_css_for` so it goes
+    // through `bind_window`'s per-output `resolve_color_names` — at the cost
+    // of dropping from USER (800) to USER-9 priority.
     let home = std::env::var("HOME").unwrap_or_default();
     let user_path = std::path::PathBuf::from(format!("{home}/.config/breadbar/style.css"));
     USER_PROVIDER.with(|cell| bgtk::apply_user_css(&user_path, cell));
+}
+
+/// Full theme refresh: [`apply`] the display-global providers, then re-bind
+/// every persistent window so its widget-level per-output providers (which
+/// GTK4 ranks *above* the display-global one regardless of selector) also
+/// rebuild, and finally re-bake the icon textures whose tint is resolved in
+/// Rust outside CSS (`fg_color`). This is what a pywal palette change gets
+/// for free via `apply_app_css` + `reload_binds_for_sanitized`; a
+/// `theme.toml` edit or a SIGHUP has to drive it explicitly.
+///
+/// Safe to call from `glib::MainContext::invoke` (it is `fn()`).
+pub fn reload() {
+    apply();
+    rebind_bound_windows();
+    crate::rebake_icons();
 }
 
 thread_local! {
@@ -827,18 +941,84 @@ thread_local! {
 /// Wires `bread_theme::shell::watch()` (plan §10) so editing the active
 /// theme's `theme.toml`/`extra.css` on disk re-resolves CSS tokens without a
 /// restart, the same way a pywal palette change already does via
-/// `apply_app_css`. Window-spec values (anchors, margins, exclusive zone,
-/// keyboard mode) are read once at window-construction time and are *not*
-/// re-applied here — per plan §10 those need a restart, since live-swapping
-/// a mapped layer-shell surface's anchors/exclusive-zone is a lot of
-/// teardown risk for a rare operation.
+/// `apply_app_css`. The watch callback calls [`reload`], so the token change
+/// reaches the persistent bars/panels too — not just the display-global
+/// provider and the transient toasts/OSD. Window-spec values (anchors,
+/// margins, exclusive zone, keyboard mode) are read once at
+/// window-construction time and are *not* re-applied here — per plan §10
+/// those need a restart, since live-swapping a mapped layer-shell surface's
+/// anchors/exclusive-zone is a lot of teardown risk for a rare operation.
 ///
 /// Call once at startup (primary instance only — every satellite window
 /// calling this would just re-arm the same watch redundantly).
 pub fn watch_hot_reload() {
     let monitor = bread_theme::shell::watch(|new_theme| {
         set_shell_theme(new_theme);
-        apply();
+        reload();
     });
     SHELL_THEME_MONITOR.with(|cell| *cell.borrow_mut() = Some(monitor));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_css;
+
+    /// Every `#rrggbb`-style literal in a string, with a trailing
+    /// alphanumeric/`_` boundary (so `#000000` counts, `#fff` counts, but a
+    /// CSS id selector fragment like `#foo-bar` in prose would still be
+    /// caught — there is none). Hand-rolled to avoid a `regex` dep.
+    fn hex_literals(s: &str) -> Vec<String> {
+        let b = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] != b'#' {
+                i += 1;
+                continue;
+            }
+            let start = i + 1;
+            let mut j = start;
+            while j < b.len() && b[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            let len = j - start;
+            let boundary = j >= b.len() || !(b[j].is_ascii_alphanumeric() || b[j] == b'_');
+            if (3..=8).contains(&len) && boundary {
+                out.push(s[i..j].to_string());
+            }
+            i = j.max(i + 1);
+        }
+        out
+    }
+
+    /// Contract (finding #7 / `load_css_for`): breadbar never emits a raw
+    /// colour literal from Rust — every colour is a bread-theme token name
+    /// (`@accent`, `@on-bg`, …) so `bind_window` can inline it against the
+    /// bound output's palette. A future hardcoded hex would silently break
+    /// per-monitor theming on every bound surface (the palette argument to
+    /// `load_css_for` is deliberately ignored precisely because there is
+    /// nothing palette-dependent to feed it). Allow-list: pure black, used
+    /// only as a ~2%-alpha wash on the invisible dismiss-scrim hit surface.
+    #[test]
+    fn load_css_emits_no_raw_hex_colours() {
+        const ALLOWED: &[&str] = &["#000000"];
+        let css = load_css();
+        let offending: Vec<String> = hex_literals(&css)
+            .into_iter()
+            .filter(|h| !ALLOWED.contains(&h.to_ascii_lowercase().as_str()))
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "load_css() emitted raw hex colour literal(s) {offending:?} — use a bread-theme \
+             @token instead, or extend ALLOWED if this is a genuinely palette-independent colour"
+        );
+    }
+
+    #[test]
+    fn hex_literal_scanner_sanity() {
+        assert_eq!(hex_literals("alpha(#000000, 0.02)"), ["#000000"]);
+        assert_eq!(hex_literals("border: 1px solid #abcdef;"), ["#abcdef"]);
+        assert!(hex_literals("@accent alpha(@on-bg, 0.1)").is_empty());
+        assert!(hex_literals("nth-child(2)").is_empty());
+    }
 }
