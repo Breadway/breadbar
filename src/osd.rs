@@ -355,6 +355,10 @@ fn create_window() -> gtk4::Window {
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-osd"));
     crate::surface::apply(&window, "breadbar-osd");
-    crate::theme::bind_auto(&window);
+    // No `bind_auto` here: it re-derives the output from
+    // `GdkDisplay::monitor_at_surface`, which is unreliable for a
+    // layer-shell surface (it can report the wrong monitor and then
+    // clobber a correct bind on every map). `run_osd` calls
+    // `theme::pin_focused_output` explicitly before each show instead.
     window
 }

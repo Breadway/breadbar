@@ -336,7 +336,9 @@ fn create_window() -> gtk4::Window {
     // `click_through` set, since a rectangle union over zero widgets is
     // the empty region.
     window.set_keyboard_mode(KeyboardMode::None);
-    crate::theme::bind_auto(&window);
+    // No `bind_auto`: `monitor_at_surface` is unreliable for a layer
+    // surface and its map hook clobbers correct binds. The `Show` handler
+    // calls `theme::pin_focused_output` explicitly before `set_visible`.
     window
 }
 

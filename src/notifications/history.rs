@@ -187,7 +187,9 @@ pub fn build_window(store: Store) -> Ui {
     window.set_default_width(360);
     window.set_size_request(360, -1);
     window.set_keyboard_mode(KeyboardMode::OnDemand);
-    crate::theme::bind_auto(&window);
+    // No `bind_auto`: `monitor_at_surface` is unreliable for a layer
+    // surface and its map hook clobbers correct binds. `toggle` calls
+    // `theme::pin_focused_output` explicitly before `set_visible`.
 
     let outer = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     outer.set_margin_top(10);
