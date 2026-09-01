@@ -102,6 +102,13 @@ pub async fn run(
                 });
                 cards_box.prepend(&card);
                 cards.borrow_mut().insert(id, card.clone());
+                // Re-pin to the focused output whenever the stack goes from
+                // empty to shown — see `theme::pin_focused_output`. Skipped
+                // while a toast is already up so an in-flight batch stays
+                // put rather than re-pinning a live layer surface.
+                if !window.is_visible() {
+                    crate::theme::pin_focused_output(&window);
+                }
                 window.set_visible(true);
                 // ANIMATION WORK #6: spring the new card's own height in
                 // from 0 to its natural content height instead of it

@@ -251,6 +251,16 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
             icon.remove_css_class("osd-icon-muted");
         }
         animate_osd_fill(&pbar, &fill_pct, &fill_anim, &fill_token, pct);
+        // Pin the OSD to the focused output every time it (re)appears —
+        // the only moment focus can have changed since the last show.
+        // `bind_auto` on the long-lived, reused window is unreliable here
+        // (see `theme::pin_focused_output`); an explicit pin keeps the fill
+        // accent this monitor's, never the primary's red on a secondary.
+        // Skipped while already visible so a burst of volume-key repeats
+        // doesn't spawn a `hyprctl` per event — focus can't move mid-burst.
+        if !window.is_visible() {
+            crate::theme::pin_focused_output(&window);
+        }
         window.set_visible(true);
 
         let token = dismiss_token.get().wrapping_add(1);

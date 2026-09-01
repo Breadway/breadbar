@@ -252,6 +252,9 @@ pub fn toggle(ui: &Ui) {
         ui.window.set_visible(false);
     } else {
         rebuild(&ui.list, &ui.store);
+        // Show on (and theme against) the focused output — the panel is a
+        // long-lived reused window, see `theme::pin_focused_output`.
+        crate::theme::pin_focused_output(&ui.window);
         ui.window.set_visible(true);
     }
 }

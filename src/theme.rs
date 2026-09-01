@@ -840,6 +840,29 @@ pub fn bind_output(widget: &impl IsA<gtk4::Widget>, output: &str) {
     });
 }
 
+/// Pin a transient satellite window (OSD, notification toast, history) to
+/// the currently focused Hyprland output and bind its palette to that same
+/// output. Call immediately before `set_visible(true)` on a long-lived,
+/// *reused* window.
+///
+/// [`bind_auto`] alone is unreliable for these: the window outlives many
+/// show/hide cycles, its `GdkSurface` is recreated on each map, and
+/// `bind_auto` only re-hooks `enter-monitor` on realize — so a window first
+/// shown on the primary keeps the primary's accent when it later reappears
+/// on a secondary. An explicit pin (`set_monitor` + [`bind_output`]) makes
+/// the accent correct from the first frame. No-op outside a Hyprland
+/// session (e.g. screenshot mode), where the display-global [`apply`]
+/// fallback already covers the single output.
+pub fn pin_focused_output<W>(window: &W)
+where
+    W: IsA<gtk4::Widget> + gtk4_layer_shell::LayerShell,
+{
+    if let Some(name) = crate::primary_hypr_monitor() {
+        crate::bind_layer_monitor(window, &name);
+        bind_output(window, &name);
+    }
+}
+
 /// One-time notice when an output has no `palettes/<output>.json` and
 /// `bind_window`/`load_palette_for` will silently fall back to the global
 /// pywal palette — its bar then shows the primary monitor's accent, which
