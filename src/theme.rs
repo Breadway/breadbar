@@ -976,6 +976,7 @@ thread_local! {
 /// calling this would just re-arm the same watch redundantly).
 pub fn watch_hot_reload() {
     let monitor = bread_theme::shell::watch(|new_theme| {
+        tracing::info!(theme = %new_theme.id(), "shell theme changed on disk — reloading");
         set_shell_theme(new_theme);
         reload();
     });
