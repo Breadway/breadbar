@@ -29,20 +29,9 @@ pub struct WifiPopoverData {
 }
 
 async fn fetch_status() -> Option<CrumbsStatus> {
-    let out = tokio::time::timeout(
-        Duration::from_secs(8),
-        tokio::process::Command::new("breadcrumbs")
-            .args(["status", "--json"])
-            .output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
-
-    if !out.status.success() {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let stdout =
+        super::proc::stdout_ok("breadcrumbs", &["status", "--json"], Duration::from_secs(8)).await?;
+    let v: serde_json::Value = serde_json::from_slice(&stdout).ok()?;
     Some(CrumbsStatus {
         profile: v["profile"].as_str().unwrap_or("").to_string(),
         ssid: v["ssid"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
@@ -55,13 +44,10 @@ async fn fetch_status() -> Option<CrumbsStatus> {
 }
 
 async fn fetch_profile_list() -> Vec<(String, bool)> {
-    let Ok(Ok(out)) = tokio::time::timeout(
-        Duration::from_secs(4),
-        tokio::process::Command::new("breadcrumbs")
-            .args(["profile", "list"])
-            .output(),
-    )
-    .await
+    // Not `stdout_ok` — a non-zero exit here (no active profile, say) still
+    // prints a usable list, and the old code used it regardless of status.
+    let Some(out) =
+        super::proc::output("breadcrumbs", &["profile", "list"], Duration::from_secs(4)).await
     else {
         return vec![];
     };
@@ -76,11 +62,13 @@ async fn fetch_profile_list() -> Vec<(String, bool)> {
 }
 
 async fn saved_ssids() -> std::collections::HashSet<String> {
-    let out = tokio::process::Command::new("nmcli")
-        .args(["-t", "-f", "NAME,TYPE", "connection", "show"])
-        .output()
-        .await;
-    let Ok(o) = out else {
+    let Some(o) = super::proc::output(
+        "nmcli",
+        &["-t", "-f", "NAME,TYPE", "connection", "show"],
+        Duration::from_secs(4),
+    )
+    .await
+    else {
         return std::collections::HashSet::new();
     };
     String::from_utf8_lossy(&o.stdout)
@@ -98,14 +86,13 @@ async fn saved_ssids() -> std::collections::HashSet<String> {
 
 /// Cached AP list (no rescan). Fast enough to paint next to profiles.
 async fn fetch_scan() -> Vec<ScanEntry> {
-    let out = tokio::time::timeout(
+    let Some(o) = super::proc::output(
+        "nmcli",
+        &["-t", "-f", "SSID,SIGNAL,IN-USE", "device", "wifi", "list"],
         Duration::from_secs(4),
-        tokio::process::Command::new("nmcli")
-            .args(["-t", "-f", "SSID,SIGNAL,IN-USE", "device", "wifi", "list"])
-            .output(),
     )
-    .await;
-    let Ok(Ok(o)) = out else {
+    .await
+    else {
         return vec![];
     };
     let saved = saved_ssids().await;

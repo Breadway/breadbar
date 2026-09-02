@@ -255,10 +255,8 @@ pub struct App {
     bat_lbl: gtk4::Box,
     bat_digits: Rc<RefCell<Vec<gtk4::Label>>>,
     bat_img: gtk4::Image,
-    bat_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
     ac_img: gtk4::Image,
     bt_img: gtk4::Image,
-    bt_textures: std::collections::HashMap<usize, gtk4::gdk::Texture>,
     wifi_lbl: gtk4::Label,
     wifi_img: gtk4::Image,
 
@@ -579,19 +577,10 @@ impl SimpleComponent for App {
         let icon_px = theme::shell_theme().tokens().icon_px() as i32;
 
         // ── SVG icon sets ────────────────────────────────────────────────
-        use bar::stats::{
-            AC_POWER, BAT_HIGH, BAT_LOW, BAT_MID, BT_CONNECTED, BT_OFF, BT_ON, ICON_VOLUME,
-        };
-        let bat_textures: std::collections::HashMap<usize, gtk4::gdk::Texture> =
-            [BAT_HIGH, BAT_MID, BAT_LOW]
-                .into_iter()
-                .map(|p| (p.as_ptr() as usize, svg_texture(p)))
-                .collect();
-        let bt_textures: std::collections::HashMap<usize, gtk4::gdk::Texture> =
-            [BT_OFF, BT_ON, BT_CONNECTED]
-                .into_iter()
-                .map(|p| (p.as_ptr() as usize, svg_texture(p)))
-                .collect();
+        // Battery / bluetooth glyphs swap by level/state at runtime via
+        // `set_svg_icon` (which shares the process-wide `BAKED_TEXTURE_CACHE`
+        // and keeps the rebake registry current); no per-App texture map.
+        use bar::stats::{AC_POWER, BAT_MID, BT_OFF, ICON_VOLUME};
         // ── Stat labels ──────────────────────────────────────────────────
         let cpu_lbl = stat_label();
         let mem_lbl = stat_label();
@@ -604,16 +593,10 @@ impl SimpleComponent for App {
 
         let vol_img = svg_image(ICON_VOLUME);
         vol_img.add_css_class("stat-icon");
-        let bat_img = gtk4::Image::from_paintable(Some(
-            bat_textures.get(&(BAT_MID.as_ptr() as usize)).unwrap(),
-        ));
-        prepare_icon(&bat_img, icon_px);
+        let bat_img = svg_image_sized(BAT_MID, icon_px as u32);
         let ac_img = svg_image(AC_POWER);
         ac_img.set_visible(false);
-        let bt_img = gtk4::Image::from_paintable(Some(
-            bt_textures.get(&(BT_OFF.as_ptr() as usize)).unwrap(),
-        ));
-        prepare_icon(&bt_img, icon_px);
+        let bt_img = svg_image_sized(BT_OFF, icon_px as u32);
         bt_img.set_visible(false);
 
         // ── WiFi pair + popover ──────────────────────────────────────────
@@ -1727,10 +1710,8 @@ impl SimpleComponent for App {
             bat_lbl,
             bat_digits,
             bat_img,
-            bat_textures,
             ac_img,
             bt_img,
-            bt_textures,
             wifi_lbl,
             wifi_img,
             wifi_pane,
@@ -1959,9 +1940,7 @@ impl SimpleComponent for App {
                 );
                 self.vol_lbl.set_tooltip_text(Some(&format!("volume {}%", stats.volume_pct)));
                 flip_digit_chip(&self.bat_lbl, &mut self.bat_digits.borrow_mut(), &stats.bat);
-                if let Some(tex) = self.bat_textures.get(&(stats.bat_icon.as_ptr() as usize)) {
-                    self.bat_img.set_paintable(Some(tex));
-                }
+                set_svg_icon(&self.bat_img, stats.bat_icon);
                 let bat_tip = if stats.ac_connected {
                     format!("{}% · charging", stats.bat)
                 } else {
@@ -1969,9 +1948,7 @@ impl SimpleComponent for App {
                 };
                 self.bat_img.set_tooltip_text(Some(&bat_tip));
                 self.ac_img.set_visible(false);
-                if let Some(tex) = self.bt_textures.get(&(stats.bt_icon.as_ptr() as usize)) {
-                    self.bt_img.set_paintable(Some(tex));
-                }
+                set_svg_icon(&self.bt_img, stats.bt_icon);
                 self.current_ssid = stats.wifi_ssid.clone();
                 if stats.wifi_profile.is_some() {
                     self.wifi_profile = stats.wifi_profile;
@@ -2049,12 +2026,7 @@ impl SimpleComponent for App {
                     } else {
                         asset!("Play.svg")
                     };
-                    self.media_play_icon
-                        .set_paintable(Some(&svg_texture(icon_svg)));
-                    prepare_icon(
-                        &self.media_play_icon,
-                        theme::shell_theme().tokens().icon_px() as i32,
-                    );
+                    set_svg_icon(&self.media_play_icon, icon_svg);
                     if state.playing {
                         self.media_widget.add_css_class("playing");
                     } else {
@@ -2784,7 +2756,7 @@ fn show_add_network_dialog(
     entry.grab_focus();
 }
 
-fn stat_pair(icon_svg: &str, label: &gtk4::Label) -> gtk4::Box {
+fn stat_pair(icon_svg: &'static str, label: &gtk4::Label) -> gtk4::Box {
     let pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     pair.add_css_class("stat-pair");
     bar_chip(&pair);
@@ -3260,18 +3232,103 @@ pub(crate) fn prepare_icon(img: &gtk4::Image, px: i32) {
     img.set_vexpand(false);
 }
 
-pub(crate) fn svg_image(svg_src: &str) -> gtk4::Image {
+// ── Baked SVG icon textures ─────────────────────────────────────────────
+//
+// Icon glyphs are recoloured by baking `theme::fg_color()` into the SVG
+// source before resvg rasterises it (`svg_texture_sized`). That tint lives
+// in the texture, entirely outside GTK CSS — so a `bread-theme reload` that
+// flips the `light` axis recolours the CSS chrome but leaves every already-
+// rendered glyph its old ink (near-white glyphs, invisible on daylight's
+// paper pills). Two pieces keep them in step:
+//
+//   * `BAKED_TEXTURE_CACHE` memoises `(src, px) -> Texture` so a poller
+//     calling `set_svg_icon` every couple of seconds isn't re-rasterising;
+//     `rebake_icons` clears it so the next bake picks up the new ink.
+//   * `BAKED_ICONS` weak-tracks every `Image` handed out here plus the
+//     source it currently shows, so `rebake_icons` can push a freshly baked
+//     texture into each live one.
+//
+// `theme::reload` drives `rebake_icons` on every SIGHUP / `theme.toml` edit.
+thread_local! {
+    static BAKED_TEXTURE_CACHE:
+        RefCell<std::collections::HashMap<(usize, u32), gtk4::gdk::Texture>> =
+        RefCell::new(std::collections::HashMap::new());
+    static BAKED_ICONS: RefCell<Vec<BakedIcon>> = const { RefCell::new(Vec::new()) };
+}
+
+struct BakedIcon {
+    img: gtk4::glib::WeakRef<gtk4::Image>,
+    src: Cell<&'static str>,
+    px: u32,
+}
+
+fn baked_texture(src: &'static str, px: u32) -> gtk4::gdk::Texture {
+    let key = (src.as_ptr() as usize, px);
+    BAKED_TEXTURE_CACHE.with(|c| {
+        c.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| svg_texture_sized(src, px))
+            .clone()
+    })
+}
+
+fn register_baked_icon(img: &gtk4::Image, src: &'static str, px: u32) {
+    BAKED_ICONS.with(|v| {
+        let mut v = v.borrow_mut();
+        v.retain(|b| b.img.upgrade().is_some());
+        v.push(BakedIcon {
+            img: img.downgrade(),
+            src: Cell::new(src),
+            px,
+        });
+    });
+}
+
+/// Swap the glyph shown by an `Image` created via [`svg_image`] /
+/// [`svg_image_sized`], keeping the baked-icon registry in step so a later
+/// [`rebake_icons`] re-tints the *current* glyph, not the one it was born
+/// with. Use this instead of `img.set_paintable(...)` for any icon that
+/// changes at runtime (battery level, bluetooth state, media play/pause,
+/// OSD volume/brightness).
+pub(crate) fn set_svg_icon(img: &gtk4::Image, src: &'static str) {
+    let px = BAKED_ICONS.with(|v| {
+        v.borrow().iter().find_map(|b| {
+            b.img.upgrade().filter(|u| u == img).map(|_| {
+                b.src.set(src);
+                b.px
+            })
+        })
+    });
+    let px = px.unwrap_or_else(|| theme::shell_theme().tokens().icon_px() as u32);
+    img.set_paintable(Some(&baked_texture(src, px)));
+    prepare_icon(img, px as i32);
+}
+
+/// Re-tint every live baked icon against the current `theme::fg_color()`.
+/// Called by [`theme::reload`] (SIGHUP / `theme.toml` hot-reload).
+pub(crate) fn rebake_icons() {
+    BAKED_TEXTURE_CACHE.with(|c| c.borrow_mut().clear());
+    BAKED_ICONS.with(|v| {
+        v.borrow_mut().retain(|b| match b.img.upgrade() {
+            Some(img) => {
+                img.set_paintable(Some(&baked_texture(b.src.get(), b.px)));
+                prepare_icon(&img, b.px as i32);
+                true
+            }
+            None => false,
+        });
+    });
+}
+
+pub(crate) fn svg_image(svg_src: &'static str) -> gtk4::Image {
     svg_image_sized(svg_src, theme::shell_theme().tokens().icon_px() as u32)
 }
 
-pub(crate) fn svg_image_sized(svg_src: &str, px: u32) -> gtk4::Image {
-    let img = gtk4::Image::from_paintable(Some(&svg_texture_sized(svg_src, px)));
+pub(crate) fn svg_image_sized(svg_src: &'static str, px: u32) -> gtk4::Image {
+    let img = gtk4::Image::from_paintable(Some(&baked_texture(svg_src, px)));
     prepare_icon(&img, px as i32);
+    register_baked_icon(&img, svg_src, px);
     img
-}
-
-pub(crate) fn svg_texture(svg_src: &str) -> gtk4::gdk::Texture {
-    svg_texture_sized(svg_src, theme::shell_theme().tokens().icon_px() as u32)
 }
 
 /// Rasterise at 2× the display size so Lucide strokes stay sharp when GTK
@@ -3316,6 +3373,20 @@ fn stat_label() -> gtk4::Label {
 
 fn main() {
     use clap::Parser;
+
+    // Route `tracing` events (this crate's per-output palette-fallback
+    // warning, plus bread-theme's own shell/theme fallback logs) to stderr.
+    // Quiet by default; `BREADBAR_LOG=debug` (or standard `RUST_LOG`) opens
+    // it up.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("BREADBAR_LOG")
+                .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli = screenshot::Cli::parse();
     if cli.history {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -3335,7 +3406,9 @@ fn main() {
         let mut stream = signal(SignalKind::hangup()).expect("SIGHUP handler");
         loop {
             stream.recv().await;
-            gtk4::glib::MainContext::default().invoke(theme::apply);
+            // Full refresh, not just `theme::apply`: re-bind the persistent
+            // bars/panels and re-bake icon textures too (see theme::reload).
+            gtk4::glib::MainContext::default().invoke(theme::reload);
         }
     });
 

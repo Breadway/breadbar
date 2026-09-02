@@ -244,14 +244,23 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
             OsdEvent::Brightness { pct } => (crate::bar::stats::ICON_BRIGHTNESS, pct, false),
         };
 
-        icon.set_paintable(Some(&crate::svg_texture(icon_svg)));
-        crate::prepare_icon(&icon, crate::theme::shell_theme().tokens().icon_px() as i32);
+        crate::set_svg_icon(&icon, icon_svg);
         if muted {
             icon.add_css_class("osd-icon-muted");
         } else {
             icon.remove_css_class("osd-icon-muted");
         }
         animate_osd_fill(&pbar, &fill_pct, &fill_anim, &fill_token, pct);
+        // Pin the OSD to the focused output every time it (re)appears —
+        // the only moment focus can have changed since the last show.
+        // `bind_auto` on the long-lived, reused window is unreliable here
+        // (see `theme::pin_focused_output`); an explicit pin keeps the fill
+        // accent this monitor's, never the primary's red on a secondary.
+        // Skipped while already visible so a burst of volume-key repeats
+        // doesn't spawn a `hyprctl` per event — focus can't move mid-burst.
+        if !window.is_visible() {
+            crate::theme::pin_focused_output(&window);
+        }
         window.set_visible(true);
 
         let token = dismiss_token.get().wrapping_add(1);
@@ -346,6 +355,10 @@ fn create_window() -> gtk4::Window {
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-osd"));
     crate::surface::apply(&window, "breadbar-osd");
-    crate::theme::bind_auto(&window);
+    // No `bind_auto` here: it re-derives the output from
+    // `GdkDisplay::monitor_at_surface`, which is unreliable for a
+    // layer-shell surface (it can report the wrong monitor and then
+    // clobber a correct bind on every map). `run_osd` calls
+    // `theme::pin_focused_output` explicitly before each show instead.
     window
 }

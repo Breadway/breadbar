@@ -187,7 +187,9 @@ pub fn build_window(store: Store) -> Ui {
     window.set_default_width(360);
     window.set_size_request(360, -1);
     window.set_keyboard_mode(KeyboardMode::OnDemand);
-    crate::theme::bind_auto(&window);
+    // No `bind_auto`: `monitor_at_surface` is unreliable for a layer
+    // surface and its map hook clobbers correct binds. `toggle` calls
+    // `theme::pin_focused_output` explicitly before `set_visible`.
 
     let outer = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     outer.set_margin_top(10);
@@ -252,6 +254,9 @@ pub fn toggle(ui: &Ui) {
         ui.window.set_visible(false);
     } else {
         rebuild(&ui.list, &ui.store);
+        // Show on (and theme against) the focused output — the panel is a
+        // long-lived reused window, see `theme::pin_focused_output`.
+        crate::theme::pin_focused_output(&ui.window);
         ui.window.set_visible(true);
     }
 }

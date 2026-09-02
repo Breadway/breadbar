@@ -127,6 +127,13 @@ Example — change the font size:
 }
 ```
 
+**Multi-monitor note:** `style.css` is one display-global override. Named
+palette tokens in it (`@accent`, `@on-bg`, …) resolve against the **primary**
+monitor's palette, not the per-monitor palette of the bar a rule paints. If
+your monitors run different wallpapers/accents, use literal hex in `style.css`
+for a result that's identical everywhere, and leave per-monitor accent
+colouring to the generated per-output stylesheet.
+
 ## Architecture
 
 | Module | Responsibility |
