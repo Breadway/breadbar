@@ -17,23 +17,22 @@ pub struct ControlPanelData {
 }
 
 async fn fetch_volume() -> f64 {
-    let out = tokio::time::timeout(
+    let Some(stdout) = super::proc::stdout_ok(
+        "wpctl",
+        &["get-volume", "@DEFAULT_AUDIO_SINK@"],
         Duration::from_secs(2),
-        tokio::process::Command::new("wpctl")
-            .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
-            .output(),
     )
-    .await;
-    match out {
-        Ok(Ok(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .trim()
-            .strip_prefix("Volume:")
-            .and_then(|s| s.split_whitespace().next())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.5)
-            .clamp(0.0, 1.5),
-        _ => 0.5,
-    }
+    .await
+    else {
+        return 0.5;
+    };
+    String::from_utf8_lossy(&stdout)
+        .trim()
+        .strip_prefix("Volume:")
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.5)
 }
 
 async fn fetch_brightness() -> f64 {

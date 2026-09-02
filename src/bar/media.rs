@@ -18,19 +18,10 @@ async fn fetch() -> MediaState {
         has_player: false,
     };
 
-    let status_out = tokio::time::timeout(
-        Duration::from_secs(2),
-        tokio::process::Command::new("playerctl")
-            .args(["status"])
-            .output(),
-    )
-    .await;
-
-    let status = match status_out {
-        Ok(Ok(out)) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
-        _ => return none(),
+    let status = match super::proc::stdout_ok("playerctl", &["status"], Duration::from_secs(2)).await
+    {
+        Some(stdout) => String::from_utf8_lossy(&stdout).trim().to_string(),
+        None => return none(),
     };
 
     if status == "Stopped" {
@@ -39,23 +30,21 @@ async fn fetch() -> MediaState {
 
     let playing = status == "Playing";
 
-    let meta_out = tokio::time::timeout(
+    let (artist, title) = match super::proc::stdout_ok(
+        "playerctl",
+        &["metadata", "--format", "{{artist}}\t{{title}}"],
         Duration::from_secs(2),
-        tokio::process::Command::new("playerctl")
-            .args(["metadata", "--format", "{{artist}}\t{{title}}"])
-            .output(),
     )
-    .await;
-
-    let (artist, title) = match meta_out {
-        Ok(Ok(out)) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    .await
+    {
+        Some(stdout) => {
+            let s = String::from_utf8_lossy(&stdout).trim().to_string();
             let mut parts = s.splitn(2, '\t');
             let a = parts.next().unwrap_or("").to_string();
             let t = parts.next().unwrap_or("").to_string();
             (a, t)
         }
-        _ => (String::new(), String::new()),
+        None => (String::new(), String::new()),
     };
 
     MediaState {

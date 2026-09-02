@@ -1002,9 +1002,9 @@ pub fn watch_hot_reload() {
                 theme = %new_theme.id(),
                 "shell theme switched — restarting breadbar to apply layout"
             );
-            // Returns only if the exec could not happen — then fall through
-            // to an in-place token reload (layout will still need a manual
-            // restart, but colours/radii/etc. update).
+            // Returns only if the restart could not be launched — then fall
+            // through to an in-place token reload (layout will still need a
+            // manual restart, but colours/radii/etc. update).
             self_restart();
             tracing::warn!(
                 "self-restart failed — applying tokens in place; bar layout needs a manual restart"
@@ -1019,13 +1019,18 @@ pub fn watch_hot_reload() {
     SHELL_THEME_MONITOR.with(|cell| *cell.borrow_mut() = Some(monitor));
 }
 
-/// Replace this process with a fresh `breadbar` (same argv), so a shell-theme
-/// switch picks up window geometry and widget structure, not just CSS. On
-/// success `exec` never returns; this function returns only when the exec
-/// could not happen (no `current_exe`, missing binary), leaving the caller
-/// to fall back to an in-place token reload.
+/// Start a fresh `breadbar` (same argv) and exit this one, so a shell-theme
+/// switch picks up window geometry and widget structure, not just CSS.
+///
+/// Deliberately spawn-then-`exit`, NOT `exec`: `exec` keeps this PID and its
+/// child processes, so any in-flight `breadcrumbs`/`nmcli` the bar had
+/// running is inherited by a fresh tokio runtime that never `wait()`s for
+/// it — a permanent `<defunct>` once it exits. Letting this process exit
+/// instead reparents those children to init, which reaps them.
+///
+/// Returns only when the replacement could not be launched, leaving the
+/// caller to fall back to an in-place token reload.
 fn self_restart() {
-    use std::os::unix::process::CommandExt;
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -1034,8 +1039,10 @@ fn self_restart() {
         }
     };
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let err = std::process::Command::new(&exe).args(&args).exec();
-    tracing::error!(error = %err, exe = %exe.display(), "exec() failed");
+    match std::process::Command::new(&exe).args(&args).spawn() {
+        Ok(_) => std::process::exit(0),
+        Err(e) => tracing::error!(error = %e, exe = %exe.display(), "spawn() failed"),
+    }
 }
 
 #[cfg(test)]
