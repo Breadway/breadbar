@@ -959,28 +959,83 @@ thread_local! {
     // handle we keep alive is opaque, not a single fixed monitor.
     static SHELL_THEME_MONITOR: RefCell<Option<bread_theme::shell::ThemeWatch>> =
         const { RefCell::new(None) };
+
+    // The active theme id as of the last time the watch fired, so the
+    // callback can tell a *switch* (spotlight -> daylight) apart from an
+    // in-place *token edit* to the current theme's `theme.toml`/`extra.css`.
+    static WATCHED_THEME_ID: RefCell<String> = RefCell::new(shell_theme().id().to_string());
 }
 
-/// Wires `bread_theme::shell::watch()` (plan §10) so editing the active
-/// theme's `theme.toml`/`extra.css` on disk re-resolves CSS tokens without a
-/// restart, the same way a pywal palette change already does via
-/// `apply_app_css`. The watch callback calls [`reload`], so the token change
-/// reaches the persistent bars/panels too — not just the display-global
-/// provider and the transient toasts/OSD. Window-spec values (anchors,
-/// margins, exclusive zone, keyboard mode) are read once at
-/// window-construction time and are *not* re-applied here — per plan §10
-/// those need a restart, since live-swapping a mapped layer-shell surface's
-/// anchors/exclusive-zone is a lot of teardown risk for a rare operation.
+/// Wires `bread_theme::shell::watch()` (plan §10).
+///
+/// Two cases the callback separates:
+///
+/// - **Token edit** to the *active* theme's `theme.toml`/`extra.css` — CSS
+///   values only (radii, springs, alphas, the `light` axis). [`reload`]
+///   re-resolves these live, the same way a pywal palette change does via
+///   `apply_app_css`, and reaches the persistent bars/panels too.
+/// - **Theme switch** (`shell.toml`'s `active` moved to a different id) —
+///   this also changes window geometry (anchors, height, exclusive zone)
+///   and widget structure (workspace/clock style, which modules are in the
+///   bar), none of which [`reload`] can touch because they're read once at
+///   window construction. So breadbar re-execs itself: the bar blinks once
+///   and comes back fully on the new theme. `bos-settings` writing `active`
+///   is the expected trigger; this makes that Just Work without a manual
+///   restart.
 ///
 /// Call once at startup (primary instance only — every satellite window
 /// calling this would just re-arm the same watch redundantly).
 pub fn watch_hot_reload() {
     let monitor = bread_theme::shell::watch(|new_theme| {
-        tracing::info!(theme = %new_theme.id(), "shell theme changed on disk — reloading");
+        let switched = WATCHED_THEME_ID.with(|cell| {
+            let mut cur = cell.borrow_mut();
+            if *cur == new_theme.id() {
+                false
+            } else {
+                *cur = new_theme.id().to_string();
+                true
+            }
+        });
+
+        if switched {
+            tracing::info!(
+                theme = %new_theme.id(),
+                "shell theme switched — restarting breadbar to apply layout"
+            );
+            // Returns only if the exec could not happen — then fall through
+            // to an in-place token reload (layout will still need a manual
+            // restart, but colours/radii/etc. update).
+            self_restart();
+            tracing::warn!(
+                "self-restart failed — applying tokens in place; bar layout needs a manual restart"
+            );
+        } else {
+            tracing::info!("active theme tokens changed on disk — reloading");
+        }
+
         set_shell_theme(new_theme);
         reload();
     });
     SHELL_THEME_MONITOR.with(|cell| *cell.borrow_mut() = Some(monitor));
+}
+
+/// Replace this process with a fresh `breadbar` (same argv), so a shell-theme
+/// switch picks up window geometry and widget structure, not just CSS. On
+/// success `exec` never returns; this function returns only when the exec
+/// could not happen (no `current_exe`, missing binary), leaving the caller
+/// to fall back to an in-place token reload.
+fn self_restart() {
+    use std::os::unix::process::CommandExt;
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "current_exe() failed");
+            return;
+        }
+    };
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let err = std::process::Command::new(&exe).args(&args).exec();
+    tracing::error!(error = %err, exe = %exe.display(), "exec() failed");
 }
 
 #[cfg(test)]
