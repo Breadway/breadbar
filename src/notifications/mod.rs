@@ -114,7 +114,9 @@ impl Urgency {
 /// Spec: `actions` is a flat list of pairs `(id, localized label)`. An
 /// unpaired trailing id is ignored. Empty keys are dropped.
 fn parse_actions(raw: &[String]) -> Vec<Action> {
-    raw.chunks_exact(2)
+    raw.as_chunks::<2>()
+        .0
+        .iter()
         .filter(|c| !c[0].is_empty())
         .map(|c| Action {
             key: c[0].clone(),
