@@ -42,15 +42,12 @@ pub fn shell_theme() -> Rc<ShellTheme> {
     SHELL_THEME.with(|cell| cell.borrow().clone())
 }
 
-/// Replaces the shared shell theme in place. Only used by the optional
-/// `theme.toml` hot-reload watch (see `watch_hot_reload` below), which calls
-/// [`reload`] straight after — per plan §10, a window-spec change (anchors,
-/// margins, exclusive zone, keyboard) still needs a restart to take effect,
-/// since those are read once at window-construction time. CSS token values
-/// (radii, springs, alphas, workspace/clock style, the `light` axis) DO
-/// re-resolve live: [`reload`] re-runs [`apply`] *and* re-binds every
-/// persistent window so their widget-level per-output providers — which
-/// shadow the display-global one — rebuild against the new theme too.
+/// Replaces the shared shell theme in place. Only used by the `theme.toml`
+/// hot-reload watch (see [`watch_hot_reload`]), which calls [`reload`] straight
+/// after. CSS token values (colours, radii, springs, alphas, the `light` axis,
+/// launcher geometry) re-resolve live via [`reload`]. A window-geometry or
+/// widget-structure change is caught by [`needs_restart`] *before* this point
+/// and triggers a re-exec instead, since those are read once at construction.
 pub fn set_shell_theme(theme: ShellTheme) {
     SHELL_THEME.with(|cell| *cell.borrow_mut() = Rc::new(theme));
 }
@@ -260,58 +257,55 @@ thread_local! {
     // handle we keep alive is opaque, not a single fixed monitor.
     static SHELL_THEME_MONITOR: RefCell<Option<bread_theme::shell::ThemeWatch>> =
         const { RefCell::new(None) };
-
-    // The active theme id as of the last time the watch fired, so the
-    // callback can tell a *switch* (spotlight -> daylight) apart from an
-    // in-place *token edit* to the current theme's `theme.toml`/`extra.css`.
-    static WATCHED_THEME_ID: RefCell<String> = RefCell::new(shell_theme().id().to_string());
 }
 
-/// Wires `bread_theme::shell::watch()` (plan §10).
+/// True if going from `cur` to `next` changes something [`reload`] cannot
+/// apply live — window geometry (anchors, height, margin, exclusive zone,
+/// keyboard, layer) or widget structure (which modules sit in which slot, the
+/// workspace/clock style, the launcher mode). All three are read once at
+/// window/widget construction time. Everything else — colours, radii, spring
+/// curves, alphas, the `light` axis, launcher *geometry* like row radius — is
+/// pure CSS that [`reload`] re-resolves in place.
+fn needs_restart(cur: &ShellTheme, next: &ShellTheme) -> bool {
+    cur.window() != next.window()
+        || cur.slots() != next.slots()
+        || cur.modules() != next.modules()
+        || cur.launcher().mode != next.launcher().mode
+}
+
+/// Wires `bread_theme::shell::watch()` (plan §10) — fires whenever the active
+/// theme's directory changes on disk, or `shell.toml`'s `active` moves to a
+/// different id.
 ///
-/// Two cases the callback separates:
-///
-/// - **Token edit** to the *active* theme's `theme.toml`/`extra.css` — CSS
-///   values only (radii, springs, alphas, the `light` axis). [`reload`]
-///   re-resolves these live, the same way a pywal palette change does via
-///   `apply_app_css`, and reaches the persistent bars/panels too.
-/// - **Theme switch** (`shell.toml`'s `active` moved to a different id) —
-///   this also changes window geometry (anchors, height, exclusive zone)
-///   and widget structure (workspace/clock style, which modules are in the
-///   bar), none of which [`reload`] can touch because they're read once at
-///   window construction. So breadbar re-execs itself: the bar blinks once
-///   and comes back fully on the new theme. `bos-settings` writing `active`
-///   is the expected trigger; this makes that Just Work without a manual
-///   restart.
+/// - **CSS-only change** (a palette-token edit, or a switch between two themes
+///   with the same geometry and structure) — [`reload`] re-resolves it in
+///   place: the display-global providers, every persistent bar/panel's
+///   per-output provider, and the Rust-baked icon tint. No restart, no blink.
+/// - **Geometry or structure change** ([`needs_restart`]) — those are read
+///   once at construction, so breadbar re-execs itself: the bar blinks once
+///   and comes back fully on the new theme. `bos-settings` writing `active` is
+///   the expected trigger.
 ///
 /// Call once at startup (primary instance only — every satellite window
 /// calling this would just re-arm the same watch redundantly).
 pub fn watch_hot_reload() {
     let monitor = bread_theme::shell::watch(|new_theme| {
-        let switched = WATCHED_THEME_ID.with(|cell| {
-            let mut cur = cell.borrow_mut();
-            if *cur == new_theme.id() {
-                false
-            } else {
-                *cur = new_theme.id().to_string();
-                true
-            }
-        });
+        let restart = needs_restart(&shell_theme(), &new_theme);
 
-        if switched {
+        if restart {
             tracing::info!(
                 theme = %new_theme.id(),
-                "shell theme switched — restarting breadbar to apply layout"
+                "shell theme geometry/structure changed — restarting breadbar"
             );
             // Returns only if the restart could not be launched — then fall
-            // through to an in-place token reload (layout will still need a
-            // manual restart, but colours/radii/etc. update).
+            // through to an in-place reload (CSS updates; geometry/layout will
+            // still need a manual restart).
             self_restart();
             tracing::warn!(
-                "self-restart failed — applying tokens in place; bar layout needs a manual restart"
+                "self-restart failed — applying CSS in place; bar layout needs a manual restart"
             );
         } else {
-            tracing::info!("active theme tokens changed on disk — reloading");
+            tracing::info!(theme = %new_theme.id(), "shell theme changed (CSS only) — reloading in place");
         }
 
         set_shell_theme(new_theme);
@@ -348,7 +342,24 @@ fn self_restart() {
 
 #[cfg(test)]
 mod tests {
-    use super::{shell_theme, Palette};
+    use super::{needs_restart, shell_theme, Palette};
+    use bread_theme::shell::load_named;
+
+    #[test]
+    fn needs_restart_true_between_structurally_different_builtins() {
+        let lm = load_named("liquid-motion").unwrap();
+        let gw = load_named("glass-workbench").unwrap();
+        // Different bar height + workspace/clock style + slot lists.
+        assert!(needs_restart(&lm, &gw));
+        assert!(needs_restart(&gw, &lm));
+    }
+
+    #[test]
+    fn needs_restart_false_for_the_same_theme() {
+        let a = load_named("daylight").unwrap();
+        let b = load_named("daylight").unwrap();
+        assert!(!needs_restart(&a, &b));
+    }
 
     /// Every `#rrggbb`-style literal in a string, with a trailing
     /// alphanumeric/`_` boundary (so `#000000` counts, `#fff` counts, but a
