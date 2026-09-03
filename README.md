@@ -33,7 +33,7 @@ A single Rust binary that provides a full-width top bar, a D-Bus notification da
 - Implements `org.freedesktop.Notifications` (D-Bus) — works with any standard sender (`notify-send`, etc.)
 - Popups appear top-right, stack vertically, auto-dismiss after the sender-specified timeout (default 5 s)
 - Supports `CloseNotification` and `replaces_id`
-- History of the last 50 notifications (app, summary, truncated body, time). Loaded from and saved to `$XDG_STATE_HOME/breadbar/history.json` (typically `~/.local/state/breadbar/history.json`). Toggle with `breadbar --history` (Hyprland: `bind = SUPER, N, exec, breadbar --history`) or D-Bus `dev.breadway.Bar.ToggleHistory` on `org.freedesktop.Notifications` at `/dev/breadway/Bar`.
+- History of the last 50 notifications (app, summary, truncated body, time). Loaded from and saved to `$XDG_STATE_HOME/breadbar/history.json` (typically `~/.local/state/breadbar/history.json`). Toggle by **right-clicking the bar's `☰` menu button** (left-click still opens the control panel), by `breadbar --history` (Hyprland: `bind = SUPER, N, exec, breadbar --history`), or by D-Bus `dev.breadway.Bar.ToggleHistory` on `org.freedesktop.Notifications` at `/dev/breadway/Bar`.
 
 **Volume/brightness OSD**:
 

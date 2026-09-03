@@ -1773,11 +1773,26 @@ impl SimpleComponent for App {
             "notification-critical" => Some(notifications::SampleKind::Critical),
             _ => None,
         });
-        let notification_window = if init.primary {
-            Some(notifications::spawn(notif_sample))
+        let (notification_window, notif_handle) = if init.primary {
+            let (win, handle) = notifications::spawn(notif_sample);
+            (Some(win), handle)
         } else {
-            None
+            (None, None)
         };
+
+        // Right-click the hamburger toggles the notification-history window
+        // (left-click still opens the control panel, wired above). This is
+        // the no-terminal equivalent of `breadbar --history`; it reaches
+        // the same event loop in-process rather than over `dev.breadway.Bar`.
+        if let Some(handle) = notif_handle {
+            let secondary = gtk4::GestureClick::new();
+            secondary.set_button(gtk4::gdk::BUTTON_SECONDARY);
+            secondary.connect_released(move |g, _, _, _| {
+                g.set_state(gtk4::EventSequenceState::Claimed);
+                handle.toggle_history();
+            });
+            hamburger_btn.add_controller(secondary);
+        }
         let osd_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
             "osd-volume" => Some(osd::SampleKind::Volume),
             "osd-brightness" => Some(osd::SampleKind::Brightness),

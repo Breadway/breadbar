@@ -219,7 +219,7 @@ fn pixels_to_image(width: i32, height: i32, data: &[u8]) -> Option<gtk4::Image> 
     // SNI delivers ARGB big-endian: bytes are [A, R, G, B] per pixel.
     // GTK4 R8g8b8a8 expects [R, G, B, A] per pixel.
     let mut rgba = Vec::with_capacity(data.len());
-    for chunk in data.chunks_exact(4) {
+    for chunk in data.as_chunks::<4>().0 {
         rgba.push(chunk[1]);
         rgba.push(chunk[2]);
         rgba.push(chunk[3]);
