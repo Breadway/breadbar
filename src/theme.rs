@@ -259,57 +259,53 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// True if going from `cur` to `next` changes something [`reload`] cannot
-/// apply live — window geometry (anchors, height, margin, exclusive zone,
-/// keyboard, layer) or widget structure (which modules sit in which slot, the
-/// workspace/clock style, the launcher mode). All three are read once at
-/// window/widget construction time. Everything else — colours, radii, spring
-/// curves, alphas, the `light` axis, launcher *geometry* like row radius — is
-/// pure CSS that [`reload`] re-resolves in place.
-fn needs_restart(cur: &ShellTheme, next: &ShellTheme) -> bool {
-    cur.window() != next.window()
-        || cur.slots() != next.slots()
-        || cur.modules() != next.modules()
-        || cur.launcher().mode != next.launcher().mode
+/// True if going from `cur` to `next` changes something the live path
+/// (`App::rebuild_from_theme`) cannot yet apply: the **workspace/clock style**
+/// (`modules()` — a widget-type swap: flip digits vs plain label, trail vs
+/// pill vs label-less dots) or the **launcher mode** (Overlay vs Embedded —
+/// the capsule drawer wiring). Those are read once at widget construction.
+/// Everything else applies live: CSS via [`reload`], `[bar.window]` geometry
+/// via `apply_window_spec`, `[bar.slots]` order via `assemble_bar_slots`.
+pub(crate) fn needs_restart(cur: &ShellTheme, next: &ShellTheme) -> bool {
+    cur.modules() != next.modules() || cur.launcher().mode != next.launcher().mode
 }
 
 /// Wires `bread_theme::shell::watch()` (plan §10) — fires whenever the active
 /// theme's directory changes on disk, or `shell.toml`'s `active` moves to a
 /// different id.
 ///
-/// - **CSS-only change** (a palette-token edit, or a switch between two themes
-///   with the same geometry and structure) — [`reload`] re-resolves it in
-///   place: the display-global providers, every persistent bar/panel's
-///   per-output provider, and the Rust-baked icon tint. No restart, no blink.
-/// - **Geometry or structure change** ([`needs_restart`]) — those are read
-///   once at construction, so breadbar re-execs itself: the bar blinks once
-///   and comes back fully on the new theme. `bos-settings` writing `active` is
-///   the expected trigger.
+/// - **Live change** — CSS, `[bar.window]` geometry, `[bar.slots]` order: the
+///   watch swaps the process-global theme and calls `on_live_change`, wired to
+///   `AppInput::ShellThemeChanged` (→ geometry re-applied, slots re-filled,
+///   `reload()` for CSS/icons). No restart, no blink.
+/// - **Workspace/clock style or launcher mode** ([`needs_restart`]) — a
+///   widget-type swap the live path can't do yet, so breadbar re-execs
+///   itself: one blink.
 ///
-/// Call once at startup (primary instance only — every satellite window
-/// calling this would just re-arm the same watch redundantly).
-pub fn watch_hot_reload() {
-    let monitor = bread_theme::shell::watch(|new_theme| {
-        let restart = needs_restart(&shell_theme(), &new_theme);
-
-        if restart {
+/// Call once at startup (primary instance only — every satellite calling this
+/// would just re-arm the same watch redundantly).
+pub fn watch_hot_reload(on_live_change: impl Fn(ShellTheme) + 'static) {
+    let monitor = bread_theme::shell::watch(move |new_theme| {
+        if needs_restart(&shell_theme(), &new_theme) {
             tracing::info!(
                 theme = %new_theme.id(),
-                "shell theme geometry/structure changed — restarting breadbar"
+                "shell theme workspace/clock style or launcher mode changed — restarting breadbar"
             );
             // Returns only if the restart could not be launched — then fall
-            // through to an in-place reload (CSS updates; geometry/layout will
-            // still need a manual restart).
+            // through to an in-place reload (CSS + geometry + slots update;
+            // the style/mode swap still needs a manual restart).
             self_restart();
-            tracing::warn!(
-                "self-restart failed — applying CSS in place; bar layout needs a manual restart"
-            );
+            tracing::warn!("self-restart failed — applying CSS + geometry in place");
+            set_shell_theme(new_theme);
+            reload();
         } else {
-            tracing::info!(theme = %new_theme.id(), "shell theme changed (CSS only) — reloading in place");
+            tracing::info!(
+                theme = %new_theme.id(),
+                "shell theme changed (CSS / geometry / slots) — applying in place"
+            );
+            set_shell_theme(new_theme.clone());
+            on_live_change(new_theme);
         }
-
-        set_shell_theme(new_theme);
-        reload();
     });
     SHELL_THEME_MONITOR.with(|cell| *cell.borrow_mut() = Some(monitor));
 }
