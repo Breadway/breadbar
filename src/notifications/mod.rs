@@ -66,6 +66,24 @@ pub enum NotifEvent {
     ToggleHistory,
 }
 
+/// In-process handle to the notification event loop, handed back by
+/// [`spawn`] so the bar can drive the history window directly instead of
+/// going out over the `dev.breadway.Bar` D-Bus surface the way
+/// `breadbar --history` does.
+#[derive(Clone)]
+pub struct NotifHandle {
+    tx: mpsc::Sender<NotifEvent>,
+}
+
+impl NotifHandle {
+    /// Show the history window if hidden, hide it if shown. A dropped send
+    /// (loop gone, or the bounded channel briefly full) is not worth
+    /// surfacing — the click just does nothing.
+    pub fn toggle_history(&self) {
+        let _ = self.tx.try_send(NotifEvent::ToggleHistory);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Urgency {
     Low,
@@ -322,7 +340,12 @@ impl SampleKind {
 /// screenshot run would race the real breadbar (if running) for the same
 /// well-known name for no benefit, since nothing needs to reach this
 /// instance externally.
-pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
+///
+/// Returns the notification window plus, outside screenshot mode, a
+/// [`NotifHandle`] the bar keeps so a click on it can toggle the history
+/// window without a D-Bus round-trip. Screenshot mode has no history UI
+/// wired up, so there is nothing to hand back.
+pub fn spawn(sample: Option<SampleKind>) -> (gtk4::Window, Option<NotifHandle>) {
     let (window, cards_box) = popup::build_window();
     let (tx, rx) = mpsc::channel(32);
 
@@ -333,8 +356,10 @@ pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
             relm4::spawn_local(async move {
                 popup::run(window_for_loop, cards_box, rx, None, None).await;
             });
+            (window, None)
         }
         None => {
+            let handle = NotifHandle { tx: tx.clone() };
             let (conn_tx, conn_rx) = tokio::sync::oneshot::channel();
             let store = history::load_store();
             let next_id = history::next_id(&store);
@@ -374,10 +399,10 @@ pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
                     popup::run(window_for_loop, cards_box, rx, Some(conn), Some(history_ui)).await;
                 }
             });
+
+            (window, Some(handle))
         }
     }
-
-    window
 }
 
 #[cfg(test)]
