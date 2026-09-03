@@ -91,6 +91,85 @@ fn exclusive_zone_for(spec: &bread_theme::shell::WindowSpec) -> i32 {
     }
 }
 
+/// Apply a [`bread_theme::shell::WindowSpec`] to the bar's layer-shell surface
+/// — anchors, margins, exclusive zone, width, keyboard mode, layer. `init`
+/// calls this once; the live theme-switch path ([`App::rebuild_from_theme`])
+/// calls it again. Every `gtk4-layer-shell` setter here is live-capable, so a
+/// geometry-only theme change needs no restart. The bar-entrance animation is
+/// deliberately not here — it is a first-paint effect owned by `init` alone.
+fn apply_window_spec<W>(root: &W, spec: &bread_theme::shell::WindowSpec)
+where
+    W: IsA<gtk4::Window> + IsA<gtk4::Widget> + LayerShell,
+{
+    root.set_layer(if spec.layer == "overlay" {
+        Layer::Overlay
+    } else {
+        Layer::Top
+    });
+    // Re-set every edge explicitly (true or false) so a switch from a 3-edge
+    // bar to a 1-edge capsule actually releases the dropped edges.
+    for (edge, name) in [
+        (Edge::Top, "top"),
+        (Edge::Bottom, "bottom"),
+        (Edge::Left, "left"),
+        (Edge::Right, "right"),
+    ] {
+        root.set_anchor(edge, spec.anchors.iter().any(|a| a == name));
+    }
+    root.set_margin(Edge::Top, spec.margin.top);
+    root.set_margin(Edge::Left, spec.margin.left);
+    root.set_margin(Edge::Right, spec.margin.right);
+    root.set_margin(Edge::Bottom, spec.margin.bottom);
+    match spec.width {
+        Width::Px(px) => {
+            root.set_default_width(px);
+            root.set_size_request(px, -1);
+        }
+        // Release a previous capsule's pinned width so the surface stretches
+        // to its anchored edges again.
+        Width::Fill => root.set_size_request(-1, -1),
+    }
+    root.set_exclusive_zone(exclusive_zone_for(spec));
+    root.set_keyboard_mode(match spec.keyboard {
+        Keyboard::None => KeyboardMode::None,
+        Keyboard::OnDemand => KeyboardMode::OnDemand,
+        Keyboard::Exclusive => KeyboardMode::Exclusive,
+    });
+}
+
+/// (Re)fill the bar's four slot containers from `[bar.slots]`. `init` runs
+/// this once; the live theme-switch path runs it again (it clears each
+/// container first). Module widgets are shared refs held by `modules`, so
+/// emptying a container only unparents them; re-appending re-parents in the
+/// new theme's order.
+fn assemble_bar_slots(
+    slots: &bread_theme::shell::Slots,
+    modules: &bar::slots::ModuleRegistry,
+    containers: &mut std::collections::HashMap<String, gtk4::Box>,
+    workspace_row: &gtk4::Box,
+    center_area: &gtk4::Box,
+    stats_box: &gtk4::Box,
+    drawer_box: &gtk4::Box,
+) {
+    for c in [workspace_row, center_area, stats_box, drawer_box] {
+        while let Some(child) = c.first_child() {
+            c.remove(&child);
+        }
+    }
+    for (list, container) in [
+        (&slots.left, workspace_row),
+        (&slots.centre, center_area),
+        (&slots.right, stats_box),
+        (&slots.drawer, drawer_box),
+    ] {
+        modules.for_each_in_slot(
+            list,
+            |_, widget| container.append(widget),
+            |key| container.append(&bar::slots::widget_slot_container(containers, key)),
+        );
+    }
+}
+
 #[cfg(test)]
 mod exclusive_zone_tests {
     use super::exclusive_zone_for;
@@ -309,6 +388,18 @@ pub struct App {
     widget_tray_sep: gtk4::Separator,
 
     panels: panel::PanelSet,
+
+    // ── Live theme switch ────────────────────────────────────────────────
+    // Held so `AppInput::ShellThemeChanged` can re-apply the new theme's
+    // `[bar.window]` geometry (`apply_window_spec`) and re-fill the slot
+    // containers (`assemble_bar_slots`) without a restart. A workspace/clock
+    // style or launcher-mode change still restarts — `theme::needs_restart`.
+    root: gtk4::ApplicationWindow,
+    bar_modules: bar::slots::ModuleRegistry,
+    workspace_row: gtk4::Box,
+    center_area: gtk4::Box,
+    stats_box: gtk4::Box,
+    drawer_box: gtk4::Box,
 }
 
 #[derive(Debug)]
@@ -331,6 +422,12 @@ pub enum AppInput {
     WidgetsUpdate(Vec<bread_shared::widget::WidgetSpec>),
     ReconcileMonitors,
     DismissPanels,
+    /// The active shell theme changed on disk (`theme::watch_hot_reload`),
+    /// and it is a CSS + geometry + slots change (a workspace/clock style or
+    /// launcher-mode change restarts instead). Re-apply `[bar.window]` and
+    /// re-fill the slot containers in place. The primary forwards this to
+    /// every satellite.
+    ShellThemeChanged(Box<bread_theme::shell::ShellTheme>),
     // `bread.command.box.open` (plan §7 phase 6c, `launcher_command`
     // module): only ever dispatched when the active theme's launcher is
     // `Embedded` — `launcher_command::spawn` never subscribes otherwise.
@@ -411,63 +508,7 @@ impl SimpleComponent for App {
 
         root.init_layer_shell();
         root.set_namespace(Some("breadbar"));
-        root.set_layer(if window_spec.layer == "overlay" {
-            Layer::Overlay
-        } else {
-            Layer::Top
-        });
-        for anchor in &window_spec.anchors {
-            match anchor.as_str() {
-                "top" => root.set_anchor(Edge::Top, true),
-                "bottom" => root.set_anchor(Edge::Bottom, true),
-                "left" => root.set_anchor(Edge::Left, true),
-                "right" => root.set_anchor(Edge::Right, true),
-                other => eprintln!(
-                    "breadbar: bar.window.anchors entry \"{other}\" is not top|bottom|left|right, ignoring"
-                ),
-            }
-        }
-        root.set_margin(Edge::Top, window_spec.margin.top);
-        root.set_margin(Edge::Left, window_spec.margin.left);
-        root.set_margin(Edge::Right, window_spec.margin.right);
-        // `Margin::bottom` (axis 2, daylight): every builtin before daylight
-        // anchored top and left this at its struct default of 0, which is
-        // exactly why this call was missing entirely — see that field's own
-        // doc comment (bread-theme) for the gap this closes. A bottom-
-        // anchored theme's floating gap off the screen edge IS this margin,
-        // the same way a top-anchored theme's is `margin.top`.
-        root.set_margin(Edge::Bottom, window_spec.margin.bottom);
-        // `Width::Fill` (Island/Edge): unset, exactly as before this
-        // change — the surface stretches to the anchored left/right edges
-        // on its own, with no explicit width request needed. `Width::Px`
-        // (the capsule, anchored top-only): gtk4-layer-shell has nothing to
-        // stretch it TO, so without this it would size to its natural
-        // content width instead of the theme's requested 480px — this was
-        // a schema key declared but never consumed before theme 04 needed
-        // a real value out of it.
-        if let Width::Px(px) = window_spec.width {
-            root.set_default_width(px);
-            // set_default_width alone is only a preference — a wide child (the
-            // results list, whose natural width is its longest app name plus
-            // icon and wm-class) overrides it, so the capsule rendered far
-            // wider than the theme's 480px and stopped reading as a pill.
-            // Pinning the request keeps the surface at the theme's width
-            // regardless of what the app catalog contains.
-            root.set_size_request(px, -1);
-        }
-        // "auto" reserves height + the margin on the ANCHORED edge, so
-        // tiled clients sit clear of the gap — see WindowSpec::exclusive's
-        // doc comment (bread-theme). Every theme before daylight anchored
-        // top, so `margin.top` was the only edge that ever mattered here;
-        // reading it unconditionally under a bottom-anchored bar reserved
-        // only `height` (40px), 12px short of the dock's real footprint
-        // (`height` + `margin.bottom`) — tiled windows would have run up
-        // into the last 12px of the floating dock. `margin_for_exclusive`
-        // picks whichever edge's margin actually borders the reserved
-        // strip, same reasoning `exclusive_zone_for`'s own doc comment
-        // (tested standalone) spells out.
-        let exclusive_zone = exclusive_zone_for(&window_spec);
-        root.set_exclusive_zone(exclusive_zone);
+        apply_window_spec(&root, &window_spec);
         // ANIMATION WORK #3: bar entrance on first map, Liquid Motion
         // only. The flush glass-workbench bar has no floating margin to
         // slide from (it sits edge-to-edge against the screen), so it
@@ -520,15 +561,6 @@ impl SimpleComponent for App {
         } else if theme_id == "spotlight" {
             root.add_css_class("bar-entrance");
         }
-        // breadbar never called `set_keyboard_mode` before Phase 2 — it
-        // relied on gtk4-layer-shell's own default (`KeyboardMode::None`),
-        // which is exactly what the builtin manifest's `keyboard = "none"`
-        // resolves to. Same behaviour, no longer implicit.
-        root.set_keyboard_mode(match window_spec.keyboard {
-            Keyboard::None => KeyboardMode::None,
-            Keyboard::OnDemand => KeyboardMode::OnDemand,
-            Keyboard::Exclusive => KeyboardMode::Exclusive,
-        });
         eprintln!(
             "breadbar: init monitor={monitor_name} primary={}",
             init.primary
@@ -1173,16 +1205,14 @@ impl SimpleComponent for App {
         // routing below. This is how a Lua widget can land in ANY slot,
         // not just the four fixed positions Phase 3a shipped with.
         let bar_shell_theme = theme::shell_theme();
-        let bar_slots = bar_shell_theme.slots();
         let mut bar_modules = bar::slots::ModuleRegistry::new();
         bar_modules.register("workspaces", &workspace_trail.overlay);
         bar_modules.register("media", &media_widget);
-        // `modules.clock.style`: "flip" (default, liquid-motion) registers
-        // the existing per-digit clock_box unchanged; "plain" (glass-
-        // workbench) registers clock_plain_box instead and reveals date_lbl
-        // per `show_date` — clock_box/clock_digits are still fully built in
-        // that case, just never placed in any slot. "none" (Phase 6+,
-        // unused today) registers neither.
+        // `modules.clock.style`: "flip" uses the per-digit clock_box; "plain"
+        // uses clock_plain_box and reveals date_lbl per `show_date`; "none"
+        // registers neither. A clock-style change is restart-gated
+        // (`theme::needs_restart`), so this is fixed for this App's lifetime —
+        // the live slot re-assembly keeps whichever was registered here.
         match bar_shell_theme.modules().clock.style {
             ClockStyle::Plain => {
                 date_lbl.set_visible(bar_shell_theme.modules().clock.show_date);
@@ -1195,65 +1225,39 @@ impl SimpleComponent for App {
         bar_modules.register("wifi", &connectivity_pair);
         bar_modules.register("battery", &bat_box);
         bar_modules.register("control", &hamburger_btn);
-        // `[bar.slots].right = [..., "cpu", "ram", ...]` (glass-workbench):
-        // registered unconditionally, same as every other module — a theme
-        // that never names "cpu"/"ram" in a slot (liquid-motion) just never
-        // walks these entries in `for_each_in_slot` below, so they stay
-        // built but unparented, exactly like `media_widget` does for
-        // glass-workbench (which omits "media" entirely).
+        // Registered unconditionally; `assemble_bar_slots` only *places*
+        // whichever the active `[bar.slots]` names, so an unnamed module
+        // stays built-but-unparented (media under glass-workbench, cpu/ram
+        // under liquid-motion, launcher_* outside spotlight).
         bar_modules.register("cpu", &bar_cpu_pair);
         bar_modules.register("ram", &bar_ram_pair);
-        // Theme 04/spotlight (plan §7): unconditional, same reasoning —
-        // liquid-motion/glass-workbench never name either in a slot, so
-        // both stay built but unparented for them.
         bar_modules.register("launcher_entry", &launcher_entry);
         bar_modules.register("launcher_results", &launcher_results.scroller);
 
-        // `tray` never appears in a bar slot — it stays inside the
-        // control-panel popover (built above, next to the SNI tray) — but
-        // it's keyed here so `reconcile_widgets`' routing finds it the same
-        // way as any slot-driven widget container.
+        // `tray` never appears in a bar slot — it lives in the control-panel
+        // popover — but it's keyed here so `reconcile_widgets`' routing finds
+        // it the same way as any slot-driven widget container.
         let mut widget_containers: std::collections::HashMap<String, gtk4::Box> =
             std::collections::HashMap::new();
         widget_containers.insert("tray".to_string(), widget_tray_box);
-
-        bar_modules.for_each_in_slot(
-            &bar_slots.left,
-            |_, widget| workspace_row.append(widget),
-            |key| workspace_row.append(&bar::slots::widget_slot_container(&mut widget_containers, key)),
-        );
-        bar_modules.for_each_in_slot(
-            &bar_slots.centre,
-            |_, widget| center_area.append(widget),
-            |key| center_area.append(&bar::slots::widget_slot_container(&mut widget_containers, key)),
-        );
-        bar_modules.for_each_in_slot(
-            &bar_slots.right,
-            |_, widget| stats_box.append(widget),
-            |key| stats_box.append(&bar::slots::widget_slot_container(&mut widget_containers, key)),
-        );
 
         // ── Assemble ─────────────────────────────────────────────────────
         let widgets = view_output!();
         widgets.center_box.set_start_widget(Some(&workspace_row));
         widgets.center_box.set_center_widget(Some(&center_area));
         widgets.center_box.set_end_widget(Some(&stats_box));
-
-        // `drawer` slot (plan §2/§7/§11 Phase 6): the only slot list that
-        // isn't left/centre/right of the CenterBox — appended into the vbox
-        // row below it instead. Empty for every theme but spotlight, so
-        // `drawer_box` stays a childless, zero-height box for them (see the
-        // `window.breadbar > box > centerbox` selector note in theme.rs for
-        // why the vbox wrapper itself is safe for those two themes too).
         widgets.drawer_box.add_css_class("bread-drawer");
-        bar_modules.for_each_in_slot(
-            &bar_slots.drawer,
-            |_, widget| widgets.drawer_box.append(widget),
-            |key| {
-                widgets
-                    .drawer_box
-                    .append(&bar::slots::widget_slot_container(&mut widget_containers, key))
-            },
+
+        // Fill left/centre/right/drawer from `[bar.slots]`. Re-run verbatim
+        // by `App::rebuild_from_theme` on a live theme switch.
+        assemble_bar_slots(
+            bar_shell_theme.slots(),
+            &bar_modules,
+            &mut widget_containers,
+            &workspace_row,
+            &center_area,
+            &stats_box,
+            &widgets.drawer_box,
         );
         // Collapsed by default; `Overflow::Hidden` clips the results list
         // while its allocated height is below its natural content height,
@@ -1740,6 +1744,12 @@ impl SimpleComponent for App {
             widget_tray_section,
             widget_tray_sep,
             panels,
+            root: root.clone(),
+            bar_modules,
+            workspace_row: workspace_row.clone(),
+            center_area: center_area.clone(),
+            stats_box: stats_box.clone(),
+            drawer_box: widgets.drawer_box.clone(),
         };
 
         theme::apply();
@@ -1758,11 +1768,14 @@ impl SimpleComponent for App {
             // A no-op call under every theme but spotlight (see the
             // module's own doc comment).
             launcher_command::spawn(sender.clone());
-            // Optional (plan §10, Phase 2 item 6): live theme.toml/extra.css
-            // token reload, the same way a pywal palette change already
-            // hot-reloads via `apply_app_css`. One watch per process, so
-            // only the primary instance arms it.
-            theme::watch_hot_reload();
+            // Live theme.toml/extra.css/`active` reload (plan §10). One watch
+            // per process, so only the primary arms it; a CSS/geometry/slots
+            // change routes back here as `ShellThemeChanged` (the primary
+            // forwards it to every satellite).
+            let watch_sender = sender.clone();
+            theme::watch_hot_reload(move |theme| {
+                watch_sender.input(AppInput::ShellThemeChanged(Box::new(theme)));
+            });
         }
 
         // Screenshot mode primes these with sample content instead of the
@@ -2095,6 +2108,15 @@ impl SimpleComponent for App {
             AppInput::DismissPanels => {
                 self.panels.hide_all();
             }
+            AppInput::ShellThemeChanged(theme) => {
+                if self.primary {
+                    for (_, ctrl) in &self.satellites {
+                        ctrl.sender()
+                            .emit(AppInput::ShellThemeChanged(theme.clone()));
+                    }
+                }
+                self.rebuild_from_theme(&theme);
+            }
             AppInput::OpenLauncher => {
                 // Only the primary instance subscribes to the open command
                 // (`launcher_command::spawn`), but `self.monitor` here is
@@ -2305,6 +2327,36 @@ impl App {
         };
         self.wifi_lbl.set_label(&label);
         self.wifi_img.set_tooltip_text(Some(&label));
+    }
+
+    /// Apply a CSS + geometry + slots-only shell-theme change in place —
+    /// `AppInput::ShellThemeChanged`'s handler. `theme::shell_theme()` has
+    /// already been swapped by the watch; `theme` is the same value, passed
+    /// for the geometry read.
+    fn rebuild_from_theme(&mut self, theme: &bread_theme::shell::ShellTheme) {
+        // Any in-flight trail animation touches `workspace_row`, which
+        // `assemble_bar_slots` is about to empty.
+        self.workspace_trail.cancel();
+
+        apply_window_spec(&self.root, theme.window());
+
+        assemble_bar_slots(
+            theme.slots(),
+            &self.bar_modules,
+            &mut self.widget_containers,
+            &self.workspace_row,
+            &self.center_area,
+            &self.stats_box,
+            &self.drawer_box,
+        );
+
+        // Colours, radii, spring curves, the `light` axis + icon textures.
+        theme::reload();
+
+        // Workspace buttons re-read chip height / dot widths on rebuild; the
+        // style itself is fixed for this App (a style change is restart-gated).
+        // Not an animated rebuild — a theme switch is not a workspace switch.
+        self.rebuild_buttons(false);
     }
 
     fn rebuild_buttons(&mut self, animate: bool) {
