@@ -12,6 +12,7 @@ mod panel;
 mod screenshot;
 mod surface;
 mod theme;
+mod theme_widgets;
 mod widgets;
 
 use bread_launcher::gtk::ResultsList;
@@ -387,6 +388,14 @@ pub struct App {
     widget_tray_section: gtk4::Box,
     widget_tray_sep: gtk4::Separator,
 
+    // ── Widget sources (merged by `reconcile_all_widgets`) ───────────────
+    /// Specs pushed by the `bread` daemon (`widgets/client.rs`).
+    daemon_widget_specs: Vec<bread_shared::widget::WidgetSpec>,
+    /// `[[bar.widget]]` from the active shell theme + each one's last poll.
+    theme_widgets: Vec<bread_theme::shell::ThemeWidget>,
+    theme_widget_values: std::collections::HashMap<String, String>,
+    theme_widget_pollers: Vec<theme_widgets::PollHandle>,
+
     panels: panel::PanelSet,
 
     // ── Live theme switch ────────────────────────────────────────────────
@@ -420,6 +429,11 @@ pub enum AppInput {
     MediaUpdate(bar::media::MediaState),
     ControlPanelData(bar::control::ControlPanelData),
     WidgetsUpdate(Vec<bread_shared::widget::WidgetSpec>),
+    /// One `[[bar.widget]]` poll landed — store its value and re-render.
+    ThemeWidgetTick {
+        id: String,
+        value: String,
+    },
     ReconcileMonitors,
     DismissPanels,
     /// The active shell theme changed on disk (`theme::watch_hot_reload`),
@@ -1021,9 +1035,13 @@ impl SimpleComponent for App {
         panel_inner.append(&panel_header);
         panel_inner.append(&popover_caret());
 
+        // Each control-panel section is built here in full (its handles stay
+        // in scope for the signal wiring below), then appended to
+        // `panel_inner` in the active theme's `[panel].sections` order — a
+        // section whose name the theme drops is simply never parented. The
+        // header + caret above are fixed.
         let vol_row = build_slider_row("vol", 0.0, 1.5, 0.02);
         let panel_vol_slider = vol_row.1.clone();
-        panel_inner.append(&vol_row.0);
 
         let sink_section = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         sink_section.add_css_class("control-panel-section");
@@ -1035,18 +1053,19 @@ impl SimpleComponent for App {
         sink_section.append(&sink_header);
         sink_section.append(&sink_box);
         sink_section.set_visible(false);
-        panel_inner.append(&sink_section);
 
         let bright_row = build_slider_row("bl", 0.0, 1.0, 0.02);
         let panel_bright_slider = bright_row.1.clone();
-        panel_inner.append(&bright_row.0);
 
+        // `system` section = its header + the stats box, wrapped so the pair
+        // moves/hides as one unit under `[panel].sections`.
+        let sys_section = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         let sys_header = gtk4::Label::new(Some("SYSTEM"));
         sys_header.add_css_class("control-panel-header");
         sys_header.set_xalign(0.0);
         sys_header.set_margin_top(10);
-        panel_inner.append(&sys_header);
-        panel_inner.append(&system_stats_box);
+        sys_section.append(&sys_header);
+        sys_section.append(&system_stats_box);
 
         let power_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         power_row.add_css_class("power-row");
@@ -1072,7 +1091,6 @@ impl SimpleComponent for App {
             });
             power_row.append(&btn);
         }
-        panel_inner.append(&power_row);
 
         // SNI / Lua tray sit under the demo chrome so a single icon cannot
         // split the sliders from the power chips.
@@ -1083,7 +1101,6 @@ impl SimpleComponent for App {
         tray_box.set_halign(gtk4::Align::Center);
         tray_section.append(&tray_box);
         tray_section.set_visible(false);
-        panel_inner.append(&tray_section);
         let tray_sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
         tray_sep.set_visible(false);
 
@@ -1094,9 +1111,36 @@ impl SimpleComponent for App {
         widget_tray_box.set_halign(gtk4::Align::Center);
         widget_tray_section.append(&widget_tray_box);
         widget_tray_section.set_visible(false);
-        panel_inner.append(&widget_tray_section);
         let widget_tray_sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
         widget_tray_sep.set_visible(false);
+
+        // `[panel].sections` — order + membership of the control-panel body.
+        {
+            use gtk4::Widget;
+            let section_widgets: [(&str, Vec<Widget>); 6] = [
+                ("volume", vec![vol_row.0.clone().upcast()]),
+                ("output", vec![sink_section.clone().upcast()]),
+                ("brightness", vec![bright_row.0.clone().upcast()]),
+                ("system", vec![sys_section.clone().upcast()]),
+                ("power", vec![power_row.clone().upcast()]),
+                (
+                    "tray",
+                    vec![
+                        tray_section.clone().upcast(),
+                        widget_tray_section.clone().upcast(),
+                    ],
+                ),
+            ];
+            for name in &theme::shell_theme().panel().sections {
+                if let Some((_, widgets)) =
+                    section_widgets.iter().find(|(n, _)| n == name)
+                {
+                    for w in widgets {
+                        panel_inner.append(w);
+                    }
+                }
+            }
+        }
 
         // Hamburger button — same chip chrome as volume / wifi / battery.
         let hamburger_btn = gtk4::Button::with_label("☰");
@@ -1681,7 +1725,7 @@ impl SimpleComponent for App {
             });
         }
 
-        let model = App {
+        let mut model = App {
             monitor: monitor_name,
             primary: init.primary,
             satellites,
@@ -1743,6 +1787,10 @@ impl SimpleComponent for App {
             dropped_widget_warned: std::collections::HashSet::new(),
             widget_tray_section,
             widget_tray_sep,
+            daemon_widget_specs: Vec::new(),
+            theme_widgets: Vec::new(),
+            theme_widget_values: std::collections::HashMap::new(),
+            theme_widget_pollers: Vec::new(),
             panels,
             root: root.clone(),
             bar_modules,
@@ -1762,6 +1810,14 @@ impl SimpleComponent for App {
         if init.primary {
             bar::tray::spawn_watcher(sender.clone());
             widgets::client::spawn(sender.clone());
+            // `[[bar.widget]]` — theme-declared live widgets. Primary only,
+            // matching the Lua-widget path (`widgets::client::spawn` above);
+            // the containers exist on every bar from `assemble_bar_slots`,
+            // but only the primary polls and renders.
+            model.theme_widgets = theme::shell_theme().widgets().to_vec();
+            model.theme_widget_pollers =
+                theme_widgets::spawn_pollers(&model.theme_widgets, &sender);
+            model.reconcile_all_widgets();
             // `bread.command.box.open` (plan §7 phase 6c): one subscriber,
             // same reasoning as `widgets::client::spawn` above — a keybind
             // should focus ONE capsule, not every satellite monitor's.
@@ -1812,7 +1868,12 @@ impl SimpleComponent for App {
             _ => None,
         });
         let osd_window = if init.primary {
-            Some(osd::spawn(osd_sample))
+            let osd_cfg = theme::shell_theme().osd().clone();
+            Some(osd::spawn(
+                osd_sample,
+                &osd_cfg.enabled,
+                osd_cfg.dismiss_ms.max(1) as u64,
+            ))
         } else {
             None
         };
@@ -2098,7 +2159,15 @@ impl SimpleComponent for App {
                 self.rebuild_sinks(&data.sinks, &sender);
             }
             AppInput::WidgetsUpdate(specs) => {
-                self.reconcile_widgets(specs);
+                self.daemon_widget_specs = specs;
+                self.reconcile_all_widgets();
+            }
+            AppInput::ThemeWidgetTick { id, value } => {
+                let changed = self.theme_widget_values.get(&id) != Some(&value);
+                self.theme_widget_values.insert(id, value);
+                if changed {
+                    self.reconcile_all_widgets();
+                }
             }
             AppInput::ReconcileMonitors => {
                 if self.primary {
@@ -2115,7 +2184,7 @@ impl SimpleComponent for App {
                             .emit(AppInput::ShellThemeChanged(theme.clone()));
                     }
                 }
-                self.rebuild_from_theme(&theme);
+                self.rebuild_from_theme(&theme, &sender);
             }
             AppInput::OpenLauncher => {
                 // Only the primary instance subscribes to the open command
@@ -2178,6 +2247,22 @@ fn placement_alias(placement: bread_shared::widget::WidgetPlacement) -> &'static
 }
 
 impl App {
+    /// Merge the daemon's widget specs with the active theme's
+    /// `[[bar.widget]]` specs (each rendered from its last poll value) and
+    /// reconcile the containers from that combined list.
+    fn reconcile_all_widgets(&mut self) {
+        let mut specs = self.daemon_widget_specs.clone();
+        for tw in &self.theme_widgets {
+            let value = self
+                .theme_widget_values
+                .get(&tw.id)
+                .map(String::as_str)
+                .unwrap_or("");
+            specs.push(theme_widgets::to_spec(tw, value));
+        }
+        self.reconcile_widgets(specs);
+    }
+
     fn reconcile_widgets(&mut self, specs: Vec<bread_shared::widget::WidgetSpec>) {
         for container in self.widget_containers.values() {
             while let Some(child) = container.first_child() {
@@ -2333,7 +2418,11 @@ impl App {
     /// `AppInput::ShellThemeChanged`'s handler. `theme::shell_theme()` has
     /// already been swapped by the watch; `theme` is the same value, passed
     /// for the geometry read.
-    fn rebuild_from_theme(&mut self, theme: &bread_theme::shell::ShellTheme) {
+    fn rebuild_from_theme(
+        &mut self,
+        theme: &bread_theme::shell::ShellTheme,
+        sender: &ComponentSender<Self>,
+    ) {
         // Any in-flight trail animation touches `workspace_row`, which
         // `assemble_bar_slots` is about to empty.
         self.workspace_trail.cancel();
@@ -2352,6 +2441,19 @@ impl App {
 
         // Colours, radii, spring curves, the `light` axis + icon textures.
         theme::reload();
+
+        // `[[bar.widget]]` set may have changed — drop the old pollers
+        // (aborted on `Drop`), re-read the theme's widgets, restart the
+        // pollers, and re-render. Primary only, same as `init`.
+        if self.primary {
+            self.theme_widget_pollers.clear();
+            self.theme_widgets = theme.widgets().to_vec();
+            self.theme_widget_values
+                .retain(|id, _| self.theme_widgets.iter().any(|w| &w.id == id));
+            self.theme_widget_pollers =
+                theme_widgets::spawn_pollers(&self.theme_widgets, sender);
+            self.reconcile_all_widgets();
+        }
 
         // Workspace buttons re-read chip height / dot widths on rebuild; the
         // style itself is fixed for this App (a style change is restart-gated).
