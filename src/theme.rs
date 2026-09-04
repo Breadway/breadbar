@@ -260,14 +260,22 @@ thread_local! {
 }
 
 /// True if going from `cur` to `next` changes something the live path
-/// (`App::rebuild_from_theme`) cannot yet apply: the **workspace/clock style**
-/// (`modules()` — a widget-type swap: flip digits vs plain label, trail vs
-/// pill vs label-less dots) or the **launcher mode** (Overlay vs Embedded —
-/// the capsule drawer wiring). Those are read once at widget construction.
+/// (`App::rebuild_from_theme`) cannot yet apply, so breadbar re-execs:
+/// - **workspace/clock style** (`modules()` — a widget-type swap: flip digits
+///   vs plain label, trail vs pill vs label-less dots)
+/// - **launcher mode** (Overlay vs Embedded — the capsule drawer wiring)
+/// - **`[panel].sections`** — the control-panel body is assembled once in `init`
+/// - **`[osd].enabled`** — the volume/brightness watcher threads are started once
+///
 /// Everything else applies live: CSS via [`reload`], `[bar.window]` geometry
-/// via `apply_window_spec`, `[bar.slots]` order via `assemble_bar_slots`.
+/// via `apply_window_spec`, `[bar.slots]` order via `assemble_bar_slots`,
+/// `[[bar.widget]]` via the poller refresh, `[panel].min_width` /
+/// `[osd].dismiss_ms` via CSS / the next OSD.
 pub(crate) fn needs_restart(cur: &ShellTheme, next: &ShellTheme) -> bool {
-    cur.modules() != next.modules() || cur.launcher().mode != next.launcher().mode
+    cur.modules() != next.modules()
+        || cur.launcher().mode != next.launcher().mode
+        || cur.panel().sections != next.panel().sections
+        || cur.osd().enabled != next.osd().enabled
 }
 
 /// Wires `bread_theme::shell::watch()` (plan §10) — fires whenever the active

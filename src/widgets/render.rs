@@ -23,9 +23,9 @@ const DEFAULT_LABEL_MAX_WIDTH_CHARS: i32 = 32;
 /// Anything else goes through `icon.path` instead (see `bundled_or_path_icon`).
 fn bundled_icon(name: &str) -> Option<&'static str> {
     use crate::bar::stats::{
-        AC_POWER, BAT_HIGH, BAT_LOW, BAT_MID, BT_OFF, BT_ON, ICON_BRIGHTNESS, ICON_LOCK,
-        ICON_RESTART, ICON_SHUTDOWN, ICON_SLEEP, ICON_VOLUME, WIFI_MEDIUM, WIFI_OFF, WIFI_STRONG,
-        WIFI_WEAK,
+        AC_POWER, BAT_HIGH, BAT_LOW, BAT_MID, BT_OFF, BT_ON, ICON_BRIGHTNESS, ICON_CPU, ICON_LOCK,
+        ICON_RAM, ICON_RESTART, ICON_SHUTDOWN, ICON_SLEEP, ICON_VOLUME, WIFI_MEDIUM, WIFI_OFF,
+        WIFI_STRONG, WIFI_WEAK,
     };
     Some(match name {
         "ac-power" => AC_POWER,
@@ -44,6 +44,8 @@ fn bundled_icon(name: &str) -> Option<&'static str> {
         "shutdown" => ICON_SHUTDOWN,
         "volume" => ICON_VOLUME,
         "brightness" => ICON_BRIGHTNESS,
+        "cpu" => ICON_CPU,
+        "ram" => ICON_RAM,
         _ => return None,
     })
 }

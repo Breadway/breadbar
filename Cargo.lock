@@ -161,8 +161,8 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "bread-launcher"
-version = "0.7.7"
-source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.7#3577e0d312493218b5a0cccefbd821d9de87cbcf"
+version = "0.7.9"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.9#0bed05b153b5e97b183af456e5a31fd51e4b2424"
 dependencies = [
  "bread-utils",
  "gtk4",
@@ -171,8 +171,8 @@ dependencies = [
 
 [[package]]
 name = "bread-screenshots"
-version = "0.7.7"
-source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.7#3577e0d312493218b5a0cccefbd821d9de87cbcf"
+version = "0.7.9"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.9#0bed05b153b5e97b183af456e5a31fd51e4b2424"
 dependencies = [
  "anyhow",
  "bread-utils",
@@ -193,8 +193,8 @@ dependencies = [
 
 [[package]]
 name = "bread-theme"
-version = "0.7.7"
-source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.7#3577e0d312493218b5a0cccefbd821d9de87cbcf"
+version = "0.7.9"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.9#0bed05b153b5e97b183af456e5a31fd51e4b2424"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -207,8 +207,8 @@ dependencies = [
 
 [[package]]
 name = "bread-utils"
-version = "0.7.7"
-source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.7#3577e0d312493218b5a0cccefbd821d9de87cbcf"
+version = "0.7.9"
+source = "git+https://git.breadway.dev/Breadway/bread-ecosystem?tag=v0.7.9#0bed05b153b5e97b183af456e5a31fd51e4b2424"
 dependencies = [
  "bread-shared",
  "dirs 5.0.1",

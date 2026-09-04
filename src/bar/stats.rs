@@ -52,6 +52,8 @@ pub const ICON_SLEEP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/
 pub const ICON_RESTART: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Restart.svg"));
 pub const ICON_SHUTDOWN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Shutdown.svg"));
 pub const ICON_BT_SETTINGS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Bluetooth Settings.svg"));
+pub const ICON_CPU: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/CPU.svg"));
+pub const ICON_RAM: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/RAM Usage.svg"));
 
 #[derive(Debug)]
 pub struct Stats {

@@ -82,7 +82,12 @@ impl SampleKind {
 /// seeds the loop with one fixed sample event instead — screenshot mode
 /// only, so a capture never depends on (or is disrupted by) this machine's
 /// actual audio/backlight state.
-pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
+/// `enabled`: which OSD kinds the active shell theme's `[osd].enabled` turns
+/// on — `"volume"` / `"brightness"`. A kind left out gets no watcher (its
+/// hardware events are ignored). `dismiss_ms`: how long a shown OSD lingers
+/// (`[osd].dismiss_ms`). Both are ignored when `sample` is `Some` (screenshot
+/// mode always shows the one sampled kind).
+pub fn spawn(sample: Option<SampleKind>, enabled: &[String], dismiss_ms: u64) -> gtk4::Window {
     let (tx, rx) = mpsc::channel::<OsdEvent>(8);
 
     match sample {
@@ -90,14 +95,20 @@ pub fn spawn(sample: Option<SampleKind>) -> gtk4::Window {
             let _ = tx.try_send(kind.sample_event());
         }
         None => {
-            let tx1 = tx.clone();
-            std::thread::spawn(move || volume_watcher(tx1));
-            std::thread::spawn(move || brightness_watcher(tx));
+            if enabled.iter().any(|k| k == "volume") {
+                let tx1 = tx.clone();
+                std::thread::spawn(move || volume_watcher(tx1));
+            }
+            if enabled.iter().any(|k| k == "brightness") {
+                let tx1 = tx.clone();
+                std::thread::spawn(move || brightness_watcher(tx1));
+            }
+            drop(tx);
         }
     }
 
     let window = create_window();
-    relm4::spawn_local(run_osd(window.clone(), rx));
+    relm4::spawn_local(run_osd(window.clone(), rx, dismiss_ms.max(1)));
     window
 }
 
@@ -209,7 +220,7 @@ fn brightness_watcher(tx: mpsc::Sender<OsdEvent>) {
     }
 }
 
-async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
+async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>, dismiss_ms: u64) {
     let container = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     container.set_margin_top(10);
     container.set_margin_bottom(10);
@@ -268,7 +279,7 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>) {
         let dtok = dismiss_token.clone();
         let win = window.clone();
         relm4::spawn_local(async move {
-            gtk4::glib::timeout_future(Duration::from_millis(2000)).await;
+            gtk4::glib::timeout_future(Duration::from_millis(dismiss_ms)).await;
             if dtok.get() == token {
                 win.set_visible(false);
             }
