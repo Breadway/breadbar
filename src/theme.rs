@@ -276,6 +276,13 @@ pub(crate) fn needs_restart(cur: &ShellTheme, next: &ShellTheme) -> bool {
         || cur.launcher().mode != next.launcher().mode
         || cur.panel().sections != next.panel().sections
         || cur.osd().enabled != next.osd().enabled
+        // A horizontal<->vertical switch changes which internal `GtkBox`/
+        // `CenterBox` orientation the bar row's widgets need — a live
+        // structural rebuild `apply_window_spec`'s in-place geometry update
+        // alone can't do yet (`center_box`/slot containers aren't re-created
+        // by `rebuild_from_theme`), same class of gap as the style/mode
+        // cases above.
+        || cur.window().orientation() != next.window().orientation()
 }
 
 /// Wires `bread_theme::shell::watch()` (plan §10) — fires whenever the active
