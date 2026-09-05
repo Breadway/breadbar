@@ -178,15 +178,30 @@ pub fn spawn_join(ssid: String) {
     });
 }
 
-/// Save in breadcrumbs (if the CLI still accepts `add`) and connect with nmcli.
+/// Save in breadcrumbs and connect through it. The password never touches
+/// this process's argv or shell history: it's written to `breadcrumbs add`'s
+/// stdin (the same input path its interactive prompt uses when the flag is
+/// omitted), and the actual connect is delegated to `breadcrumbs join`,
+/// which reads the just-saved secret back out of config instead of taking
+/// it as a command-line argument at all — nmcli is never shelled directly
+/// here, since it has no non-interactive, non-argv way to accept a PSK.
 pub fn spawn_add_and_join(ssid: String, password: String) {
+    use tokio::io::AsyncWriteExt;
+    use std::process::Stdio;
+
     relm4::spawn(async move {
+        if let Ok(mut child) = tokio::process::Command::new("breadcrumbs")
+            .args(["add", &ssid])
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(format!("{password}\n").as_bytes()).await;
+            }
+            let _ = child.wait().await;
+        }
         let _ = tokio::process::Command::new("breadcrumbs")
-            .args(["add", &ssid, &password])
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("nmcli")
-            .args(["device", "wifi", "connect", &ssid, "password", &password])
+            .args(["join", &ssid])
             .output()
             .await;
     });
