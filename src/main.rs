@@ -16,7 +16,7 @@ mod theme_widgets;
 mod widgets;
 
 use bread_launcher::gtk::ResultsList;
-use bread_theme::shell::{ClockStyle, Exclusive, Keyboard, Width, WorkspaceStyle};
+use bread_theme::shell::{ClockStyle, Exclusive, Keyboard, Width, WindowOrientation, WorkspaceStyle};
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use hyprland::data::Workspace;
@@ -80,15 +80,41 @@ const DRAWER_MAX_HEIGHT_PX: i32 = 420;
 /// dock. Extracted to a pure function so this is unit-testable without a
 /// live layer-shell surface.
 fn exclusive_zone_for(spec: &bread_theme::shell::WindowSpec) -> i32 {
-    let anchor_margin = if spec.anchors.iter().any(|a| a == "bottom") {
-        spec.margin.bottom
-    } else {
-        spec.margin.top
-    };
-    match spec.exclusive {
-        Exclusive::Auto => spec.height + anchor_margin,
-        Exclusive::None => -1,
-        Exclusive::Px(px) => px,
+    match spec.orientation() {
+        WindowOrientation::Horizontal => {
+            let anchor_margin = if spec.anchors.iter().any(|a| a == "bottom") {
+                spec.margin.bottom
+            } else {
+                spec.margin.top
+            };
+            match spec.exclusive {
+                Exclusive::Auto => spec.height + anchor_margin,
+                Exclusive::None => -1,
+                Exclusive::Px(px) => px,
+            }
+        }
+        // Side dock: the reserved dimension is the bar's own thickness
+        // (`width`, validated `Px`-only for a vertical anchor set — see
+        // `resolve_window`) plus whichever side margin faces the desktop,
+        // not `height`/top-or-bottom, which mean nothing on this axis.
+        WindowOrientation::Vertical => {
+            let anchor_margin = if spec.anchors.iter().any(|a| a == "right") {
+                spec.margin.right
+            } else {
+                spec.margin.left
+            };
+            match spec.exclusive {
+                Exclusive::Auto => {
+                    let thickness = match spec.width {
+                        Width::Px(px) => px,
+                        Width::Fill => 0,
+                    };
+                    thickness + anchor_margin
+                }
+                Exclusive::None => -1,
+                Exclusive::Px(px) => px,
+            }
+        }
     }
 }
 
@@ -240,6 +266,73 @@ mod exclusive_zone_tests {
             40,
             Margin {
                 bottom: 12,
+                ..Margin::default()
+            },
+            Exclusive::Px(99),
+        );
+        assert_eq!(exclusive_zone_for(&s), 99);
+    }
+
+    fn vertical_spec(anchors: &[&str], width_px: i32, margin: Margin, exclusive: Exclusive) -> WindowSpec {
+        WindowSpec {
+            anchors: anchors.iter().map(|s| s.to_string()).collect(),
+            width: Width::Px(width_px),
+            // Meaningless on this axis (see `WindowSpec::orientation`) —
+            // an arbitrary, deliberately-not-width value would catch a
+            // regression that read the wrong field.
+            height: 999,
+            margin,
+            exclusive,
+            keyboard: bread_theme::shell::Keyboard::None,
+            layer: "top".to_string(),
+        }
+    }
+
+    #[test]
+    fn left_docked_auto_reserves_thickness_plus_left_margin() {
+        let s = vertical_spec(
+            &["left", "top", "bottom"],
+            56,
+            Margin {
+                top: 0,
+                left: 10,
+                right: 0,
+                bottom: 0,
+            },
+            Exclusive::Auto,
+        );
+        assert_eq!(exclusive_zone_for(&s), 66);
+    }
+
+    #[test]
+    fn right_docked_auto_reserves_thickness_plus_right_margin_not_left() {
+        let s = vertical_spec(
+            &["right", "top", "bottom"],
+            48,
+            Margin {
+                top: 0,
+                left: 12,
+                right: 8,
+                bottom: 0,
+            },
+            Exclusive::Auto,
+        );
+        assert_eq!(exclusive_zone_for(&s), 56);
+    }
+
+    #[test]
+    fn vertical_none_is_no_reservation() {
+        let s = vertical_spec(&["left", "top", "bottom"], 56, Margin::default(), Exclusive::None);
+        assert_eq!(exclusive_zone_for(&s), -1);
+    }
+
+    #[test]
+    fn vertical_explicit_px_wins_over_computed_auto_value() {
+        let s = vertical_spec(
+            &["left", "top", "bottom"],
+            56,
+            Margin {
+                left: 10,
                 ..Margin::default()
             },
             Exclusive::Px(99),
@@ -516,9 +609,18 @@ impl SimpleComponent for App {
         // `bar.window` (plan §2/§6) — window shape is data, not a closed
         // layout enum. Read once and reused below for the layer-shell setup
         // and (via `bar_height`, captured for the view! macro above) the
-        // root window's initial GTK height.
+        // root window's initial GTK height. A vertical side dock has no
+        // fixed height at all (it fills top-to-bottom via anchors, same as
+        // a horizontal bar fills left-to-right) — GTK's own default there
+        // is fine as a first-paint hint; `apply_window_spec` below sets the
+        // real fixed dimension (`width`, the dock's thickness) either way.
         let window_spec = theme::shell_theme().window().clone();
-        let bar_height = window_spec.height;
+        // Read once, reused everywhere below that needs to pack the bar's
+        // own row/segments top-to-bottom instead of left-to-right for a
+        // side dock (`center_box` and the three slot containers) — the
+        // window shape and the widget layout inside it must always agree.
+        let vertical_bar = window_spec.orientation() == WindowOrientation::Vertical;
+        let bar_height = if vertical_bar { -1 } else { window_spec.height };
 
         root.init_layer_shell();
         root.set_namespace(Some("breadbar"));
@@ -596,7 +698,15 @@ impl SimpleComponent for App {
         // button box, never the trail host.
         let workspace_trail = bar::workspaces::WorkspaceTrail::new();
         let workspace_box = workspace_trail.buttons.clone();
-        let workspace_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        // A slot container's own internal packing direction (left-to-right
+        // vs top-to-bottom) and cross-axis centring must follow the bar's
+        // orientation — see `vertical_bar` above.
+        let slot_orientation = if vertical_bar {
+            gtk4::Orientation::Vertical
+        } else {
+            gtk4::Orientation::Horizontal
+        };
+        let workspace_row = gtk4::Box::new(slot_orientation, 0);
         // `.bar-segment` (axis 3, daylight): a no-op class under every other
         // theme (theme.rs only ever emits a `.bar-segment` CSS rule when
         // `bar_border == "segmented"` — see its `segment_css` local) —
@@ -604,9 +714,15 @@ impl SimpleComponent for App {
         // below, so the Rust side never has to branch on the active theme
         // id to know which boxes are "the three segments".
         workspace_row.add_css_class("bar-segment");
-        workspace_row.set_margin_start(8);
-        workspace_row.set_valign(gtk4::Align::Center);
-        workspace_row.set_vexpand(false);
+        if vertical_bar {
+            workspace_row.set_margin_top(8);
+            workspace_row.set_halign(gtk4::Align::Center);
+            workspace_row.set_hexpand(false);
+        } else {
+            workspace_row.set_margin_start(8);
+            workspace_row.set_valign(gtk4::Align::Center);
+            workspace_row.set_vexpand(false);
+        }
         // `workspace_trail.overlay` is appended in the "Assemble" section
         // below, in the order `[bar.slots].left` names it — not here.
 
@@ -839,23 +955,34 @@ impl SimpleComponent for App {
         }.as_str()));
 
         // Center area: [media_widget · widgets · clock · widgets]
-        let center_area = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+        let center_area = gtk4::Box::new(slot_orientation, 12);
         center_area.add_css_class("center-area");
         center_area.add_css_class("bar-segment");
-        center_area.set_valign(gtk4::Align::Center);
-        center_area.set_vexpand(false);
+        if vertical_bar {
+            center_area.set_halign(gtk4::Align::Center);
+            center_area.set_hexpand(false);
+        } else {
+            center_area.set_valign(gtk4::Align::Center);
+            center_area.set_vexpand(false);
+        }
         // `media_widget`/`clock_box` and any `widget:*` entries interleaved
         // around them are all appended in "Assemble" below, in the exact
         // order `[bar.slots].centre` names them.
 
-        // ── Stats box (right side) ───────────────────────────────────────
+        // ── Stats box (right side, or trailing edge of a vertical dock) ────
         // Demo order: [vol 64] [wifi] [bat 83] [☰]
-        let stats_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+        let stats_box = gtk4::Box::new(slot_orientation, 2);
         stats_box.add_css_class("stats-box");
         stats_box.add_css_class("bar-segment");
-        stats_box.set_margin_end(2);
-        stats_box.set_valign(gtk4::Align::Center);
-        stats_box.set_vexpand(false);
+        if vertical_bar {
+            stats_box.set_margin_bottom(2);
+            stats_box.set_halign(gtk4::Align::Center);
+            stats_box.set_hexpand(false);
+        } else {
+            stats_box.set_margin_end(2);
+            stats_box.set_valign(gtk4::Align::Center);
+            stats_box.set_vexpand(false);
+        }
         // Also appended in "Assemble" — before the right slot's modules,
         // preserving its fixed position (left of the stats modules)
         // whatever `[bar.slots].right` contains.
@@ -1287,6 +1414,14 @@ impl SimpleComponent for App {
 
         // ── Assemble ─────────────────────────────────────────────────────
         let widgets = view_output!();
+        // A side dock stacks start/center/end (workspaces/clock/stats)
+        // top-to-bottom instead of left-to-right — `CenterBox` supports
+        // both natively via `Orientable`, so this is the one place the
+        // bar row itself needs to know its own orientation; every slot
+        // container packed into it already picked `slot_orientation` above.
+        if vertical_bar {
+            widgets.center_box.set_orientation(gtk4::Orientation::Vertical);
+        }
         widgets.center_box.set_start_widget(Some(&workspace_row));
         widgets.center_box.set_center_widget(Some(&center_area));
         widgets.center_box.set_end_widget(Some(&stats_box));
