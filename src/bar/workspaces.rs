@@ -142,13 +142,14 @@ pub fn make_button(
     btn.set_halign(gtk4::Align::Center);
     btn.set_vexpand(false);
     btn.set_hexpand(false);
-    // `crate::theme::approved_chip_height`, not `tokens().chip_height()`:
-    // the latter is the stale pre-demo `breadbar::CHIP_HEIGHT` token (32
-    // for this Trail/Pill style's theme) and, as a hard `set_size_request`
-    // minimum, would out-rank the CSS `min-height` the demo actually wants
-    // (26px Trail / 22px Pill) — see that function's doc comment.
-    let style = crate::theme::shell_theme().modules().workspaces.style;
-    btn.set_size_request(-1, crate::theme::approved_chip_height(style) as i32);
+    // `tokens().chip_height()`, not `crate::theme::approved_chip_height`:
+    // bread-theme's `resolve_tokens` (ECO-17) now bakes the per-style demo
+    // number (26px Trail / 22px Pill) into the resolved token itself
+    // whenever a theme doesn't set `chip_height`, so the two can no longer
+    // disagree — reading the token directly also picks up a theme's own
+    // explicit override, which `approved_chip_height` deliberately ignored.
+    let chip_height = crate::theme::shell_theme().tokens().chip_height();
+    btn.set_size_request(-1, chip_height as i32);
     if let Some(child) = btn.child() {
         child.set_halign(gtk4::Align::Center);
         child.set_valign(gtk4::Align::Center);
