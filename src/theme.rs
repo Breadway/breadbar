@@ -52,15 +52,6 @@ pub fn set_shell_theme(theme: ShellTheme) {
     SHELL_THEME.with(|cell| *cell.borrow_mut() = Rc::new(theme));
 }
 
-/// One bar-chip height per row (vol/wifi/battery/menu/media, plus the
-/// Trail/Pill workspace pills) — the same value `bread_theme::shell`'s CSS
-/// derivation bakes into `min-height`, re-exposed here for
-/// `bar::workspaces`' `set_size_request` GTK minimum, which a CSS
-/// `min-height` alone cannot out-rank.
-pub fn approved_chip_height(style: bread_theme::shell::WorkspaceStyle) -> i64 {
-    bread_theme::shell::chip_height(style)
-}
-
 /// Returns the ink colour for icon tinting in the stats bar — the same
 /// luminance-picked colour the bar's text uses, so icons stay legible on the
 /// bar whatever lightness pywal gives the background.
