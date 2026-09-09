@@ -25,7 +25,7 @@ pub const WIFI_MEDIUM: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 pub const WIFI_WEAK: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Weak.svg"));
 pub const WIFI_OFF: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/WiFi Disconnect.svg"));
 
-/// Adwaita symbolic names — these are drawn for 16px status bars, not our
+/// Adwaita symbolic names: these are drawn for 16px status bars, not our
 /// hand-cropped Lucide arcs.
 pub const WIFI_ICON_EXCELLENT: &str = "network-wireless-signal-excellent-symbolic";
 pub const WIFI_ICON_GOOD: &str = "network-wireless-signal-good-symbolic";

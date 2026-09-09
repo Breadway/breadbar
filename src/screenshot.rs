@@ -1,9 +1,9 @@
 //! `--screenshot` CLI mode: render a specific view, capture it via
-//! `bread-screenshots`, then exit — driven by `bread-ecosystem`'s
+//! `bread-screenshots`, then exit; driven by `bread-ecosystem`'s
 //! `bread-capture` orchestrator, or run standalone for one-off captures.
 //!
 //! Capture waits on GTK's `map` signal rather than a blind sleep before
-//! grabbing pixels — the surface (or, for popover views, the popover itself)
+//! grabbing pixels: the surface (or, for popover views, the popover itself)
 //! genuinely isn't on screen yet before that fires, so a fixed delay would
 //! either race a slow first paint or pad every fast one for nothing.
 //!
@@ -12,7 +12,7 @@
 //! surfaces, not just the bar: the bar itself and its popovers (this
 //! module, anchored off `root`), plus the standalone notification and OSD
 //! windows (`notifications::spawn`/`osd::spawn`, built and primed with
-//! sample data by `main.rs` before `dispatch` runs — see [`Handles`]).
+//! sample data by `main.rs` before `dispatch` runs; see [`Handles`]).
 
 use bread_utils::screenshot_cli::{validate_pair, DEFAULT_HEIGHT, DEFAULT_WIDTH, SETTLE_DELAY};
 use clap::Parser;
@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// Settle time for views whose content depends on a live-data popover load
-/// (connectivity's wifi/bluetooth scan, control-panel sliders) — capturing
+/// (connectivity's wifi/bluetooth scan, control-panel sliders): capturing
 /// any sooner leaves placeholder dashes/"Scanning…" instead of real content.
 const LIVE_DATA_SETTLE_DELAY: Duration = Duration::from_millis(2_200);
 
@@ -29,7 +29,7 @@ const LIVE_DATA_SETTLE_DELAY: Duration = Duration::from_millis(2_200);
 /// `popup()` synchronously from inside the root window's `map` handler
 /// produces a popover that reports itself `map`ped but never actually paints
 /// (confirmed by an independent `grim` capture taken mid-sequence, showing no
-/// popover at all) — presumably the parent widget's own allocation isn't
+/// popover at all): presumably the parent widget's own allocation isn't
 /// settled yet at that exact point. Giving the initial layout pass a beat to
 /// finish first is what makes it actually render.
 const PRE_POPUP_DELAY: Duration = SETTLE_DELAY;
@@ -45,7 +45,7 @@ const KNOWN_VIEWS: &[&str] = &[
     "osd-volume",
     "osd-brightness",
     "wifi-add-dialog",
-    // Theme 04/spotlight's capsule (plan §6b) — see `dispatch`'s two new
+    // Theme 04/spotlight's capsule (plan §6b): see `dispatch`'s two new
     // match arms. "capsule-collapsed" captures the same region "bar"
     // always has (bar_capture_height already reflects the active theme's
     // own window height/margin); it exists as its own name purely so a
@@ -53,7 +53,7 @@ const KNOWN_VIEWS: &[&str] = &[
     // capsule, collapsed" under spotlight specifically.
     "capsule-collapsed",
     "capsule-expanded",
-    // Phase 6c: query sections and the `=` calc mode — see `dispatch`'s
+    // Phase 6c: query sections and the `=` calc mode; see `dispatch`'s
     // two new match arms below. "capsule-expanded" already exercises the
     // search-state width/radius change (item E: it types a query, which
     // now also drives `open_fn`'s `.searching` root class + capsule-width
@@ -74,13 +74,13 @@ pub struct Cli {
     #[arg(long)]
     pub output: Option<PathBuf>,
 
-    /// Capture canvas width — matches the isolated compositor's output width
+    /// Capture canvas width: matches the isolated compositor's output width
     /// (`bread-capture --isolate-width`) so the geometry passed to `grim`
     /// doesn't depend on querying anything at capture time.
     #[arg(long, default_value_t = DEFAULT_WIDTH)]
     pub width: u32,
 
-    /// Capture canvas height — see `width`.
+    /// Capture canvas height: see `width`.
     #[arg(long, default_value_t = DEFAULT_HEIGHT)]
     pub height: u32,
 
@@ -116,7 +116,7 @@ impl Cli {
 }
 
 /// Every widget/window `dispatch` might need, gathered by `main.rs`'s
-/// `init()` — most of these are plain locals there that never otherwise
+/// `init()`: most of these are plain locals there that never otherwise
 /// outlive `init()` (never stored on `App`), so they have to be cloned out
 /// before dispatch time same as `control_popover` always was.
 pub struct Handles {
@@ -128,16 +128,16 @@ pub struct Handles {
     pub media_widget: gtk4::Box,
     pub media_track_lbl: gtk4::Label,
     /// Already built and primed with sample content by `main.rs` (via
-    /// `notifications::spawn(Some(kind))`) when `req.view` calls for it —
+    /// `notifications::spawn(Some(kind))`) when `req.view` calls for it:
     /// `None` otherwise.
     pub notification_window: Option<gtk4::Window>,
     /// Same deal as `notification_window`, via `osd::spawn(Some(kind))`.
     pub osd_window: Option<gtk4::Window>,
-    /// Theme 04/spotlight's capsule centre module — see the
+    /// Theme 04/spotlight's capsule centre module: see the
     /// "capsule-expanded" view, which focuses it and types a query to
     /// drive the drawer open before capturing.
     pub launcher_entry: gtk4::Entry,
-    /// The `drawer` slot's own container — read back after the open
+    /// The `drawer` slot's own container: read back after the open
     /// animation settles so "capsule-expanded"'s capture height matches
     /// however tall the results actually grew, rather than a guessed
     /// constant.
@@ -154,13 +154,13 @@ fn bar_capture_height() -> i32 {
 
 /// Y-origin for the `bar`/`capsule-collapsed` capture rectangle (axis 2,
 /// daylight). Every theme through spotlight anchors top, so the bar's own
-/// pixels always start at the canvas's own top edge (`y = 0`) — that's what
+/// pixels always start at the canvas's own top edge (`y = 0`): that's what
 /// every existing call site here hardcoded. A bottom-anchored bar's real
 /// on-screen footprint is instead the LAST `bar_capture_height()` pixels of
 /// the canvas; capturing from `y = 0` unchanged grabs the isolated
 /// compositor's empty background/gradient near the top of the output and
 /// misses the actual bar entirely (confirmed empirically while verifying
-/// this task — `bread-capture --app breadbar --view bar` under
+/// this task: `bread-capture --app breadbar --view bar` under
 /// `BREAD_SHELL_THEME=daylight` returned a plain gradient with no dock in
 /// frame at all, before this fix). `canvas_height` is the capture canvas's
 /// own height (`req.height`, i.e. `--height`/`isolate_height`), not this
@@ -202,30 +202,30 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
         }
         "media-popover" => {
             // Real media state only shows the widget/text when something's
-            // actually playing (see AppInput::MediaUpdate) — an automated
+            // actually playing (see AppInput::MediaUpdate): an automated
             // run has nothing playing, so fake enough of it directly on the
             // widgets to get a representative capture.
             handles.media_widget.set_visible(true);
             handles.media_widget.add_css_class("playing");
-            handles.media_track_lbl.set_text("Sample Track — Sample Artist");
+            handles.media_track_lbl.set_text("Sample Track - Sample Artist");
             open_panel_on_root_map(root, handles.media_panel, SETTLE_DELAY, output, width, height);
         }
         "notification" | "notification-critical" => {
             let Some(window) = handles.notification_window else {
-                eprintln!("breadbar: internal error — no notification window built for '{}'", req.view);
+                eprintln!("breadbar: internal error: no notification window built for '{}'", req.view);
                 std::process::exit(1);
             };
             capture_standalone_window(window, output, width, height);
         }
         "osd-volume" | "osd-brightness" => {
             let Some(window) = handles.osd_window else {
-                eprintln!("breadbar: internal error — no OSD window built for '{}'", req.view);
+                eprintln!("breadbar: internal error: no OSD window built for '{}'", req.view);
                 std::process::exit(1);
             };
             capture_standalone_window(window, output, width, height);
         }
         "capsule-collapsed" => {
-            // Identical to "bar" — see KNOWN_VIEWS's doc comment on why
+            // Identical to "bar": see KNOWN_VIEWS's doc comment on why
             // this has its own name anyway.
             root.connect_map(move |_| {
                 let output = output.clone();
@@ -240,7 +240,7 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
             // main.rs's capsule wiring do the rest: `open_fn` runs,
             // `results.set_query` filters, and `animate_drawer_height`
             // grows `drawer_box`). Capture height is bar height + however
-            // tall the drawer actually settled, not a hardcoded guess —
+            // tall the drawer actually settled, not a hardcoded guess:
             // this stays correct even if `dot_widths`/font/entry-count
             // numbers change later.
             let entry = handles.launcher_entry;
@@ -267,7 +267,7 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
             });
         }
         "capsule-sections" => {
-            // Focus with NO query typed — the idle browse view
+            // Focus with NO query typed: the idle browse view
             // (`ResultsList::new`'s "Recent"/"Apps" header rows are visible
             // from construction; `set_query` is what would hide them, and
             // it's never called here). Same settle timing as

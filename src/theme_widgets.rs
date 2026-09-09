@@ -1,7 +1,7 @@
 //! Theme-declared bar widgets (`[[bar.widget]]`).
 //!
-//! A shell theme can declare a small live widget — a poll command plus a
-//! node tree — without a Lua module. This module maps
+//! A shell theme can declare a small live widget (a poll command plus a
+//! node tree) without a Lua module. This module maps
 //! `bread_theme::shell::ThemeWidget` onto the exact same
 //! `bread_shared::widget::WidgetSpec` the daemon path produces, so
 //! `App::reconcile_widgets` renders both through one code path
@@ -17,7 +17,7 @@ use relm4::ComponentSender;
 
 use crate::{App, AppInput};
 
-/// Aborts its poll task when dropped — a theme reload replaces the whole set.
+/// Aborts its poll task when dropped; a theme reload replaces the whole set.
 pub struct PollHandle(tokio::task::JoinHandle<()>);
 
 impl Drop for PollHandle {

@@ -16,19 +16,19 @@ use crate::{bind_layer_monitor, theme};
 
 /// Outside this rectangle's local x/y span, the dismiss window's own real
 /// size (Wayland clips an input region to the surface's actual bounds, same
-/// as `surface::set_hit_region`'s empty-region trick) — big enough to cover
+/// as `surface::set_hit_region`'s empty-region trick): big enough to cover
 /// any realistic monitor layout, including a negative-origin secondary
 /// output (`hyprctl layers -j` reported `x: -1080` for this machine's own
 /// DVI-I-1). Centered on the origin so it's safe regardless of which way a
 /// hole's coordinates end up signed.
 const HOLE_CANVAS_SPAN: i32 = 20_000;
 
-/// A boxed, ref-counted, optionally-unset click-away callback — see
+/// A boxed, ref-counted, optionally-unset click-away callback: see
 /// `PanelSet::on_dismiss`'s own doc comment.
 type DismissCallback = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
-/// The capsule-column hole punched in the dismiss scrim's input region —
-/// local x, y, width, height — see `PanelSet::dismiss_hole`'s own doc
+/// The capsule-column hole punched in the dismiss scrim's input region
+/// (local x, y, width, height); see `PanelSet::dismiss_hole`'s own doc
 /// comment. Shared (not just passed by value) so `make_dismiss`'s
 /// `connect_map` hook and every `show_capsule_dismiss`/`reset_dismiss_margin`
 /// call agree on the current value.
@@ -43,16 +43,16 @@ pub struct PanelSet {
     // Theme 04/spotlight's capsule (plan §7 phase 6c): an extra click-away
     // callback invoked alongside the popover-dismiss path below, so the
     // SAME `breadbar-dismiss` surface/click-catcher also collapses the
-    // capsule's drawer — see `show_capsule_dismiss`/`hide_dismiss` and
+    // capsule's drawer; see `show_capsule_dismiss`/`hide_dismiss` and
     // `set_on_dismiss`. `None` under every other theme (never set).
     on_dismiss: DismissCallback,
     // The rectangle (local to `dismiss`'s own surface coordinates) that
     // should stay click-through even while the scrim otherwise covers the
-    // screen — `show_capsule_dismiss`'s own doc comment explains why this
+    // screen: `show_capsule_dismiss`'s own doc comment explains why this
     // exists and how it's computed. `None` = no hole, the plain
     // margin-based popover behaviour applies instead. Read inside
     // `dismiss`'s own `connect_map` (the input region can only be set once
-    // the surface is real — see `surface::set_hit_region`'s doc comment for
+    // the surface is real; see `surface::set_hit_region`'s doc comment for
     // the same constraint) and, for the case where `dismiss` is already
     // mapped from a prior show, applied immediately too.
     dismiss_hole: DismissHole,
@@ -96,7 +96,7 @@ impl PanelSet {
         self.hide_panels();
         // A prior capsule search (see `show_capsule_dismiss`) may have left
         // the shared dismiss surface's top margin pushed down past its
-        // popover-shaped default — restore it before this popover uses it.
+        // popover-shaped default: restore it before this popover uses it.
         self.reset_dismiss_margin();
         // Dismiss first so the panel maps above it (same Overlay layer).
         self.dismiss.set_visible(true);
@@ -136,7 +136,7 @@ impl PanelSet {
     /// result row instead of forwarding them.
     ///
     /// Before this fix, that safety was bought with a `set_margin` that
-    /// pushed the scrim's *entire width* down by `top_margin` — leaving a
+    /// pushed the scrim's *entire width* down by `top_margin`: leaving a
     /// full-screen-wide dead band above it (up to ~470px on a 1200px-tall
     /// display) where a click neither dismissed nor hit anything else, the
     /// "it only sometimes is dismissed when you click somewhere else"
@@ -243,11 +243,11 @@ fn make_dismiss(monitor: &str, hole: &DismissHole) -> gtk4::Window {
     // Overlay with the panels, but mapped first so they sit above it.
     // Top margin keeps the island's chips clickable.
     //
-    // NOTE — deliberate, not a bug: this surface's top margin is 8px less
+    // NOTE (deliberate, not a bug): this surface's top margin is 8px less
     // than `breadbar-panel`'s (see `make_panel` above / `[surfaces.*]` in
     // the active theme). The panels start 8px lower than the dismiss
     // scrim's clickable region. This predates Phase 2 and is preserved
-    // exactly for pixel-identical rendering — do not "fix" this gap.
+    // exactly for pixel-identical rendering: do not "fix" this gap.
     crate::surface::apply(&window, "breadbar-dismiss");
     window.set_exclusive_zone(-1);
     window.set_keyboard_mode(KeyboardMode::None);
@@ -262,8 +262,8 @@ fn make_dismiss(monitor: &str, hole: &DismissHole) -> gtk4::Window {
     theme::bind_output(&window, monitor);
     window.set_visible(false);
     // The underlying `GdkSurface` (and therefore `window.surface()`, which
-    // `apply_dismiss_hole` needs) doesn't exist until the window is mapped
-    // — same constraint `surface::set_hit_region` documents. This surface
+    // `apply_dismiss_hole` needs) doesn't exist until the window is mapped:
+    // same constraint `surface::set_hit_region` documents. This surface
     // gets hidden/shown repeatedly (every popover open/close, every
     // capsule search), and GTK4 unmaps-then-remaps a toplevel each time
     // its visibility toggles off then on, so re-applying here on every
@@ -277,7 +277,7 @@ fn make_dismiss(monitor: &str, hole: &DismissHole) -> gtk4::Window {
 }
 
 /// Sets `dismiss`'s click-away input region to "everywhere" minus `hole`
-/// (if any) — see `PanelSet::show_capsule_dismiss`'s doc comment for why.
+/// (if any): see `PanelSet::show_capsule_dismiss`'s doc comment for why.
 /// Only takes effect once `dismiss.surface()` is real, i.e. the window is
 /// currently mapped; harmlessly no-ops otherwise (the `connect_map` hook in
 /// `make_dismiss` re-runs this the moment that stops being true).
@@ -300,7 +300,7 @@ fn apply_dismiss_hole(dismiss: &gtk4::Window, hole: &DismissHole) {
             } else {
                 // Punching the hole failed for some reason (an invalid
                 // cairo status on a plain rectangle op, effectively
-                // unreachable in practice) — falling back to `None` (the
+                // unreachable in practice): falling back to `None` (the
                 // protocol's documented "no input region set: whole
                 // surface hits") is still safer than leaving whatever
                 // region predates this call in place, which could be

@@ -8,7 +8,7 @@ use tokio::sync::mpsc::Receiver;
 use super::{history, Action, Expire, NotifEvent, Urgency, INLINE_REPLY_KEY};
 
 type Cards = Rc<RefCell<HashMap<u32, gtk4::Box>>>;
-// Bumped every time an id gets a (re)placed card — an auto-dismiss timer
+// Bumped every time an id gets a (re)placed card: an auto-dismiss timer
 // scheduled for an earlier Show captures the generation it was scheduled
 // under, and checks it's still current before dismissing. Without this, a
 // notification that replaces an existing id (replaces_id) doesn't cancel
@@ -23,7 +23,7 @@ mod close_reason {
     pub const CLOSE_NOTIFICATION_CALL: u32 = 3;
 }
 
-/// Builds the notification window synchronously — so a caller (screenshot
+/// Builds the notification window synchronously: so a caller (screenshot
 /// mode in particular) has a real window to hook `connect_map` on before
 /// `run`'s event loop, which needs an async `zbus::Connection` handshake in
 /// the real path, ever starts.
@@ -38,11 +38,11 @@ pub fn build_window() -> (gtk4::Window, gtk4::Box) {
 
     // NOTIFICATION INTERACTION #B: the surface (and `window.surface()`)
     // doesn't exist until map, same constraint `surface::click_through`
-    // documents — this is the initial-region counterpart of that hook,
+    // documents: this is the initial-region counterpart of that hook,
     // recomputing against whatever's already in `cards_box` at the moment
     // the toast becomes visible (empty on the very first map, but this
-    // window remaps on every reappearance after being fully dismissed —
-    // see `dismiss`'s `window.set_visible(false)` — and by the time a new
+    // window remaps on every reappearance after being fully dismissed
+    // (see `dismiss`'s `window.set_visible(false)`), and by the time a new
     // notification's `Show` handler calls `set_visible(true)` again, its
     // card is already a child of `cards_box`). `refresh_hit_region`'s own
     // per-event calls below are the steady-state path; this is the
@@ -56,7 +56,7 @@ pub fn build_window() -> (gtk4::Window, gtk4::Box) {
 }
 
 /// `conn`: `None` in screenshot mode, which skips real D-Bus registration
-/// entirely (see `super::spawn`) — there's no external client that needs to
+/// entirely (see `super::spawn`): there's no external client that needs to
 /// reach a screenshot-only instance, and registering the well-known name
 /// would just race the real breadbar for it. `NotificationClosed` is a
 /// spec-mandated signal for real clients only, so it's simply not emitted
@@ -103,7 +103,7 @@ pub async fn run(
                 cards_box.prepend(&card);
                 cards.borrow_mut().insert(id, card.clone());
                 // Re-pin to the focused output whenever the stack goes from
-                // empty to shown — see `theme::pin_focused_output`. Skipped
+                // empty to shown: see `theme::pin_focused_output`. Skipped
                 // while a toast is already up so an in-flight batch stays
                 // put rather than re-pinning a live layer surface.
                 if !window.is_visible() {
@@ -112,7 +112,7 @@ pub async fn run(
                 window.set_visible(true);
                 // ANIMATION WORK #6: spring the new card's own height in
                 // from 0 to its natural content height instead of it
-                // appearing at full size in one frame — since it's
+                // appearing at full size in one frame: since it's
                 // `prepend`ed (the vertical box's first child), the
                 // existing cards below get pushed down smoothly as this
                 // grows, rather than jumping straight to their new
@@ -132,7 +132,7 @@ pub async fn run(
 
                 // `Expire::Never` (expire_timeout=0, or a critical-urgency
                 // notification with no explicit timeout) schedules no timer
-                // at all — it persists until an explicit CloseNotification.
+                // at all: it persists until an explicit CloseNotification.
                 if let Expire::After(duration) = expire {
                     let cards_clone = cards.clone();
                     let cards_box_clone = cards_box.clone();
@@ -170,7 +170,7 @@ pub async fn run(
 /// caller (auto-expire, `CloseNotification`, an action/reply invocation,
 /// and the card's own dismiss button) goes through this one function, so
 /// this is also the one place that needs to recompute the hit region
-/// (NOTIFICATION INTERACTION #B) on removal — a card gone from `cards_box`
+/// (NOTIFICATION INTERACTION #B) on removal: a card gone from `cards_box`
 /// but still counted in the input region would leave a dead click-through
 /// hole where a live button used to be.
 fn dismiss(cards_box: &gtk4::Box, window: &gtk4::Window, cards: &Cards, id: u32) -> bool {
@@ -190,7 +190,7 @@ fn dismiss(cards_box: &gtk4::Box, window: &gtk4::Window, cards: &Cards, id: u32)
 /// directly over the connection rather than through the zbus interface
 /// macro's generated helper, since the dismiss decision happens here in the
 /// popup task, not inside `NotifServer`'s own method bodies. No-op when
-/// `conn` is `None` (screenshot mode — see `run`'s doc comment).
+/// `conn` is `None` (screenshot mode; see `run`'s doc comment).
 async fn emit_closed(conn: &Option<zbus::Connection>, id: u32, reason: u32) {
     let Some(conn) = conn else { return };
     let result = conn
@@ -214,10 +214,10 @@ async fn emit_closed(conn: &Option<zbus::Connection>, id: u32, reason: u32) {
 /// it appearing at full size in one frame. Measured AFTER `card` is already
 /// a child of `cards_box` (the caller's job), not before: an unparented
 /// widget isn't rooted under this window's style provider chain yet, so its
-/// `measure()` wouldn't see the real `.notification-card` padding/border —
+/// `measure()` wouldn't see the real `.notification-card` padding/border:
 /// only a widget that's actually in the tree gets an accurate natural size.
 ///
-/// One-shot and self-contained — no cancellation bookkeeping, unlike
+/// One-shot and self-contained: no cancellation bookkeeping, unlike
 /// `animate_drawer_height`/`animate_osd_fill`'s own `Rc<RefCell<..>>`
 /// tick-id storage: a card's entrance can't be interrupted by a second one,
 /// since a same-id replacement tears the whole card down and builds a
@@ -240,23 +240,23 @@ thread_local! {
     // card's entrance (`spring_in_card` above) or the stack's push-down
     // reflow could still be moving a button. One process-wide toast window
     // (this crate registers a single `org.freedesktop.Notifications` name),
-    // so a thread-local — not a field threaded through every call site — is
+    // so a thread-local, not a field threaded through every call site, is
     // enough, same reasoning as `theme::SHELL_THEME_MONITOR`.
     static HIT_TRACKER: RefCell<Option<gtk4::TickCallbackId>> = const { RefCell::new(None) };
 }
 
 /// How long after a card set/layout change to keep recomputing the hit
-/// region every frame — long enough to cover both `spring_in_card`'s
+/// region every frame: long enough to cover both `spring_in_card`'s
 /// `CARD_GROW_MS` and the CSS `notif-in` keyframe's 0.45s slide-in (see
 /// `theme.rs`'s `.notification-card` rule), whichever finishes last.
 const HIT_TRACK_MS: f64 = 700.0;
 
 /// Recomputes the toast surface's clickable input region immediately, then
-/// keeps recomputing it every frame for `HIT_TRACK_MS` — covering both a
+/// keeps recomputing it every frame for `HIT_TRACK_MS`: covering both a
 /// newly-shown card's own entrance and the stack's push-down settle, either
 /// of which can still be moving a button on the frame this is called.
 /// Called any time the card set could have changed: shown, dismissed
-/// (including via the new dismiss button — see `dismiss` above), or
+/// (including via the new dismiss button; see `dismiss` above), or
 /// expired. Cancels any previous tracking run first, so a rapid burst of
 /// notifications doesn't accumulate overlapping tick callbacks.
 fn refresh_hit_region(window: &gtk4::Window, cards_box: &gtk4::Box) {
@@ -293,7 +293,7 @@ fn apply_hit_region(window: &gtk4::Window, cards_box: &gtk4::Box) {
 
 /// Depth-first walk of `root`'s widget tree collecting every `GtkButton`
 /// (action buttons, the reply-send button, the dismiss button) and
-/// `GtkEntry` (the inline-reply field) — the only things on a card a user
+/// `GtkEntry` (the inline-reply field): the only things on a card a user
 /// should ever be able to click into. Everything else (the summary/body
 /// labels, the card's own background) stays click-through, same as the
 /// blanket empty region did before NOTIFICATION INTERACTION #B. Walking
@@ -318,9 +318,9 @@ fn create_window() -> gtk4::Window {
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-notif"));
     crate::surface::apply(&window, "breadbar-notif");
-    // Toasts are purely informational — they never grab keyboard focus,
+    // Toasts are purely informational: they never grab keyboard focus,
     // full stop, regardless of what's clickable on them (KeyboardMode::None
-    // stays; do NOT change this — see the NOTIFICATION INTERACTION #B task
+    // stays; do NOT change this; see the NOTIFICATION INTERACTION #B task
     // note). Historically ("stop toast popups from stealing focus or
     // blocking clicks") that also meant a fully empty input region: every
     // pointer event passed straight through to whatever's underneath, but
@@ -330,7 +330,7 @@ fn create_window() -> gtk4::Window {
     // `connect_map` and from `refresh_hit_region` below, any time the card
     // set or layout could have changed) replaces the old blanket
     // `surface::click_through` empty region with the union of just those
-    // widgets' own rectangles — everywhere else on the surface stays
+    // widgets' own rectangles: everywhere else on the surface stays
     // click-through, same as before. A toast that genuinely has none of
     // them yet (`cards_box` empty) still gets the same all-empty region
     // `click_through` set, since a rectangle union over zero widgets is
@@ -366,7 +366,7 @@ fn make_card(spec: CardSpec<'_>) -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     // Senders often set the title/summary to their own app name (e.g. a bare
-    // "Spotify" notification) — showing app_name above an identical summary
+    // "Spotify" notification): showing app_name above an identical summary
     // is pure repetition, so skip the app label in that case.
     if !spec.app_name.is_empty() && !spec.app_name.eq_ignore_ascii_case(spec.summary) {
         let lbl = gtk4::Label::new(Some(spec.app_name));
@@ -412,7 +412,7 @@ fn make_card(spec: CardSpec<'_>) -> gtk4::Box {
     // card never has (see the `.notification-dismiss` CSS in theme.rs).
     // `collect_interactive` (this module) picks it up the same way it
     // picks up the action/reply buttons below, by walking the real widget
-    // tree — it doesn't need to know this button lives one level deeper,
+    // tree: it doesn't need to know this button lives one level deeper,
     // inside the overlay, than they do.
     let overlay = gtk4::Overlay::new();
     overlay.set_child(Some(&content));
@@ -537,8 +537,8 @@ fn invoke_action(invoke: Invoke, key: &str) {
 }
 
 /// NOTIFICATION INTERACTION #A: the card's own dismiss button. Unlike
-/// `invoke_action`, this never emits `ActionInvoked` — there's no action
-/// key here, the user just closed the toast unprompted — only the
+/// `invoke_action`, this never emits `ActionInvoked`: there's no action
+/// key here, the user just closed the toast unprompted; only the
 /// spec-mandated `NotificationClosed(id, reason)`, with
 /// `close_reason::DISMISSED_BY_USER` (freedesktop value 2, "dismissed by
 /// the user") so clients are told properly, same reason code

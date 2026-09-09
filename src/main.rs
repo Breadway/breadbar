@@ -27,12 +27,12 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// The launched-app event's publisher id and event name — deliberately
+/// The launched-app event's publisher id and event name: deliberately
 /// matching breadbox's OWN constants (`breadbox/src/main.rs`: `APP_ID =
 /// "box"`, `LAUNCHED_EVENT = "bread.box.launched"`), NOT breadbar's own
 /// `widgets::client::APP_ID` ("bar"). Theme 04/spotlight's capsule IS the
 /// launcher wearing a different shell (plan §7), sharing breadbox's cache
-/// and history via `bread_launcher::LAUNCHER_APP` — it publishes under that
+/// and history via `bread_launcher::LAUNCHER_APP`: it publishes under that
 /// same launcher identity too, so anything downstream listening for "an app
 /// was launched via the launcher" sees one event stream regardless of which
 /// surface launched it.
@@ -42,7 +42,7 @@ const LAUNCHER_LAUNCHED_EVENT: &str = "bread.box.launched";
 /// Diagnostic trace for the capsule's open/close/focus wiring, gated
 /// behind an env var so it costs nothing by default. Three previous fixes
 /// for the "opens itself at startup with no focus" bug all failed because
-/// nothing could observe which path actually fired on a real desktop —
+/// nothing could observe which path actually fired on a real desktop:
 /// this makes that observable: `BREADBAR_CAPSULE_DEBUG=1 breadbar` prints
 /// every call to `open_fn`/`close_fn` and every signal that could lead to
 /// one, with enough context (source, open state) to tell a legitimate
@@ -60,7 +60,7 @@ macro_rules! capsule_trace {
 }
 
 /// The drawer's own content-height ceiling (`04-spotlight.html`: `.searching
-/// .results { max-height: 420px }`) — see [`drawer_target_height`]. Also
+/// .results { max-height: 420px }`); see [`drawer_target_height`]. Also
 /// used to size the click-away scrim's dead zone (see `open_fn` in `init`):
 /// the scrim's clickable region never reaches higher than the capsule row
 /// plus this much, so it can never overlap a real result row regardless of
@@ -69,13 +69,13 @@ const DRAWER_MAX_HEIGHT_PX: i32 = 420;
 
 /// `bar.window.exclusive` resolved to a layer-shell exclusive-zone pixel
 /// value (axis 2, daylight). `Exclusive::Auto` reserves `height` plus the
-/// margin on whichever edge the bar is actually anchored to — `margin.top`
+/// margin on whichever edge the bar is actually anchored to: `margin.top`
 /// for every theme through spotlight (all top-anchored), `margin.bottom`
 /// for daylight's bottom-anchored dock. Before daylight this always read
 /// `margin.top` unconditionally, which happened to be correct for every
 /// existing theme (a bottom-anchored bar had never shipped, so
 /// `margin.bottom` was always 0 and never observed) but reserved 12px too
-/// little for daylight (`height` alone, not `height + margin.bottom`) —
+/// little for daylight (`height` alone, not `height + margin.bottom`):
 /// tiled windows would have run up under the last 12px of the floating
 /// dock. Extracted to a pure function so this is unit-testable without a
 /// live layer-shell surface.
@@ -94,7 +94,7 @@ fn exclusive_zone_for(spec: &bread_theme::shell::WindowSpec) -> i32 {
             }
         }
         // Side dock: the reserved dimension is the bar's own thickness
-        // (`width`, validated `Px`-only for a vertical anchor set — see
+        // (`width`, validated `Px`-only for a vertical anchor set, see
         // `resolve_window`) plus whichever side margin faces the desktop,
         // not `height`/top-or-bottom, which mean nothing on this axis.
         WindowOrientation::Vertical => {
@@ -118,12 +118,12 @@ fn exclusive_zone_for(spec: &bread_theme::shell::WindowSpec) -> i32 {
     }
 }
 
-/// Apply a [`bread_theme::shell::WindowSpec`] to the bar's layer-shell surface
-/// — anchors, margins, exclusive zone, width, keyboard mode, layer. `init`
+/// Apply a [`bread_theme::shell::WindowSpec`] to the bar's layer-shell surface:
+/// anchors, margins, exclusive zone, width, keyboard mode, layer. `init`
 /// calls this once; the live theme-switch path ([`App::rebuild_from_theme`])
 /// calls it again. Every `gtk4-layer-shell` setter here is live-capable, so a
 /// geometry-only theme change needs no restart. The bar-entrance animation is
-/// deliberately not here — it is a first-paint effect owned by `init` alone.
+/// deliberately not here: it is a first-paint effect owned by `init` alone.
 fn apply_window_spec<W>(root: &W, spec: &bread_theme::shell::WindowSpec)
 where
     W: IsA<gtk4::Window> + IsA<gtk4::Widget> + LayerShell,
@@ -277,7 +277,7 @@ mod exclusive_zone_tests {
         WindowSpec {
             anchors: anchors.iter().map(|s| s.to_string()).collect(),
             width: Width::Px(width_px),
-            // Meaningless on this axis (see `WindowSpec::orientation`) —
+            // Meaningless on this axis (see `WindowSpec::orientation`);
             // an arbitrary, deliberately-not-width value would catch a
             // regression that read the wrong field.
             height: 999,
@@ -371,15 +371,15 @@ pub struct App {
     clock_plain_lbl: gtk4::Label,
     // `modules.clock.placeholder_clock` (spotlight, theme 04): when set,
     // `AppInput::ClockTick` writes the time into this entry's placeholder
-    // text instead of (or alongside) any clock label — see that handler.
+    // text instead of (or alongside) any clock label; see that handler.
     launcher_entry: gtk4::Entry,
-    // Whether the capsule's drawer is currently expanded — read by
+    // Whether the capsule's drawer is currently expanded: read by
     // `ClockTick` so a live search in progress never has its placeholder
     // text stomped (it wouldn't be visible anyway once there's real text,
     // but matches the demo's own `if (!open) q.placeholder = t;` guard).
     launcher_open: Rc<Cell<bool>>,
     // `AppInput::OpenLauncher`'s local-route arm needs to actually open the
-    // capsule, not just move keyboard focus onto `launcher_entry` — focus
+    // capsule, not just move keyboard focus onto `launcher_entry`: focus
     // alone stopped opening it when `connect_enter`'s `open_fn()` call was
     // removed (see that handler's own comment for why: it was the
     // mechanism behind the startup-open bug). This is `init`'s `open_fn`,
@@ -407,7 +407,7 @@ pub struct App {
     pwr_lbl: gtk4::Label,
     // `[bar.slots].right = [..., "cpu", "ram", ...]` (glass-workbench, Phase
     // 5): separate instances from `cpu_pair`/`mem_pair` above, which stay
-    // parented in the control panel's sys-grid — a GTK widget can only have
+    // parented in the control panel's sys-grid: a GTK widget can only have
     // one parent, so reusing those here would mean reparenting them out of
     // the panel, changing panel behaviour no theme asked to change. Fed by
     // the same `AppInput::StatsUpdate` data.
@@ -415,13 +415,13 @@ pub struct App {
     bar_ram_lbl: gtk4::Label,
     gpu_lbl: gtk4::Label,
     // Odometer-style digit chips (plan: "ODOMETER DIGITS FOR NUMERIC
-    // CHIPS") — reuses the clock's `make_clock_digits`/`flip_clock_digits`
+    // CHIPS"), reuses the clock's `make_clock_digits`/`flip_clock_digits`
     // machinery (see `make_digit_chip`/`flip_digit_chip` below), so the
     // volume/battery numbers roll per-digit instead of snapping. `Rc<RefCell<..>>`,
     // not a plain `Vec`, because the label set is also mutated from the
     // control panel's volume-slider `connect_value_changed` closure (set up
     // in `init`, before `self` exists) as well as from `update`'s
-    // `StatsUpdate` handler — both need to see and replace the same digit
+    // `StatsUpdate` handler: both need to see and replace the same digit
     // set.
     vol_lbl: gtk4::Box,
     vol_digits: Rc<RefCell<Vec<gtk4::Label>>>,
@@ -465,14 +465,14 @@ pub struct App {
     tray_items: std::collections::HashMap<String, gtk4::Button>,
 
     // ── Lua-declared widgets ─────────────────────────────────────────────
-    // One container per `widget:<key>` slot entry (Phase 3b — see
+    // One container per `widget:<key>` slot entry (Phase 3b, see
     // bar::slots::ModuleRegistry and reconcile_widgets' routing below),
-    // fully rebuilt on every AppInput::WidgetsUpdate — see widgets::client's
+    // fully rebuilt on every AppInput::WidgetsUpdate; see widgets::client's
     // module doc for why that's simpler than incremental patching here.
     // Keyed by the slot entry's key: either a WidgetPlacement alias
     // (`right_of_workspaces`, `left_of_clock`, `right_of_clock`,
     // `left_of_stats`, `tray`) or a Lua module name. `bread_shared::widget`'s
-    // `WidgetPlacement` itself never appears here — it's a wire type from
+    // `WidgetPlacement` itself never appears here: it's a wire type from
     // the bread daemon API and stays untouched.
     widget_containers: std::collections::HashMap<String, gtk4::Box>,
     /// Widget ids already reported as undeliverable by `reconcile_widgets`, so
@@ -495,7 +495,7 @@ pub struct App {
     // Held so `AppInput::ShellThemeChanged` can re-apply the new theme's
     // `[bar.window]` geometry (`apply_window_spec`) and re-fill the slot
     // containers (`assemble_bar_slots`) without a restart. A workspace/clock
-    // style or launcher-mode change still restarts — `theme::needs_restart`.
+    // style or launcher-mode change still restarts: `theme::needs_restart`.
     root: gtk4::ApplicationWindow,
     bar_modules: bar::slots::ModuleRegistry,
     workspace_row: gtk4::Box,
@@ -522,7 +522,7 @@ pub enum AppInput {
     MediaUpdate(bar::media::MediaState),
     ControlPanelData(bar::control::ControlPanelData),
     WidgetsUpdate(Vec<bread_shared::widget::WidgetSpec>),
-    /// One `[[bar.widget]]` poll landed — store its value and re-render.
+    /// One `[[bar.widget]]` poll landed: store its value and re-render.
     ThemeWidgetTick {
         id: String,
         value: String,
@@ -537,9 +537,9 @@ pub enum AppInput {
     ShellThemeChanged(Box<bread_theme::shell::ShellTheme>),
     // `bread.command.box.open` (plan §7 phase 6c, `launcher_command`
     // module): only ever dispatched when the active theme's launcher is
-    // `Embedded` — `launcher_command::spawn` never subscribes otherwise.
+    // `Embedded`: `launcher_command::spawn` never subscribes otherwise.
     // Focuses `launcher_entry` AND calls `self.launcher_open_fn()`
-    // directly (its handler below) — the hotkey/command itself is the
+    // directly (its handler below): the hotkey/command itself is the
     // real-user-input signal, the same status a mouse click into the
     // entry has at its own call site. Deliberately does NOT rely on
     // `grab_focus()` triggering `EventControllerFocus::connect_enter` to
@@ -567,7 +567,7 @@ impl SimpleComponent for App {
             // row, not a separate layout code path. `drawer_box` starts
             // empty and zero-height for every theme that never names a
             // module in `[bar.slots].drawer` (liquid-motion, glass-
-            // workbench) — see main.rs's "Assemble" section and
+            // workbench); see main.rs's "Assemble" section and
             // `theme.rs`'s `window.breadbar > box > centerbox` selector
             // update for why this is a no-op for both.
             #[name = "root_vbox"]
@@ -579,7 +579,7 @@ impl SimpleComponent for App {
                     // Fill the bar's height. Without this the CenterBox takes
                     // only its natural height and sits at the TOP of the vbox,
                     // leaving the remainder as dead space along the bottom
-                    // edge — so every valign:Center child centred within a
+                    // edge, so every valign:Center child centred within a
                     // short box rather than within the bar, and the whole row
                     // rode high. Regression from wrapping the bar row in a
                     // vbox to gain the drawer slot.
@@ -606,18 +606,18 @@ impl SimpleComponent for App {
             .or_else(primary_hypr_monitor)
             .unwrap_or_else(|| "eDP-1".into());
 
-        // `bar.window` (plan §2/§6) — window shape is data, not a closed
+        // `bar.window` (plan §2/§6): window shape is data, not a closed
         // layout enum. Read once and reused below for the layer-shell setup
         // and (via `bar_height`, captured for the view! macro above) the
         // root window's initial GTK height. A vertical side dock has no
         // fixed height at all (it fills top-to-bottom via anchors, same as
-        // a horizontal bar fills left-to-right) — GTK's own default there
+        // a horizontal bar fills left-to-right). GTK's own default there
         // is fine as a first-paint hint; `apply_window_spec` below sets the
         // real fixed dimension (`width`, the dock's thickness) either way.
         let window_spec = theme::shell_theme().window().clone();
         // Read once, reused everywhere below that needs to pack the bar's
         // own row/segments top-to-bottom instead of left-to-right for a
-        // side dock (`center_box` and the three slot containers) — the
+        // side dock (`center_box` and the three slot containers). The
         // window shape and the widget layout inside it must always agree.
         let vertical_bar = window_spec.orientation() == WindowOrientation::Vertical;
         let bar_height = if vertical_bar { -1 } else { window_spec.height };
@@ -631,7 +631,7 @@ impl SimpleComponent for App {
         // gets nothing; spotlight's capsule already has its own width/
         // drawer motion in flight during a real search, so stacking a
         // margin spring underneath that felt like fighting it rather than
-        // adding to it — it gets a plain opacity fade instead (the
+        // adding to it: it gets a plain opacity fade instead (the
         // `bar-entrance` CSS class, added unconditionally by both arms
         // below; only liquid-motion also gets the margin spring).
         //
@@ -639,9 +639,9 @@ impl SimpleComponent for App {
         // `anim::spring_to`, not a CSS property, deliberately: `theme.rs`
         // has no `margin-top` transition/keyframe reachable from here
         // that wouldn't also require moving `root_vbox`'s or
-        // `center_box`'s own CSS margin, which — unlike an outer
+        // `center_box`'s own CSS margin, which (unlike an outer
         // layer-shell margin, a compositor-level surface placement, not a
-        // GTK box-model property at all — WOULD perturb every descendant
+        // GTK box-model property at all) WOULD perturb every descendant
         // widget's own measured size, including the workspace row's.
         // `WorkspaceTrail::place()`'s single-shot initial geometry sample
         // is a documented previous crash site for exactly that: `ws-in`'s
@@ -650,8 +650,8 @@ impl SimpleComponent for App {
         // and its comment, a few hundred lines below, for the full
         // story). A layer-shell margin change repositions the whole
         // surface on screen without touching any widget's own box model,
-        // so `compute_bounds(host)`'s host-local coordinates — the trail's
-        // whole coordinate system — never see it move at all, by
+        // so `compute_bounds(host)`'s host-local coordinates, the trail's
+        // whole coordinate system, never see it move at all, by
         // construction rather than by luck.
         let theme_id = theme::shell_theme().id().to_string();
         if theme_id == "liquid-motion" {
@@ -663,7 +663,7 @@ impl SimpleComponent for App {
             let played = Rc::new(Cell::new(false));
             root.connect_map(move |win| {
                 // Guard against replaying on a later remap (e.g. a
-                // satellite hidden/reshown — see `root.set_visible(false)`
+                // satellite hidden/reshown; see `root.set_visible(false)`
                 // a few lines below for the unbound-satellite case): this
                 // is a first-paint entrance, not a reveal animation.
                 if played.replace(true) {
@@ -692,7 +692,7 @@ impl SimpleComponent for App {
 
         // ── Workspace row (left) ────────────────────────────────────────
         // Built imperatively (not via the view! macro) so a widget
-        // container can sit as a plain sibling of workspace_box — see the
+        // container can sit as a plain sibling of workspace_box; see the
         // `widget:*` slot-entry handling in "Assemble" below. The Overlay
         // trail lives behind the buttons; rebuild_buttons only touches the
         // button box, never the trail host.
@@ -700,7 +700,7 @@ impl SimpleComponent for App {
         let workspace_box = workspace_trail.buttons.clone();
         // A slot container's own internal packing direction (left-to-right
         // vs top-to-bottom) and cross-axis centring must follow the bar's
-        // orientation — see `vertical_bar` above.
+        // orientation, see `vertical_bar` above.
         let slot_orientation = if vertical_bar {
             gtk4::Orientation::Vertical
         } else {
@@ -709,7 +709,7 @@ impl SimpleComponent for App {
         let workspace_row = gtk4::Box::new(slot_orientation, 0);
         // `.bar-segment` (axis 3, daylight): a no-op class under every other
         // theme (theme.rs only ever emits a `.bar-segment` CSS rule when
-        // `bar_border == "segmented"` — see its `segment_css` local) —
+        // `bar_border == "segmented"`; see its `segment_css` local):
         // added unconditionally here, same as `center_area`/`stats_box`
         // below, so the Rust side never has to branch on the active theme
         // id to know which boxes are "the three segments".
@@ -724,17 +724,17 @@ impl SimpleComponent for App {
             workspace_row.set_vexpand(false);
         }
         // `workspace_trail.overlay` is appended in the "Assemble" section
-        // below, in the order `[bar.slots].left` names it — not here.
+        // below, in the order `[bar.slots].left` names it, not here.
 
         // ── Lua-declared widget containers ──────────────────────────────
         // Phase 3b: a container per `widget:<key>` slot entry is created
         // on demand while walking `[bar.slots]` in the "Assemble" section
         // below (see `bar::slots::widget_slot_container`), so ANY slot can
-        // host a Lua widget — not just the four fixed positions Phase 3a
+        // host a Lua widget, not just the four fixed positions Phase 3a
         // shipped with. Populated by widgets::client's events.subscribe-
         // driven refresh loop, started at the end of init.
 
-        // `tokens.icon_px` (plan §4) — bar-chrome icon pixel size; reused
+        // `tokens.icon_px` (plan §4): bar-chrome icon pixel size; reused
         // below for every `prepare_icon` call in this function.
         let icon_px = theme::shell_theme().tokens().icon_px() as i32;
 
@@ -768,14 +768,14 @@ impl SimpleComponent for App {
         wifi_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         wifi_lbl.set_max_width_chars(28);
         wifi_lbl.set_xalign(0.0);
-        // SSID lives in the popover + tooltip — a 20-char network name
+        // SSID lives in the popover + tooltip: a 20-char network name
         // crowding the tray is the opposite of a glass workbench bar.
         wifi_lbl.set_visible(false);
         let wifi_img = gtk4::Image::from_icon_name(bar::stats::WIFI_ICON_EXCELLENT);
         prepare_icon(&wifi_img, icon_px);
         wifi_img.add_css_class("stat-icon");
 
-        // Content pane only — this becomes a tab inside the merged
+        // Content pane only: this becomes a tab inside the merged
         // connectivity popover built alongside the Bluetooth pane below,
         // once bt_img exists too. See "Connectivity popover" further down.
         let wifi_pane = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -842,7 +842,7 @@ impl SimpleComponent for App {
 
         // Clock: time is the hero, date sits beside it quieter.
         // Per-glyph labels so a minute rollover can flip only the digits
-        // that changed — same motion as the Liquid Motion demo.
+        // that changed, same motion as the Liquid Motion demo.
         let clock_time = bar::clock::time();
         let clock_digits = make_clock_digits(&clock_time);
         let clock_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
@@ -867,7 +867,7 @@ impl SimpleComponent for App {
         // plus one plain "HH:MM" label, no per-digit flip markup at all.
         // Built unconditionally alongside the flip clock so a theme's style
         // choice is just which of the two gets registered into the "clock"
-        // slot below — see "Assemble".
+        // slot below; see "Assemble".
         let clock_plain_lbl = gtk4::Label::new(Some(&bar::clock::time()));
         clock_plain_lbl.add_css_class("clock-plain-time");
         clock_plain_lbl.set_valign(gtk4::Align::Center);
@@ -880,7 +880,7 @@ impl SimpleComponent for App {
         clock_plain_box.append(&clock_plain_lbl);
 
         // ── Launcher entry + results (theme 04/spotlight, plan §7) ───────
-        // Built unconditionally, exactly like `clock_plain_box` above —
+        // Built unconditionally, exactly like `clock_plain_box` above:
         // placed in a slot only by a theme that names "launcher_entry"/
         // "launcher_results" (spotlight today; see "Assemble" below).
         // `bread_launcher::LAUNCHER_APP` ("breadbox") is the launcher's
@@ -903,7 +903,7 @@ impl SimpleComponent for App {
         let launcher_history = Rc::new(RefCell::new(bread_launcher::LaunchHistory::load(
             bread_launcher::LAUNCHER_APP,
         )));
-        // No per-workspace priority context here — that's breadbox's own
+        // No per-workspace priority context here: that's breadbox's own
         // `Config`/`Context` format (breadbox-shared), not launcher
         // substance, and breadbar has no equivalent concept. The capsule
         // sorts by launch history then alphabetically, same fallback
@@ -928,13 +928,13 @@ impl SimpleComponent for App {
         launcher_entry.set_hexpand(true);
         // Starts non-focusable ("the spotlight theme starts with the
         // search open"). GTK4 auto-assigns keyboard focus to the first
-        // can-focus widget in a window as it's first mapped/shown — with
+        // can-focus widget in a window as it's first mapped/shown: with
         // nothing else focusable in the bar, that was always
         // `launcher_entry`, and `focus_ctrl`'s `connect_enter` below
         // (added unconditionally) turns "the entry gained focus" straight
         // into `open_fn()`, so the capsule opened itself at startup. A
         // widget that can't focus is skipped by BOTH that automatic
-        // selection and an explicit `grab_focus()` call — see GTK's own
+        // selection and an explicit `grab_focus()` call: see GTK's own
         // docs for `Widget::grab_focus`: "if widget is not focusable...
         // this function does nothing." Every place that later wants real
         // focus (the click gesture below, and `AppInput::OpenLauncher`'s
@@ -942,7 +942,7 @@ impl SimpleComponent for App {
         launcher_entry.set_can_focus(false);
         gtk4::prelude::EntryExt::set_alignment(&launcher_entry, 0.5);
         // `modules.clock.placeholder_clock` (spotlight): the entry's idle
-        // placeholder IS the clock — no separate clock module renders at
+        // placeholder IS the clock: no separate clock module renders at
         // all under `style = "none"`. Any other theme gets a plain "Search"
         // placeholder (never shown today: no other builtin slots
         // "launcher_entry" anywhere), so this still degrades sanely if a
@@ -983,12 +983,12 @@ impl SimpleComponent for App {
             stats_box.set_valign(gtk4::Align::Center);
             stats_box.set_vexpand(false);
         }
-        // Also appended in "Assemble" — before the right slot's modules,
+        // Also appended in "Assemble": before the right slot's modules,
         // preserving its fixed position (left of the stats modules)
         // whatever `[bar.slots].right` contains.
 
         // CPU/RAM/power draw stay built (control panel + screenshots still
-        // read the labels) but never mount on the island — the demo bar
+        // read the labels) but never mount on the island: the demo bar
         // does not show them.
         let cpu_pair = stat_pair(asset!("CPU.svg"), &cpu_lbl);
         let mem_pair = stat_pair(asset!("RAM Usage.svg"), &mem_lbl);
@@ -1002,8 +1002,8 @@ impl SimpleComponent for App {
 
         // `[bar.slots].right = [..., "cpu", "ram", ...]` (glass-workbench,
         // Phase 5): separate chip instances from `cpu_pair`/`mem_pair`
-        // above, which stay parented in the control panel's sys-grid below
-        // — reusing them here would mean reparenting them out of the panel.
+        // above, which stay parented in the control panel's sys-grid below:
+        // reusing them here would mean reparenting them out of the panel.
         // Same icons, same `.stat-pair` chip styling every other bar chip
         // (volume/battery) already uses; fed by the same `StatsUpdate` data.
         let bar_cpu_lbl = stat_label();
@@ -1044,7 +1044,7 @@ impl SimpleComponent for App {
 
         bt_img.add_css_class("bt-icon");
 
-        // Content pane only — same deal as wifi_pane above.
+        // Content pane only: same deal as wifi_pane above.
         let bt_pane = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         let bt_loading_lbl = gtk4::Label::new(Some("Loading…"));
         bt_loading_lbl.add_css_class("wifi-popover-loading");
@@ -1119,11 +1119,11 @@ impl SimpleComponent for App {
         // `.stat-pair.icon-only` forces a 32px min-width on this box, wider
         // than the 24px icon's natural size. Without hexpand, a `gtk4::Box`
         // packs a non-expanding child at its natural size flush against the
-        // start edge and leaves the leftover width trailing after it — so
+        // start edge and leaves the leftover width trailing after it, so
         // `halign: Center` had nothing to center within and the glyph sat a
         // few pixels left of true center (reported: wifi icon not centered
         // on glass-workbench/liquid-motion). `bat_box` never showed this
-        // because it isn't `icon-only` — no forced min-width wider than its
+        // because it isn't `icon-only`: no forced min-width wider than its
         // (icon + label) content, so there's no leftover space to
         // mis-place. hexpand(true) gives the icon a fillable cell spanning
         // the full 32px box, which `halign: Center` then centers within,
@@ -1134,14 +1134,14 @@ impl SimpleComponent for App {
         // its children's hexpand whenever the container's own hexpand
         // hasn't been explicitly set, so the flag silently bubbles up
         // through `connectivity_pair` into the shared right-hand stats box
-        // and from there into the centerbox's end slot — which then hands
+        // and from there into the centerbox's end slot, which then hands
         // that slot most of the bar's remaining width instead of its
         // normal packed size. The visible symptom was dramatic, not
         // subtle: the whole vol/wifi cluster jumped left to sit against
         // the clock, with a huge dead gap before battery/hamburger, in a
         // `--screenshot bar` capture. `connectivity_pair.set_hexpand(false)`
         // pins this box's own expand explicitly, which stops the
-        // computation from climbing any further — the child can still
+        // computation from climbing any further: the child can still
         // fill and center within this one box's fixed 32px cell.
         wifi_img.set_hexpand(true);
         connectivity_pair.set_hexpand(false);
@@ -1164,7 +1164,7 @@ impl SimpleComponent for App {
 
         // Each control-panel section is built here in full (its handles stay
         // in scope for the signal wiring below), then appended to
-        // `panel_inner` in the active theme's `[panel].sections` order — a
+        // `panel_inner` in the active theme's `[panel].sections` order: a
         // section whose name the theme drops is simply never parented. The
         // header + caret above are fixed.
         let vol_row = build_slider_row("vol", 0.0, 1.5, 0.02);
@@ -1198,7 +1198,7 @@ impl SimpleComponent for App {
         power_row.add_css_class("power-row");
         power_row.set_halign(gtk4::Align::Center);
         for (label, cmd) in [
-            // breadlock is the ecosystem's own screen locker — hyprlock is
+            // breadlock is the ecosystem's own screen locker: hyprlock is
             // the thing it was built to replace; the bar shouldn't still
             // be pointing at it.
             ("lock", vec!["breadlock"]),
@@ -1241,7 +1241,7 @@ impl SimpleComponent for App {
         let widget_tray_sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
         widget_tray_sep.set_visible(false);
 
-        // `[panel].sections` — order + membership of the control-panel body.
+        // `[panel].sections`: order + membership of the control-panel body.
         {
             use gtk4::Widget;
             let section_widgets: [(&str, Vec<Widget>); 6] = [
@@ -1269,7 +1269,7 @@ impl SimpleComponent for App {
             }
         }
 
-        // Hamburger button — same chip chrome as volume / wifi / battery.
+        // Hamburger button: same chip chrome as volume / wifi / battery.
         let hamburger_btn = gtk4::Button::with_label("☰");
         hamburger_btn.add_css_class("flat");
         hamburger_btn.add_css_class("control-panel-btn");
@@ -1277,7 +1277,7 @@ impl SimpleComponent for App {
         hamburger_btn.add_css_class("icon-only");
         bar_chip(&hamburger_btn);
 
-        // Slider signals — use Rc<Cell<bool>> to suppress feedback during data load
+        // Slider signals: use Rc<Cell<bool>> to suppress feedback during data load
         let panel_loading = Rc::new(Cell::new(false));
 
         let loading_v = panel_loading.clone();
@@ -1312,7 +1312,7 @@ impl SimpleComponent for App {
         // `hamburger_btn` is appended in "Assemble" below, per
         // `[bar.slots].right`.
 
-        // Standalone layer windows — below the island, slid in by Hyprland.
+        // Standalone layer windows: below the island, slid in by Hyprland.
         let panels = panel::PanelSet::new(
             &monitor_name,
             &connectivity_inner,
@@ -1370,7 +1370,7 @@ impl SimpleComponent for App {
         // it lands in its container, and which of left/centre/right it
         // lands in, comes from the theme manifest's `[bar.slots]` now. A
         // `widget:<key>` slot entry gets (or creates) a Lua widget
-        // container at that exact position — `<key>` is either a
+        // container at that exact position: `<key>` is either a
         // `WidgetPlacement` alias or a Lua module name; see
         // `bar::slots::widget_slot_container` and `reconcile_widgets`'
         // routing below. This is how a Lua widget can land in ANY slot,
@@ -1382,7 +1382,7 @@ impl SimpleComponent for App {
         // `modules.clock.style`: "flip" uses the per-digit clock_box; "plain"
         // uses clock_plain_box and reveals date_lbl per `show_date`; "none"
         // registers neither. A clock-style change is restart-gated
-        // (`theme::needs_restart`), so this is fixed for this App's lifetime —
+        // (`theme::needs_restart`), so this is fixed for this App's lifetime:
         // the live slot re-assembly keeps whichever was registered here.
         match bar_shell_theme.modules().clock.style {
             ClockStyle::Plain => {
@@ -1405,8 +1405,8 @@ impl SimpleComponent for App {
         bar_modules.register("launcher_entry", &launcher_entry);
         bar_modules.register("launcher_results", &launcher_results.scroller);
 
-        // `tray` never appears in a bar slot — it lives in the control-panel
-        // popover — but it's keyed here so `reconcile_widgets`' routing finds
+        // `tray` never appears in a bar slot: it lives in the control-panel
+        // popover, but it's keyed here so `reconcile_widgets`' routing finds
         // it the same way as any slot-driven widget container.
         let mut widget_containers: std::collections::HashMap<String, gtk4::Box> =
             std::collections::HashMap::new();
@@ -1415,7 +1415,7 @@ impl SimpleComponent for App {
         // ── Assemble ─────────────────────────────────────────────────────
         let widgets = view_output!();
         // A side dock stacks start/center/end (workspaces/clock/stats)
-        // top-to-bottom instead of left-to-right — `CenterBox` supports
+        // top-to-bottom instead of left-to-right; `CenterBox` supports
         // both natively via `Orientable`, so this is the one place the
         // bar row itself needs to know its own orientation; every slot
         // container packed into it already picked `slot_orientation` above.
@@ -1454,7 +1454,7 @@ impl SimpleComponent for App {
         // ── Query-mode results (plan §7 phase 6c: `=` calc, `>` cmd, `.`
         // url) ───────────────────────────────────────────────────────────
         // A second, small list living alongside `launcher_results.scroller`
-        // in the same drawer — only one of the two is ever visible at a
+        // in the same drawer: only one of the two is ever visible at a
         // time (see `connect_changed` below). Built unconditionally, same
         // as `launcher_results` itself, but only ever APPENDED into
         // `drawer_box` for an embedded launcher: every other theme must
@@ -1476,7 +1476,7 @@ impl SimpleComponent for App {
         // keyboard focus) is this file's own.
         let anim: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
         // Search-state width (plan §7 phase 6c: `[launcher].search_width`,
-        // `04-spotlight.html`'s `.searching .capsule { width: 520px }`) —
+        // `04-spotlight.html`'s `.searching .capsule { width: 520px }`);
         // a separate animation from the drawer's own height, both driven
         // by `bread_theme::anim::spring_to` independently.
         let anim_width: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
@@ -1485,13 +1485,13 @@ impl SimpleComponent for App {
         // (close_fn's reset-to-empty today; any future one belongs here
         // too) so `connect_changed` below can tell "the user typed a
         // character" from "code changed the buffer" and only ever opens
-        // the capsule for the former — see that handler's own comment.
+        // the capsule for the former; see that handler's own comment.
         // Gates the SIGNAL itself rather than hunting every caller that
         // could fire it, so no future programmatic `set_text` can reopen
         // the capsule by accident, whether or not one does today.
         let programmatic_text_change: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         // The click-away scrim's dead zone (item B, see `DRAWER_MAX_HEIGHT_PX`'s
-        // own doc comment) — the capsule row's own theme-default dismiss
+        // own doc comment): the capsule row's own theme-default dismiss
         // offset (52px: `bar.window.height` + `bar.window.margin.top`) plus
         // the drawer's own max content height, so the scrim's clickable
         // region can never reach up into a rendered result row.
@@ -1533,12 +1533,12 @@ impl SimpleComponent for App {
                     animate_capsule_width(&root, &anim_width, from, search_width);
                     // Item B: click-away scrim. Shown at a fixed dead-zone
                     // offset (`capsule_dismiss_margin`), never the live
-                    // drawer height — see that constant's own doc comment
+                    // drawer height; see that constant's own doc comment
                     // for why a live-tracking offset would risk swallowing
                     // clicks meant for a result row. `hole` scopes that
                     // dead zone to the capsule's own column instead of the
                     // full screen width ("it only sometimes is dismissed
-                    // when you click somewhere else") — see
+                    // when you click somewhere else"); see
                     // `capsule_dismiss_hole`'s doc comment. Falls back to
                     // the old full-width dead zone if the live geometry
                     // query fails for any reason.
@@ -1575,7 +1575,7 @@ impl SimpleComponent for App {
                 entry.remove_css_class("searching");
                 gtk4::prelude::EntryExt::set_alignment(&entry, 0.5);
                 // Resetting the buffer here is a PROGRAMMATIC change, not a
-                // user keystroke — flagged so `connect_changed` below
+                // user keystroke: flagged so `connect_changed` below
                 // doesn't treat "close_fn cleared the query" as "the user
                 // typed", which would immediately reopen what this
                 // function is in the middle of closing.
@@ -1592,7 +1592,7 @@ impl SimpleComponent for App {
                 let current = drawer_box.size_request().1;
                 animate_drawer_height(&drawer_box, &anim, current, 0);
                 // `keyboard = "on_demand"` (plan §7) ties the layer-shell
-                // surface's keyboard grab to GTK's own focus-widget state —
+                // surface's keyboard grab to GTK's own focus-widget state:
                 // releasing focus here is what hands the keyboard back.
                 gtk4::prelude::GtkWindowExt::set_focus(&root_for_focus, None::<&gtk4::Widget>);
             }
@@ -1604,7 +1604,7 @@ impl SimpleComponent for App {
         });
 
         // Which of the four query modes is currently driving `mode_list`
-        // (plan §7 phase 6c) — read by `key_ctrl` below to route Up/Down/
+        // (plan §7 phase 6c): read by `key_ctrl` below to route Up/Down/
         // Return at the right list, and whether that mode's row is even
         // selectable (an info-only row, e.g. an empty calc expression,
         // never is). `launcher_cfg.modes` gates which prefixes actually
@@ -1624,7 +1624,7 @@ impl SimpleComponent for App {
             let programmatic_text_change = Rc::clone(&programmatic_text_change);
             launcher_entry.connect_changed(move |entry| {
                 // `changed` fires for EVERY buffer mutation, programmatic
-                // ones included — `close_fn`'s own `entry.set_text("")`
+                // ones included: `close_fn`'s own `entry.set_text("")`
                 // among them. Without this guard that reset re-enters this
                 // handler and its unconditional `open_fn()` below reopens
                 // the capsule close_fn is still in the middle of closing.
@@ -1661,7 +1661,7 @@ impl SimpleComponent for App {
                     mode_list.set_visible(true);
                 }
                 // Reached only for a real keystroke (the guard above
-                // already returned for a programmatic reset) — matches the
+                // already returned for a programmatic reset): matches the
                 // reference model's `q.addEventListener("input", () => {
                 // if (!open) setOpen(true); ... })`: typing is itself a
                 // real-user-input signal that opens the capsule.
@@ -1669,7 +1669,7 @@ impl SimpleComponent for App {
             });
         }
         {
-            // Deliberately does NOT call `open_fn()`. It used to — that
+            // Deliberately does NOT call `open_fn()`. It used to: that
             // was the actual mechanism behind "opens itself with no
             // focus": ANYTHING that moved keyboard focus onto
             // `launcher_entry`, including GTK's own auto-focus-on-map of
@@ -1680,7 +1680,7 @@ impl SimpleComponent for App {
             // the next path that calls `grab_focus()` on this entry for
             // any reason. Both real-input paths that DO want to open now
             // call `open_fn()` themselves at their own call site (the
-            // click gesture below, `AppInput::OpenLauncher`'s handler) —
+            // click gesture below, `AppInput::OpenLauncher`'s handler):
             // opening is a direct consequence of the user's action, not a
             // side effect of a focus-change event that could have come
             // from anywhere. What's left here is pure diagnostics: under
@@ -1698,12 +1698,12 @@ impl SimpleComponent for App {
         // root cause as the startup-open bug above, from the other side.
         // `launcher_entry.set_can_focus(false)` means nothing (startup or
         // otherwise) can silently steal GTK's own notion of focus any
-        // more — so it now needs a real, explicit grab. This click gesture
+        // more, so it now needs a real, explicit grab. This click gesture
         // is that grab for the mouse path: a `GestureClick` press is a
         // genuine user-originated pointer event delivered through the
         // compositor, which is also exactly the kind of interaction
         // `KeyboardMode::OnDemand` (gtk4-layer-shell/wlr-layer-shell) is
-        // documented to react to — the protocol spec (wlr-layer-shell-
+        // documented to react to: the protocol spec (wlr-layer-shell-
         // unstable-v1.xml) leaves *when* an on-demand surface gets the
         // compositor's keyboard focus as "implementation-defined", but a
         // literal click on the surface is the universal, minimum-common-
@@ -1723,7 +1723,7 @@ impl SimpleComponent for App {
                 // Called directly here rather than left to fire as a side
                 // effect of `grab_focus()` moving keyboard focus (that was
                 // `focus_ctrl.connect_enter`'s job until this same pass
-                // removed it) — a real click is itself the user-input
+                // removed it): a real click is itself the user-input
                 // signal that should open the capsule, not merely a way to
                 // produce a focus-change event that then does.
                 open_fn();
@@ -1738,7 +1738,7 @@ impl SimpleComponent for App {
             let mode_selectable = Rc::clone(&mode_selectable);
             let key_ctrl = gtk4::EventControllerKey::new();
             // CAPTURE, not the default BUBBLE. A GtkEntry handles Return in the
-            // target phase itself — it emits `activate` and returns TRUE, which
+            // target phase itself: it emits `activate` and returns TRUE, which
             // stops propagation before a bubble-phase controller ever runs, so
             // Enter silently did nothing and the selected app never launched.
             // Capturing puts this controller ahead of the entry's own handling
@@ -1751,7 +1751,7 @@ impl SimpleComponent for App {
                     // Calc/Cmd/Url (plan §7 phase 6c): Up/Down move the
                     // (possibly single-row) `mode_list` selection; Return
                     // runs whatever `mode_row_action` finds on the
-                    // selected row — nothing, for a calc result or an
+                    // selected row: nothing, for a calc result or an
                     // empty prompt, since those rows carry none.
                     return match key {
                         Key::Escape => {
@@ -1833,7 +1833,7 @@ impl SimpleComponent for App {
         }
 
         // Captured before these move into `model` (or are otherwise dropped
-        // as bare locals, never stored on `App` at all) — needed by the
+        // as bare locals, never stored on `App` at all): needed by the
         // screenshot dispatch just before this function returns.
         let control_panel_for_screenshot = panels.control.clone();
         let connectivity_panel_for_screenshot = panels.connectivity.clone();
@@ -1843,13 +1843,13 @@ impl SimpleComponent for App {
         let media_widget_for_screenshot = media_widget.clone();
         let media_track_lbl_for_screenshot = media_track_lbl.clone();
         // Theme 04/spotlight's capsule (plan §6b): `launcher_entry` moves
-        // into `model` below, `drawer_box` lives only in `widgets` — both
+        // into `model` below, `drawer_box` lives only in `widgets`: both
         // need a clone out here for the same reason every other
         // `_for_screenshot` handle above does.
         let launcher_entry_for_screenshot = launcher_entry.clone();
         let drawer_box_for_screenshot = widgets.drawer_box.clone();
 
-        // Never launch sibling App windows from inside this init — RelmApp
+        // Never launch sibling App windows from inside this init: RelmApp
         // is still in GApplication activate, and a same-type launch here
         // creates a second primary on the laptop. Idle reconcile after.
         let satellites = Vec::new();
@@ -1945,7 +1945,7 @@ impl SimpleComponent for App {
         if init.primary {
             bar::tray::spawn_watcher(sender.clone());
             widgets::client::spawn(sender.clone());
-            // `[[bar.widget]]` — theme-declared live widgets. Primary only,
+            // `[[bar.widget]]`: theme-declared live widgets. Primary only,
             // matching the Lua-widget path (`widgets::client::spawn` above);
             // the containers exist on every bar from `assemble_bar_slots`,
             // but only the primary polls and renders.
@@ -1954,7 +1954,7 @@ impl SimpleComponent for App {
                 theme_widgets::spawn_pollers(&model.theme_widgets, &sender);
             model.reconcile_all_widgets();
             // `bread.command.box.open` (plan §7 phase 6c): one subscriber,
-            // same reasoning as `widgets::client::spawn` above — a keybind
+            // same reasoning as `widgets::client::spawn` above: a keybind
             // should focus ONE capsule, not every satellite monitor's.
             // A no-op call under every theme but spotlight (see the
             // module's own doc comment).
@@ -1970,7 +1970,7 @@ impl SimpleComponent for App {
         }
 
         // Screenshot mode primes these with sample content instead of the
-        // real D-Bus/pactl/backlight sources — see notifications::SampleKind
+        // real D-Bus/pactl/backlight sources; see notifications::SampleKind
         // and osd::SampleKind's doc comments.
         let notif_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
             "notification" => Some(notifications::SampleKind::Normal),
@@ -2055,7 +2055,7 @@ impl SimpleComponent for App {
                     .unwrap_or(self.active_ws);
                 // Workspace also carries last-window title/address, which
                 // change constantly. Only the visible row (id/name/monitor/
-                // occupied) should rebuild the pills — otherwise a title
+                // occupied) should rebuild the pills: otherwise a title
                 // flicker on switch cancels the trail mid-stretch.
                 let rows_changed = visible_ws_rows(&sorted, &self.monitor, new_active)
                     != visible_ws_rows(&self.workspaces, &self.monitor, self.active_ws);
@@ -2076,7 +2076,7 @@ impl SimpleComponent for App {
                     if let Some(btn) = self.button_map.get(&self.active_ws).cloned() {
                         btn.add_css_class("active");
                         // Trail style only: pill/dots never call place()/
-                        // stretch() at all — the "active" CSS class above is
+                        // stretch() at all: the "active" CSS class above is
                         // the whole of their active-workspace treatment
                         // (solid accent fill, no trail overlay).
                         if theme::shell_theme().modules().workspaces.style == WorkspaceStyle::Trail
@@ -2105,8 +2105,8 @@ impl SimpleComponent for App {
                 self.date_lbl.set_label(&bar::clock::date());
                 let clock_module = theme::shell_theme().modules().clock.clone();
                 match clock_module.style {
-                    // Plain (glass-workbench): one label, no flip animation
-                    // — `flip_clock_digits` would just be wasted work (and
+                    // Plain (glass-workbench): one label, no flip animation:
+                    // `flip_clock_digits` would just be wasted work (and
                     // a pointless 450ms `play_once` timer) on digits that
                     // are never on screen.
                     ClockStyle::Plain => {
@@ -2114,7 +2114,7 @@ impl SimpleComponent for App {
                             .set_label(&bar::clock::formatted(&clock_module.format));
                     }
                     // Flip (default, liquid-motion) and None both keep
-                    // exactly today's per-digit-flip update — None has no
+                    // exactly today's per-digit-flip update: None has no
                     // module in a slot to display it, but there's no reason
                     // to special-case skipping the (cheap, idempotent) work.
                     ClockStyle::Flip | ClockStyle::None => {
@@ -2122,7 +2122,7 @@ impl SimpleComponent for App {
                     }
                 }
                 // `modules.clock.placeholder_clock` (spotlight): the
-                // capsule's entry IS the clock until focused — matches the
+                // capsule's entry IS the clock until focused: matches the
                 // demo's own `if (!open) q.placeholder = t;` guard so a
                 // live search in progress never has its placeholder text
                 // (invisibly, since real text covers it) stomped mid-type.
@@ -2219,7 +2219,7 @@ impl SimpleComponent for App {
             AppInput::CrumbsStatus(status) => {
                 self.crumbs_status = Some(status);
                 // CrumbsStatus and WifiPopoverData arrive independently (different
-                // pollers); whichever lands second must still repaint the header —
+                // pollers); whichever lands second must still repaint the header:
                 // otherwise it only shows up if CrumbsStatus happens to win the race.
                 if self.wifi_popover_data.is_some() {
                     self.rebuild_wifi_popover(&sender);
@@ -2269,7 +2269,7 @@ impl SimpleComponent for App {
                     self.media_last = Some(state);
                     reveal_media(&self.media_widget, within_linger);
                 } else {
-                    // Player gone — honour linger from last pause
+                    // Player gone: honour linger from last pause
                     self.media_widget.remove_css_class("playing");
                     if let Some(paused_at) = self.media_paused_at {
                         if paused_at.elapsed().as_secs() < 30 * 60 {
@@ -2325,7 +2325,7 @@ impl SimpleComponent for App {
                 // Only the primary instance subscribes to the open command
                 // (`launcher_command::spawn`), but `self.monitor` here is
                 // whichever output was focused ONCE, at this instance's own
-                // `init()` — baked in at process start, not re-resolved on
+                // `init()`: baked in at process start, not re-resolved on
                 // every keybind press. If the user has since moved focus to
                 // a different monitor, blindly grabbing focus on `self`
                 // would open the capsule on the wrong screen. Re-resolve
@@ -2366,7 +2366,7 @@ impl SimpleComponent for App {
 }
 
 /// The `widget:<key>` alias `for_each_in_slot` recognizes for each
-/// `WidgetPlacement` variant — the fallback a `WidgetSpec` routes through
+/// `WidgetPlacement` variant: the fallback a `WidgetSpec` routes through
 /// when no `widget:<module>` container claims its module name specifically.
 /// Kept in one place since both the builtin manifest's slot lists and
 /// `reconcile_widgets`' routing below must agree on these names.
@@ -2411,7 +2411,7 @@ impl App {
         // widgets without moving every widget that shares its placement.
         // A spec whose module AND placement alias both lack a container
         // (e.g. a theme's slots omit that placement's widget: entry
-        // entirely) is logged and dropped rather than silently vanishing —
+        // entirely) is logged and dropped rather than silently vanishing:
         // WidgetPlacement itself never changes; only which container (if
         // any) each spec lands in does.
         let mut by_container: std::collections::HashMap<
@@ -2432,12 +2432,12 @@ impl App {
                 // like a git-branch poller, reconciles continuously), which
                 // turned a legitimate one-off diagnostic into unbounded log
                 // spam. The set is only added to, so a spec that starts
-                // resolving again after a theme switch stays quiet — the
+                // resolving again after a theme switch stays quiet: the
                 // message is about a theme lacking the slot, and repeating it
                 // every tick tells the reader nothing new.
                 eprintln!(
                     "breadbar: widget '{}' (module '{}', placement {:?}) has no matching \
-                     [bar.slots] widget: container — dropping",
+                     [bar.slots] widget: container; dropping",
                     spec.id, spec.module, spec.placement
                 );
             }
@@ -2463,7 +2463,7 @@ impl App {
         }
 
         // The "tray" container has its own section/separator (handled
-        // below, same as the existing SNI tray items) — an empty inline
+        // below, same as the existing SNI tray items): an empty inline
         // slot has no such wrapper, so it must hide itself to stop
         // contributing to its parent box's `spacing` gap.
         for (key, container) in &self.widget_containers {
@@ -2549,7 +2549,7 @@ impl App {
         self.wifi_img.set_tooltip_text(Some(&label));
     }
 
-    /// Apply a CSS + geometry + slots-only shell-theme change in place —
+    /// Apply a CSS + geometry + slots-only shell-theme change in place:
     /// `AppInput::ShellThemeChanged`'s handler. `theme::shell_theme()` has
     /// already been swapped by the watch; `theme` is the same value, passed
     /// for the geometry read.
@@ -2577,7 +2577,7 @@ impl App {
         // Colours, radii, spring curves, the `light` axis + icon textures.
         theme::reload();
 
-        // `[[bar.widget]]` set may have changed — drop the old pollers
+        // `[[bar.widget]]` set may have changed: drop the old pollers
         // (aborted on `Drop`), re-read the theme's widgets, restart the
         // pollers, and re-render. Primary only, same as `init`.
         if self.primary {
@@ -2592,7 +2592,7 @@ impl App {
 
         // Workspace buttons re-read chip height / dot widths on rebuild; the
         // style itself is fixed for this App (a style change is restart-gated).
-        // Not an animated rebuild — a theme switch is not a workspace switch.
+        // Not an animated rebuild: a theme switch is not a workspace switch.
         self.rebuild_buttons(false);
     }
 
@@ -2600,12 +2600,12 @@ impl App {
         self.workspace_trail.cancel();
         let prev: std::collections::HashSet<WorkspaceId> =
             self.button_map.keys().copied().collect();
-        // `button_map` only starts empty once — the very first call this
+        // `button_map` only starts empty once: the very first call this
         // App instance ever makes, before any workspace has ever been
         // synced from Hyprland. A fully-emptied bar never happens after
         // that (the active workspace's own row is always kept), so this
         // doubles as a clean "is this the initial paint" signal without a
-        // dedicated flag — see its one use below.
+        // dedicated flag; see its one use below.
         let is_first_build = prev.is_empty();
         while let Some(child) = self.workspace_box.first_child() {
             self.workspace_box.remove(&child);
@@ -2622,13 +2622,13 @@ impl App {
             if empty {
                 match ws_style {
                     // Trail (default, liquid-motion): unconditionally off
-                    // the bar, exactly as before this change — regardless
+                    // the bar, exactly as before this change, regardless
                     // of `show_empty`, which liquid-motion's own manifest
                     // declares `true` but this style has never consumed.
                     // Changing that now would be a real, undesired
                     // liquid-motion regression, not a Phase 5 fix.
                     WorkspaceStyle::Trail => continue,
-                    // Pill/Dots: honour `show_empty` for real — demo 02's
+                    // Pill/Dots: honour `show_empty` for real: demo 02's
                     // pills render an unoccupied, non-active workspace at
                     // reduced opacity via the `.workspace-btn:not(.occupied)
                     // :not(.active)` CSS rule rather than hiding it.
@@ -2661,7 +2661,7 @@ impl App {
             // low until the next `place`/`stretch` call (the first real
             // workspace switch) re-samples the by-then-settled layout.
             // The demo itself never animates the initial row in at all
-            // (`OCC.forEach` builds plainly, only `place(0)` runs) — only
+            // (`OCC.forEach` builds plainly, only `place(0)` runs): only
             // *subsequently added* workspaces should ever play this.
             if !is_first_build && !prev.contains(&ws.id) {
                 play_once(&btn, "ws-in", 360);
@@ -2670,7 +2670,7 @@ impl App {
             self.button_map.insert(ws.id, btn);
         }
         // Trail style only: pill/dots never call place()/stretch()/clear()
-        // at all — the "active" CSS class `make_button` already applies is
+        // at all: the "active" CSS class `make_button` already applies is
         // the whole of their active-workspace treatment.
         if ws_style == WorkspaceStyle::Trail {
             match self.button_map.get(&self.active_ws).cloned() {
@@ -2963,7 +2963,7 @@ fn wifi_icon_for_signal(pct: u8) -> &'static str {
 
 /// Small modal prompting for a password, then saves + joins the network via
 /// `breadcrumbs add` + `breadcrumbs join`. `on_build` runs on the freshly
-/// built dialog *before* it's presented — screenshot mode's only hook point,
+/// built dialog *before* it's presented: screenshot mode's only hook point,
 /// since `connect_map` registered any later would miss a map that already
 /// happened. The real call site passes a no-op.
 fn show_add_network_dialog(
@@ -2982,7 +2982,7 @@ fn show_add_network_dialog(
     }
     // A bare gtk4::Window with no titlebar set falls back to GTK's own
     // minimal CSD: a flat bar with plain system-font title text and no
-    // rounding — which is what actually made this look like a stray window
+    // rounding: which is what actually made this look like a stray window
     // from a different decade next to the rest of the (rounded, borderless,
     // shadowed) ecosystem. A real HeaderBar picks up the window's own title
     // automatically and gets the same `.wifi-add-dialog` theming below.
@@ -3014,7 +3014,7 @@ fn show_add_network_dialog(
     btn_row.set_halign(gtk4::Align::End);
     let cancel_btn = gtk4::Button::with_label("Cancel");
     let connect_btn = gtk4::Button::with_label("Connect");
-    // Not "suggested-action" — GTK4's own bundled theme special-cases that
+    // Not "suggested-action": GTK4's own bundled theme special-cases that
     // class for a newer native OS-accent-colour feature that isn't a normal
     // CSS rule at all, and simply doesn't lose to any `background-color`
     // override this stylesheet adds, however specific the selector (already
@@ -3144,14 +3144,14 @@ fn flip_clock_digits(digits: &[gtk4::Label], time: &str) {
 }
 
 /// Container for a [`make_digit_chip`]/[`flip_digit_chip`]-driven numeric
-/// chip (volume, battery) — a plain horizontal box, same shape as
+/// chip (volume, battery): a plain horizontal box, same shape as
 /// `vol_box`/`bat_box`'s existing icon+label chips, that gets one
 /// `.stat-digit` label per character instead of a single `gtk4::Label`.
 fn digit_chip_box() -> gtk4::Box {
     gtk4::Box::new(gtk4::Orientation::Horizontal, 0)
 }
 
-/// One `.stat-digit` label per character of `text` — the `stat-label`
+/// One `.stat-digit` label per character of `text`: the `stat-label`
 /// styled counterpart of `make_clock_digits`, reused so volume/battery
 /// chips can roll per-digit the same way the clock does (plan: "ODOMETER
 /// DIGITS FOR NUMERIC CHIPS"). Not the clock's own `.clock-digit` class:
@@ -3171,7 +3171,7 @@ fn make_digit_chip(text: &str) -> Vec<gtk4::Label> {
 }
 
 /// Tears down `container`'s current digit labels and rebuilds them for
-/// `text` from scratch — the shared fallback [`set_digit_chip`] and
+/// `text` from scratch: the shared fallback [`set_digit_chip`] and
 /// [`flip_digit_chip`] both take when the character count changes (`9` ->
 /// `10`), including the very first call, when `digits` starts empty. No
 /// per-position diff makes sense across different lengths, so this never
@@ -3186,7 +3186,7 @@ fn rebuild_digit_chip(container: &gtk4::Box, digits: &mut Vec<gtk4::Label>, text
     }
 }
 
-/// Replaces `container`'s digit labels with `text`'s, with NO animation —
+/// Replaces `container`'s digit labels with `text`'s, with NO animation:
 /// used for the volume slider's live drag feedback (`connect_value_changed`
 /// fires on every pointer-move tick; replaying the flip keyframe that fast
 /// would read as a flicker). [`flip_digit_chip`] below is the animated
@@ -3208,7 +3208,7 @@ fn set_digit_chip(container: &gtk4::Box, digits: &mut Vec<gtk4::Label>, text: &s
 /// The animated counterpart of [`set_digit_chip`]: same rebuild-on-length-
 /// change fallback, but on a same-length update it plays the `flip`
 /// keyframe (`digit-flip`, the same one the clock uses) only on the
-/// characters that actually changed — same convention as
+/// characters that actually changed, same convention as
 /// `flip_clock_digits`.
 fn flip_digit_chip(container: &gtk4::Box, digits: &mut Vec<gtk4::Label>, text: &str) {
     let chars: Vec<char> = text.chars().collect();
@@ -3237,7 +3237,7 @@ fn reveal_media(widget: &gtk4::Box, show: bool) {
 /// `bread_theme::anim::spring_to` (plan §7: GTK4 has no CSS height
 /// transition on a widget, so the capsule's `.results { max-height: 0 →
 /// 420px }` becomes a `set_size_request` interpolation on the frame clock
-/// instead). Cancels any run already in flight first — reopening mid-close
+/// instead). Cancels any run already in flight first: reopening mid-close
 /// (or vice versa) must restart from the CURRENT height, not fight a
 /// leftover callback still walking toward the old target.
 fn animate_drawer_height(
@@ -3251,7 +3251,7 @@ fn animate_drawer_height(
     }
     let target = drawer_box.clone();
     let id = bread_theme::anim::spring_to(drawer_box, from, to, 360.0, move |h| {
-        // `spring_ease` deliberately overshoots past t=1.0 — that bounce is the
+        // `spring_ease` deliberately overshoots past t=1.0: that bounce is the
         // point on expand, but on a collapse (from=content height, to=0) the
         // same overshoot carries the interpolated value BELOW zero, and
         // `set_size_request` hard-asserts `height >= -1` (GTK-CRITICAL, once
@@ -3273,7 +3273,7 @@ fn animate_drawer_height(
 
 /// Drives the capsule's own window width from `from` to `to` over 360ms
 /// (plan §7 phase 6c: `[launcher].search_width`, `04-spotlight.html`'s
-/// `.searching .capsule { width: 520px }`) — the same `spring_to` +
+/// `.searching .capsule { width: 520px }`): the same `spring_to` +
 /// `set_size_request` technique `animate_drawer_height` uses for the
 /// drawer's height, applied to the root window itself instead of a child
 /// box. Unlike a drawer collapse, width never animates toward a negative
@@ -3296,8 +3296,8 @@ fn animate_capsule_width(
 }
 
 /// The drawer's natural content height right now, capped at the demo's own
-/// 420px (`04-spotlight.html`: `.searching .results { max-height: 420px }`)
-/// — `ResultsList`'s scroller already self-caps at 480px
+/// 420px (`04-spotlight.html`: `.searching .results { max-height: 420px }`):
+/// `ResultsList`'s scroller already self-caps at 480px
 /// (`max_content_height`), shared with breadbox, so this is a tighter,
 /// spotlight-specific ceiling on top of that shared one, not a replacement
 /// for it.
@@ -3305,7 +3305,7 @@ fn drawer_target_height(drawer_box: &gtk4::Box) -> i32 {
     // Deliberately never measures `drawer_box` itself. `animate_drawer_height`'s
     // tick callback calls `drawer_box.set_size_request(-1, h)` on every
     // frame, and GTK clamps a widget's own `measure()` result up to at
-    // least its own explicit size request — so once an animation has run
+    // least its own explicit size request, so once an animation has run
     // even one frame, `drawer_box.measure()` reports that frame's forced
     // height (or the spring's overshoot past it), not whatever its
     // children actually need next. This bit spotlight's new query-mode
@@ -3314,7 +3314,7 @@ fn drawer_target_height(drawer_box: &gtk4::Box) -> i32 {
     // animation frame had already forced `drawer_box` to 437px.
     //
     // Summing each currently-visible child's own natural height instead
-    // sidesteps this entirely — `launcher_results.scroller` and
+    // sidesteps this entirely: `launcher_results.scroller` and
     // `mode_list` never get an explicit size request of their own, so
     // their `measure()` always reflects their actual current content.
     let mut total = 0;
@@ -3335,7 +3335,7 @@ fn drawer_target_height(drawer_box: &gtk4::Box) -> i32 {
 // (`bread_launcher::gtk::row_entry` returns `None` for every one of
 // these), so they're built/read here rather than through that crate.
 
-/// A single-line, non-interactive row — the calc result, or a "nothing
+/// A single-line, non-interactive row: the calc result, or a "nothing
 /// typed yet" placeholder. Reuses `.app-name` so it inherits the same
 /// `.bread-drawer row` typography `bread-launcher`'s own rows get.
 fn mode_info_row(text: &str) -> gtk4::ListBoxRow {
@@ -3350,7 +3350,7 @@ fn mode_info_row(text: &str) -> gtk4::ListBoxRow {
 }
 
 /// A single-line, actionable row (a `>`-mode command, or the `.`-mode
-/// "open this URL" prompt) — Enter/click spawns `action` once resolved by
+/// "open this URL" prompt): Enter/click spawns `action` once resolved by
 /// [`run_mode_action`].
 fn mode_action_row(text: &str, action: ModeAction) -> gtk4::ListBoxRow {
     let row = gtk4::ListBoxRow::new();
@@ -3364,7 +3364,7 @@ fn mode_action_row(text: &str, action: ModeAction) -> gtk4::ListBoxRow {
 
 /// What Enter/click on a [`mode_action_row`] does. Two variants, not one
 /// shell-command string, so a `.`-mode URL (arbitrary user-typed text)
-/// never passes through `bash -c` at all — only a `>`-mode command's own
+/// never passes through `bash -c` at all: only a `>`-mode command's own
 /// fixed, trusted `exec` string does.
 #[derive(Clone)]
 enum ModeAction {
@@ -3401,7 +3401,7 @@ fn run_mode_action(action: &ModeAction) {
             }
         }
         ModeAction::OpenUrl(url) => {
-            // No scheme-adding shell involved — `xdg-open` gets the raw
+            // No scheme-adding shell involved: `xdg-open` gets the raw
             // argument, so nothing in a `.`-mode query is ever parsed as
             // shell syntax.
             let target = url_open_target(url);
@@ -3418,7 +3418,7 @@ fn run_mode_action(action: &ModeAction) {
     }
 }
 
-/// Moves `list`'s selection to the next/previous row — unlike
+/// Moves `list`'s selection to the next/previous row: unlike
 /// `bread_launcher::gtk::ResultsList::select_next`/`select_prev`, `mode_list`
 /// never has hidden rows to skip (it's cleared and rebuilt from scratch on
 /// every query change), so this is the plain, un-filtered version.
@@ -3438,7 +3438,7 @@ fn listbox_select_prev(list: &gtk4::ListBox) {
     }
 }
 
-/// Clears `mode_list` and rebuilds it for `parsed` — the calc result,
+/// Clears `mode_list` and rebuilds it for `parsed`: the calc result,
 /// filtered `>`-mode commands, or the `.`-mode "open this URL" prompt.
 /// Returns whether anything is now selectable (a real command/URL row, not
 /// just an info row) so the caller knows whether Return has anything to do.
@@ -3540,7 +3540,7 @@ pub(crate) fn prepare_icon(img: &gtk4::Image, px: i32) {
 //
 // Icon glyphs are recoloured by baking `theme::fg_color()` into the SVG
 // source before resvg rasterises it (`svg_texture_sized`). That tint lives
-// in the texture, entirely outside GTK CSS — so a `bread-theme reload` that
+// in the texture, entirely outside GTK CSS, so a `bread-theme reload` that
 // flips the `light` axis recolours the CSS chrome but leaves every already-
 // rendered glyph its old ink (near-white glyphs, invisible on daylight's
 // paper pills). Two pieces keep them in step:
@@ -3721,8 +3721,8 @@ fn main() {
     // before exiting; the exit hook in osd.rs covers normal exits and
     // panics. Without either, each breadbar restart orphaned a `pactl
     // subscribe` holding its PulseAudio connection open until
-    // pipewire-pulse's client cap filled up and new clients — settings
-    // apps among them — were refused ("no devices in settings").
+    // pipewire-pulse's client cap filled up and new clients, settings
+    // apps among them, were refused ("no devices in settings").
     relm4::spawn(async {
         use tokio::signal::unix::{signal, SignalKind};
         let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
@@ -3755,7 +3755,7 @@ fn main() {
 }
 
 /// Live outputs only. `hyprctl monitors all` (and the hyprland crate's
-/// `Monitors::get`) keep ghost connectors after a rename — `DVI-I-1` stayed
+/// `Monitors::get`) keep ghost connectors after a rename: `DVI-I-1` stayed
 /// at 0×0 with `disabled=false` after the panel became `DVI-I-2`, and a
 /// geometry fallback then stacked a second bar on the laptop.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -3836,14 +3836,14 @@ fn hypr_monitor_origin(name: &str) -> Option<(i32, i32)> {
 }
 
 /// The bar/capsule's own layer-surface geometry for `monitor`, straight
-/// from the compositor (`hyprctl layers -j`, ground truth — not derived
+/// from the compositor (`hyprctl layers -j`, ground truth, not derived
 /// from anything GTK/gtk4-layer-shell reports client-side, since the
 /// wlr-layer-shell protocol never hands a client its own assigned x/y back;
 /// only width/height come through `configure`). Matched by `namespace`
 /// ("breadbar", set via `root.set_namespace` above), which is unique per
 /// output since each monitor gets its own bound `App` instance/window.
 /// Returns the surface's horizontal center in Hyprland's global coordinate
-/// space. `None` on any parse/lookup failure — callers must fall back to
+/// space. `None` on any parse/lookup failure: callers must fall back to
 /// the pre-existing, safe-but-broader dead-zone behaviour rather than
 /// guess.
 fn hypr_capsule_center_x(monitor: &str) -> Option<i32> {
@@ -3873,12 +3873,12 @@ fn hypr_capsule_center_x(monitor: &str) -> Option<i32> {
 }
 
 /// The click-away scrim's capsule-column hole, in coordinates local to the
-/// `breadbar-dismiss` surface (see `PanelSet::show_capsule_dismiss`) —
+/// `breadbar-dismiss` surface (see `PanelSet::show_capsule_dismiss`):
 /// pure arithmetic, split out for unit testing. `capsule_center_global` and
 /// `monitor_origin_x` are both in Hyprland's global compositor space
 /// (`hypr_capsule_center_x`/`hypr_monitor_origin`); `column_width` is the
 /// capsule's own *configured* search-state width
-/// (`[launcher].search_width`), not a live-queried one — this fires right
+/// (`[launcher].search_width`), not a live-queried one: this fires right
 /// as `open_fn` starts the width-animation from idle to search width, so a
 /// live query at that exact instant would catch it mid-transition. Using
 /// the wider, settled target here (like `DRAWER_MAX_HEIGHT_PX` already does
@@ -3895,7 +3895,7 @@ fn capsule_dismiss_hole(
 
 /// Hyprland connector names and GDK connector names can disagree after a
 /// hotplug (`DVI-I-1` vs `DVI-I-2`). Match the connector first, then the
-/// output's origin — transform swaps width/height so size is not reliable.
+/// output's origin: transform swaps width/height so size is not reliable.
 /// Never steal a GDK output whose connector is already a live Hyprland name.
 fn gdk_monitor_for_hypr(name: &str) -> Option<gtk4::gdk::Monitor> {
     use gtk4::gdk::prelude::MonitorExt;

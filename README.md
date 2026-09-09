@@ -30,7 +30,7 @@ A single Rust binary that provides a full-width top bar, a D-Bus notification da
 
 **Notification daemon**:
 
-- Implements `org.freedesktop.Notifications` (D-Bus) — works with any standard sender (`notify-send`, etc.)
+- Implements `org.freedesktop.Notifications` (D-Bus): works with any standard sender (`notify-send`, etc.)
 - Popups appear top-right, stack vertically, auto-dismiss after the sender-specified timeout (default 5 s)
 - Supports `CloseNotification` and `replaces_id`
 - History of the last 50 notifications (app, summary, truncated body, time). Loaded from and saved to `$XDG_STATE_HOME/breadbar/history.json` (typically `~/.local/state/breadbar/history.json`). Toggle by **right-clicking the bar's `☰` menu button** (left-click still opens the control panel), by `breadbar --history` (Hyprland: `bind = SUPER, N, exec, breadbar --history`), or by D-Bus `dev.breadway.Bar.ToggleHistory` on `org.freedesktop.Notifications` at `/dev/breadway/Bar`.
@@ -52,18 +52,18 @@ Runtime (required):
 
 - GTK4 (≥ 4.12)
 - `gtk4-layer-shell`
-- `iw` — for WiFi SSID/signal (`iw dev <iface> link`)
-- `wpctl` (WirePlumber) — volume read/write
-- `pactl` (PipeWire-Pulse) — audio sink listing and OSD volume events
-- `brightnessctl` — brightness read/write
+- `iw`: for WiFi SSID/signal (`iw dev <iface> link`)
+- `wpctl` (WirePlumber): volume read/write
+- `pactl` (PipeWire-Pulse): audio sink listing and OSD volume events
+- `brightnessctl`: brightness read/write
 - A running Hyprland compositor
 - D-Bus session bus
 
 Runtime (optional, degrade gracefully if absent):
 
-- `playerctl` — media widget; hidden if no player is found
-- `breadcrumbs` — WiFi popover enrichment (profiles, internet/Tailscale status); basic SSID/signal still shown without it
-- `blueman-manager` — opened when the Bluetooth icon is clicked; Bluetooth state still shown without it
+- `playerctl`: media widget; hidden if no player is found
+- `breadcrumbs`: WiFi popover enrichment (profiles, internet/Tailscale status); basic SSID/signal still shown without it
+- `blueman-manager`: opened when the Bluetooth icon is clicked; Bluetooth state still shown without it
 
 Bluetooth state is read from `/sys/class/rfkill` and BlueZ D-Bus and degrades gracefully if unavailable.
 
@@ -96,7 +96,7 @@ Typically launched from your Hyprland config:
 exec-once = /path/to/breadbar
 ```
 
-breadbar claims `org.freedesktop.Notifications` on the session D-Bus on startup. If another notification daemon is already running, startup will fail — stop the other daemon first.
+breadbar claims `org.freedesktop.Notifications` on the session D-Bus on startup. If another notification daemon is already running, startup will fail; stop the other daemon first.
 
 ## Theming
 
@@ -119,7 +119,7 @@ pkill -HUP breadbar
 
 Drop a `~/.config/breadbar/style.css` file and send `SIGHUP` to reload. This CSS is applied at a higher priority than the generated palette so you can override anything.
 
-Example — change the font size:
+Example: change the font size:
 
 ```css
 * {

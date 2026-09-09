@@ -16,7 +16,7 @@ pub struct BtPopoverData {
     pub devices: Vec<BtDevice>,
 }
 
-/// Same rfkill scan `bar::stats` uses for the bar icon — kept independent
+/// Same rfkill scan `bar::stats` uses for the bar icon; kept independent
 /// (rather than shared) since it's a two-line read and pulling in a shared
 /// helper isn't worth the coupling.
 fn powered() -> bool {

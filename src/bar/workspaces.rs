@@ -17,7 +17,7 @@ use crate::AppInput;
 
 /// Stock Hyprland accepts `hyprctl dispatch workspace N`. Lua-config
 /// Hyprland (BOS) rewrites that as `hl.dispatch(workspace N)`, which is
-/// a syntax error — the working form is `hl.dsp.focus({workspace=N})`.
+/// a syntax error: the working form is `hl.dsp.focus({workspace=N})`.
 async fn switch_workspace(id: hyprland::shared::WorkspaceId) {
     let arg = id.to_string();
     let stock = tokio::process::Command::new("hyprctl")
@@ -46,7 +46,7 @@ async fn switch_workspace(id: hyprland::shared::WorkspaceId) {
     }
 }
 
-/// Stretch to the old→new span, then snap onto the destination — CSS
+/// Stretch to the old→new span, then snap onto the destination; CSS
 /// transitions cannot widen a pill across two buttons, so the trail's
 /// Fixed allocation is interpolated on the frame clock instead.
 const STRETCH_MS: f64 = 220.0;
@@ -77,8 +77,8 @@ pub fn spawn_watcher(sender: ComponentSender<crate::App>) {
     relm4::spawn(async move {
         sync_state(&sender).await;
 
-        // Hyprland's IPC event socket can drop out from under us — a
-        // Hyprland restart/reload, or just a transient hiccup — at which
+        // Hyprland's IPC event socket can drop out from under us (a
+        // Hyprland restart/reload, or just a transient hiccup), at which
         // point `stream.next()` yields `None` (or an `Err`, also excluded
         // by this `while let Some(Ok(..))` pattern). That used to just fall
         // through and end this whole task permanently, freezing every
@@ -146,7 +146,7 @@ pub fn make_button(
     // bread-theme's `resolve_tokens` (ECO-17) now bakes the per-style demo
     // number (26px Trail / 22px Pill) into the resolved token itself
     // whenever a theme doesn't set `chip_height`, so the two can no longer
-    // disagree — reading the token directly also picks up a theme's own
+    // disagree. Reading the token directly also picks up a theme's own
     // explicit override, which `approved_chip_height` deliberately ignored.
     let chip_height = crate::theme::shell_theme().tokens().chip_height();
     btn.set_size_request(-1, chip_height as i32);
@@ -168,13 +168,13 @@ pub fn make_button(
 /// all (`04-spotlight.html`'s `.dots button` has no label); reusing
 /// `Button::with_label("")` would still measure/lay out an empty label box
 /// that a genuinely childless button doesn't. Width is a hard
-/// `set_size_request` snap, not animated — GTK CSS min-width transitions
+/// `set_size_request` snap, not animated: GTK CSS min-width transitions
 /// don't participate in a directly-set size request the way an opacity/
 /// background-color transition does, and the plan only calls out the
 /// capsule's own expand/collapse as worth the `anim::spring_to` treatment.
 ///
 /// `_dot_widths` (the manifest's `modules.workspaces.dot_widths`) is
-/// accepted but deliberately unused — see `APPROVED_DOT_WIDTHS` below,
+/// accepted but deliberately unused; see `APPROVED_DOT_WIDTHS` below,
 /// which overrides it with the approved Option B numbers the manifest's
 /// own value predates. Kept in the signature rather than dropped so the
 /// call site still documents where a real per-theme width would flow from
@@ -200,19 +200,19 @@ pub fn make_dot_button(
     // Height is a deliberate departure from `04-spotlight.html`'s own 6px
     // (see the demo's `.dots button { height: 6px }`): reported as "too
     // small and hard to click", and also genuinely hard to *see* on a real
-    // display, not just hard to hit. Option B (approved): 10px tall — up
+    // display, not just hard to hit. Option B (approved): 10px tall, up
     // from an earlier 9px pass that undershot the approved number by 1px.
     // Keeps the dots reading as slim pills rather than growing into little
     // chips (which would fight the capsule's minimal, text-first look),
     // while being clearly perceptible against the 36px-tall bar.
     const DOT_HEIGHT: i32 = 10;
     // Option B widths (approved): 8/13/17/22px for 0/1/2/3-or-more open
-    // windows — `[8, 13, 17, 22]`, not the `dot_widths` parameter's own
+    // windows: `[8, 13, 17, 22]`, not the `dot_widths` parameter's own
     // manifest value. `theme.toml`'s `modules.workspaces.dot_widths =
     // [6, 10, 14, 18]` predates this pass and was never updated to match;
     // hardcoded here (ignoring the passed-in `dot_widths`) rather than
     // edited upstream, since bread-ecosystem is a sibling agent's repo
-    // this pass. Flagged in the task report — `dot_widths` should become
+    // this pass. Flagged in the task report: `dot_widths` should become
     // `[8, 13, 17, 22]` in `assets/shell/spotlight/theme.toml`.
     const APPROVED_DOT_WIDTHS: bread_theme::shell::DotWidths = [8, 13, 17, 22];
     btn.set_size_request(
@@ -231,7 +231,7 @@ pub fn make_dot_button(
 /// 0/1/2 pass through, 3-or-more all collapse onto index 3 (the demo's own
 /// `.dots button[data-n="3"]` never has a "4" variant). Pulled out of
 /// [`make_dot_button`] as its own pure function purely so it's testable
-/// without a GTK display — the isolated screenshot harness
+/// without a GTK display; the isolated screenshot harness
 /// (`bread-capture`) has no Hyprland IPC, so it can never exercise a
 /// nonzero window count, and this is what stands in for that visual proof
 /// (see the task notes on that gap).
@@ -260,7 +260,7 @@ mod dot_width_tests {
     #[test]
     fn negative_windows_clamps_to_zero_rather_than_panicking() {
         // Hyprland's `windows` count is unsigned (u16) in practice, but
-        // `make_dot_button` takes a plain i32 — a negative value must
+        // `make_dot_button` takes a plain i32: a negative value must
         // never underflow the `dot_widths` index and panic.
         assert_eq!(dot_width_index(-1), 0);
         assert_eq!(dot_width_index(i32::MIN), 0);
@@ -282,7 +282,7 @@ struct TrailInner {
     /// A row rebuild (switching to an empty workspace makes Hyprland create
     /// and destroy it) can leave every button unallocated for a frame, and
     /// without a remembered size the trail had nothing safe to animate from
-    /// and fell back to an instant `place()` — which is what made a switch
+    /// and fell back to an instant `place()`, which is what made a switch
     /// snap instead of move.
     natural: Option<(f64, f64)>,
 }
@@ -411,11 +411,11 @@ impl WorkspaceTrail {
             };
             // Squash-and-stretch (ANIMATION WORK #1): compress the pill's
             // height a few px while it's mid-flight and let it spring back
-            // — slightly taller than normal, then settling — as it lands,
+            // (slightly taller than normal, then settling) as it lands,
             // so the trail reads as having weight instead of sliding like a
             // rigid box. A pure post-process on top of the already-correct
             // x/w/y trajectory above, applied only to the frame actually
-            // painted (`g`) — never fed back into `TrailInner::natural`
+            // painted (`g`); never fed back into `TrailInner::natural`
             // (`from_geom`'s own width/height memory for the *next*
             // animation), which stays driven solely by real button geometry
             // as before. Skipped on the final `done` frame so the resting
@@ -433,7 +433,7 @@ impl WorkspaceTrail {
     }
 
     // `from` is a noun here (the source button we animate away from), not a
-    // conversion — `&self` is correct.
+    // conversion; `&self` is correct.
     #[allow(clippy::wrong_self_convention)]
     fn from_geom(&self, from: Option<&gtk4::Button>, to: &gtk4::Button) -> Option<Geom> {
         let st = self.inner.borrow();
@@ -448,7 +448,7 @@ impl WorkspaceTrail {
         // Width must always come from a button that is CURRENTLY IN THE ROW.
         // Switching to an empty workspace makes Hyprland create and destroy it,
         // which rebuilds the button row mid-animation and can leave `from`
-        // detached — `button_geom` then returns None. Falling back to the live
+        // detached: `button_geom` then returns None. Falling back to the live
         // geometry there handed the wide mid-stretch span straight back in,
         // which is exactly the accumulation this function exists to prevent
         // (reproduced by spamming between workspace 1 and an empty 6). The
@@ -466,7 +466,7 @@ impl WorkspaceTrail {
         // buttons, and `ease_overshoot` (c = 1.4) pushes it wider still past
         // the target. Feeding that span back in as the next `from` made each
         // interrupted switch start wider than the last, so spamming workspace
-        // switches grew the pill until it hit MAX_CHIP_W — which only capped
+        // switches grew the pill until it hit MAX_CHIP_W, which only capped
         // the runaway, it never stopped the compounding.
         //
         // Taking position from the live geometry and width from the source
@@ -529,7 +529,7 @@ fn resolved_dest(btn: &gtk4::Button, host: &gtk4::Fixed, from: &Geom) -> Geom {
     }
 }
 
-/// Position in the Fixed host's space — that's what `host.move_` uses.
+/// Position in the Fixed host's space: that's what `host.move_` uses.
 /// Measuring against the Overlay instead left the pill a few px left of
 /// the digit whenever the host and overlay origins disagreed.
 fn button_geom(btn: &gtk4::Button, host: &gtk4::Fixed) -> Option<Geom> {
@@ -602,7 +602,7 @@ const SQUASH_MIN: f64 = 0.80;
 /// `stretch`'s own STRETCH_MS-then-SNAP_MS timeline: eases DOWN to
 /// `SQUASH_MIN` across the stretch phase (using the same `ease` curve the
 /// width stretch already uses), then eases back UP to 1.0 across the snap
-/// phase using `ease_overshoot` — which legitimately overshoots past 1.0
+/// phase using `ease_overshoot`, which legitimately overshoots past 1.0
 /// partway through, so the pill also plumps up slightly taller than its
 /// resting height right before settling, the same "spring" read the width
 /// snap already has. Past both phases (a caller-side `elapsed` this large

@@ -1,6 +1,6 @@
 //! Turns a `WidgetNode` tree into a live GTK4 widget tree.
 //!
-//! There is no diffing at the node level — see `client.rs`'s module doc for
+//! There is no diffing at the node level; see `client.rs`'s module doc for
 //! why the whole thing is simply rebuilt whenever a widget's spec changes.
 //! This keeps the renderer a pure, stateless `WidgetNode -> gtk4::Widget`
 //! function.
@@ -13,7 +13,7 @@ use bread_shared::widget::{
 use gtk4::prelude::*;
 
 /// Default max width for a Label node, in characters, absent an explicit
-/// `size`/other override — the `style` vocabulary (see Documentation.md's
+/// `size`/other override; the `style` vocabulary (see Documentation.md's
 /// Widgets §style) has no dedicated width field yet, so this stays fixed for
 /// every label rather than becoming a half-exposed knob.
 const DEFAULT_LABEL_MAX_WIDTH_CHARS: i32 = 32;
@@ -80,7 +80,7 @@ fn icon_texture(
 }
 
 /// Map a node's typed `style` onto predefined CSS classes (see `theme.rs` for
-/// the class definitions) — this is the only path from Lua's `style` field to
+/// the class definitions); this is the only path from Lua's `style` field to
 /// the widget, kept as narrow `Some(field) -> one class` mappings so there is
 /// no way for it to become raw style injection.
 fn apply_style(widget: &gtk4::Widget, style: &WidgetStyle) {
@@ -135,7 +135,7 @@ fn apply_style(widget: &gtk4::Widget, style: &WidgetStyle) {
             Padding::Md => "bread-padding-md",
         });
     }
-    // GTK CSS has no text-align/justify-content equivalent — alignment is a
+    // GTK CSS has no text-align/justify-content equivalent; alignment is a
     // widget property, not a stylesheet rule, so it's set directly instead
     // of routing through an inert CSS class like the fields above.
     if let Some(align) = style.align {
@@ -170,7 +170,7 @@ pub fn build_node(node: &WidgetNode, widget_id: &str) -> gtk4::Widget {
         WidgetNode::Label { text, .. } => {
             let label = gtk4::Label::new(Some(text));
             // Unbounded, this is a bar-width-blowout waiting to happen from
-            // any buggy or malicious module — see Documentation.md issue #6.
+            // any buggy or malicious module; see Documentation.md issue #6.
             label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
             label.set_max_width_chars(DEFAULT_LABEL_MAX_WIDTH_CHARS);
             label.upcast()
@@ -186,8 +186,8 @@ pub fn build_node(node: &WidgetNode, widget_id: &str) -> gtk4::Widget {
             let bar = gtk4::ProgressBar::new();
             bar.set_fraction(value.clamp(0.0, 1.0));
             // GtkProgressBar's natural expand behavior is to fill all
-            // available width, which — unlike Label/Box/Image, which hug
-            // their content by default — propagates up through every
+            // available width, which (unlike Label/Box/Image, which hug
+            // their content by default) propagates up through every
             // ancestor Box that doesn't set hexpand explicitly, all the way
             // to the bar's end_widget. Pin it to a small fixed footprint so
             // it reads as an inline meter instead of swallowing the bar.

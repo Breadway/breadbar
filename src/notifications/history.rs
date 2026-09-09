@@ -37,7 +37,7 @@ pub fn new_store() -> Store {
 
 /// Load the last [`LIMIT`] entries from `$XDG_STATE_HOME/breadbar/history.json`
 /// (or `~/.local/state/breadbar/history.json`). Missing or corrupt files
-/// yield an empty store — never fail startup.
+/// yield an empty store; never fail startup.
 pub fn load_store() -> Store {
     let store = new_store();
     if let Some(path) = history_path() {
@@ -72,7 +72,7 @@ pub fn record(store: &Store, entry: Entry) {
 }
 
 /// Best-effort write of the in-memory store (already bounded) to the
-/// XDG state file. Failures are silent — history stays in memory.
+/// XDG state file. Failures are silent; history stays in memory.
 pub fn persist(store: &Store) {
     if let Some(path) = history_path() {
         let _ = persist_to(store, &path);
@@ -178,10 +178,10 @@ pub fn build_window(store: Store) -> Ui {
     window.set_namespace(Some("breadbar-notif"));
     crate::surface::apply(&window, "breadbar-notif");
     // Overrides `[surfaces."breadbar-notif"].width` (320px, the live-toast
-    // popup's width — see `surface::apply`'s doc comment): the history
+    // popup's width; see `surface::apply`'s doc comment): the history
     // window genuinely wants a different width on the same namespace, and
     // that isn't something the manifest schema models today. Both calls
-    // must be overridden, not just `set_default_width` — `apply()` also
+    // must be overridden, not just `set_default_width`: `apply()` also
     // pins `set_size_request` to the toast's 320px, and a bare width alone
     // would lose to that pin the same way it lost to a wide child before.
     window.set_default_width(360);
@@ -254,7 +254,7 @@ pub fn toggle(ui: &Ui) {
         ui.window.set_visible(false);
     } else {
         rebuild(&ui.list, &ui.store);
-        // Show on (and theme against) the focused output — the panel is a
+        // Show on (and theme against) the focused output; the panel is a
         // long-lived reused window, see `theme::pin_focused_output`.
         crate::theme::pin_focused_output(&ui.window);
         ui.window.set_visible(true);

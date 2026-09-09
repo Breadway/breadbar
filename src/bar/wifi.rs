@@ -24,7 +24,7 @@ pub struct ScanEntry {
 pub struct WifiPopoverData {
     pub profiles: Vec<(String, bool)>, // (name, is_active)
     pub scan: Vec<ScanEntry>,
-    /// False while nmcli is still listing APs — profiles must still be usable.
+    /// False while nmcli is still listing APs; profiles must still be usable.
     pub scan_ready: bool,
 }
 
@@ -44,7 +44,7 @@ async fn fetch_status() -> Option<CrumbsStatus> {
 }
 
 async fn fetch_profile_list() -> Vec<(String, bool)> {
-    // Not `stdout_ok` — a non-zero exit here (no active profile, say) still
+    // Not `stdout_ok`: a non-zero exit here (no active profile, say) still
     // prints a usable list, and the old code used it regardless of status.
     let Some(out) =
         super::proc::output("breadcrumbs", &["profile", "list"], Duration::from_secs(4)).await
@@ -117,7 +117,7 @@ async fn fetch_scan() -> Vec<ScanEntry> {
         .collect()
 }
 
-/// Background poller — updates internet/TS status every 30 s.
+/// Background poller: updates internet/TS status every 30 s.
 pub fn spawn_status_poller(sender: ComponentSender<App>) {
     relm4::spawn(async move {
         loop {
@@ -183,7 +183,7 @@ pub fn spawn_join(ssid: String) {
 /// stdin (the same input path its interactive prompt uses when the flag is
 /// omitted), and the actual connect is delegated to `breadcrumbs join`,
 /// which reads the just-saved secret back out of config instead of taking
-/// it as a command-line argument at all — nmcli is never shelled directly
+/// it as a command-line argument at all. nmcli is never shelled directly
 /// here, since it has no non-interactive, non-argv way to accept a PSK.
 pub fn spawn_add_and_join(ssid: String, password: String) {
     use tokio::io::AsyncWriteExt;

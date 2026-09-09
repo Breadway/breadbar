@@ -149,13 +149,13 @@ pub fn spawn_watcher(sender: ComponentSender<App>) {
     let bus_map_cleanup = bus_map.clone();
     let sender_cleanup = sender.clone();
 
-    // Registration task — owns the watcher service and processes new items.
+    // Registration task: owns the watcher service and processes new items.
     relm4::spawn(async move {
         let watcher = Watcher {
             state: Arc::new(Mutex::new(WatcherState { items: Vec::new() })),
             tx,
         };
-        // Builder steps fail only on invalid static strings — safe to unwrap.
+        // Builder steps fail only on invalid static strings; safe to unwrap.
         let conn = zbus::connection::Builder::session()
             .unwrap()
             .name("org.kde.StatusNotifierWatcher")
@@ -174,7 +174,7 @@ pub fn spawn_watcher(sender: ComponentSender<App>) {
         }
     });
 
-    // Cleanup task — watches NameOwnerChanged and removes items when their owner exits.
+    // Cleanup task: watches NameOwnerChanged and removes items when their owner exits.
     relm4::spawn(async move {
         let Ok(conn) = zbus::Connection::session().await else { return };
         let Ok(proxy) = zbus::fdo::DBusProxy::new(&conn).await else { return };

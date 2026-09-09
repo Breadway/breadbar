@@ -14,7 +14,7 @@ use zbus::zvariant::OwnedValue;
 /// "replace whatever from this app is already showing." Without honoring
 /// this, a fire-and-forget sender can never supersede an earlier
 /// `Expire::Never` notification from itself (e.g. a critical hardware
-/// warning) — it just piles up a new card next to it forever.
+/// warning); it just piles up a new card next to it forever.
 const SYNCHRONOUS_HINT: &str = "x-canonical-private-synchronous";
 
 /// Spec + GNOME/KDE reserved action id for an inline reply field. Hidden
@@ -23,7 +23,7 @@ const SYNCHRONOUS_HINT: &str = "x-canonical-private-synchronous";
 pub const INLINE_REPLY_KEY: &str = "inline-reply";
 
 /// KDE placeholder hint. Presence (or an `inline-reply` action) is enough
-/// to show the reply field — Discord/Telegram use the action, Plasma often
+/// to show the reply field: Discord/Telegram use the action, Plasma often
 /// only the hint.
 const KDE_REPLY_PLACEHOLDER: &str = "x-kde-reply-placeholder";
 
@@ -40,7 +40,7 @@ pub struct Action {
 }
 
 /// How long a shown notification should stay up before auto-dismissing.
-/// Distinct from `Option<Duration>` mainly for readability at call sites —
+/// Distinct from `Option<Duration>` mainly for readability at call sites:
 /// `Never` covers both the spec's `expire_timeout == 0` ("never expire")
 /// and a critical-urgency notification with no explicit timeout, which
 /// conventionally shouldn't auto-dismiss either.
@@ -78,7 +78,7 @@ pub struct NotifHandle {
 impl NotifHandle {
     /// Show the history window if hidden, hide it if shown. A dropped send
     /// (loop gone, or the bounded channel briefly full) is not worth
-    /// surfacing — the click just does nothing.
+    /// surfacing; the click just does nothing.
     pub fn toggle_history(&self) {
         let _ = self.tx.try_send(NotifEvent::ToggleHistory);
     }
@@ -177,7 +177,7 @@ struct NotifServer {
 
 /// Private breadbar control surface on the same connection as
 /// `org.freedesktop.Notifications`. `breadbar --history` is a one-shot
-/// client of `ToggleHistory` — there is no other IPC.
+/// client of `ToggleHistory`; there is no other IPC.
 struct BarService {
     tx: mpsc::Sender<NotifEvent>,
 }
@@ -244,7 +244,7 @@ impl NotifServer {
         } else {
             self.next_id.fetch_add(1, Ordering::Relaxed)
         };
-        // Per spec: 0 means "never expire" — this used to be lumped in
+        // Per spec: 0 means "never expire", which used to be lumped in
         // with "-1: let the server pick a default" and coerced to a fixed
         // 5s, so a sender explicitly asking for a persistent notification
         // (e.g. a progress/error dialog) got auto-dismissed anyway.
@@ -305,7 +305,7 @@ impl NotifServer {
 }
 
 /// A fixed sample notification for `--screenshot notification`/
-/// `notification-critical` — substitutes for a real `Notify` D-Bus call so a
+/// `notification-critical`; substitutes for a real `Notify` D-Bus call so a
 /// capture doesn't depend on some external sender firing one at just the
 /// right moment.
 pub enum SampleKind {
@@ -337,7 +337,7 @@ impl SampleKind {
 /// shows/updates/hides it.
 ///
 /// `sample`: `Some` skips real D-Bus registration entirely and seeds the
-/// loop with one fixed sample event instead — screenshot mode only. Doing
+/// loop with one fixed sample event instead: screenshot mode only. Doing
 /// the real `org.freedesktop.Notifications` registration in every
 /// screenshot run would race the real breadbar (if running) for the same
 /// well-known name for no benefit, since nothing needs to reach this
@@ -376,7 +376,7 @@ pub fn spawn(sample: Option<SampleKind>) -> (gtk4::Window, Option<NotifHandle>) 
                     persist_history: true,
                 };
                 let bar = BarService { tx };
-                // Builder failures here would only occur with invalid static strings — safe to unwrap.
+                // Builder failures here would only occur with invalid static strings; safe to unwrap.
                 let conn = zbus::connection::Builder::session()
                     .unwrap()
                     .name("org.freedesktop.Notifications")
@@ -389,7 +389,7 @@ pub fn spawn(sample: Option<SampleKind>) -> (gtk4::Window, Option<NotifHandle>) 
                     .await
                     .expect("failed to claim org.freedesktop.Notifications on D-Bus session bus");
                 // Hand the connection to popup::run so it can emit `NotificationClosed`
-                // (spec-mandated whenever a notification actually goes away) — the
+                // (spec-mandated whenever a notification actually goes away); the
                 // dismiss decisions all happen over there, not in this interface impl.
                 let _ = conn_tx.send(conn);
                 std::future::pending::<()>().await
@@ -437,7 +437,7 @@ mod tests {
             Expire::Never => panic!("expected 1500ms, got Never"),
         }
         // Even for critical urgency, an explicit positive timeout is honored
-        // rather than overridden to Never — "critical persists" is only the
+        // rather than overridden to Never: "critical persists" is only the
         // *default* when the sender didn't specify one.
         match compute_expire(1500, true) {
             Expire::After(d) => assert_eq!(d, Duration::from_millis(1500)),

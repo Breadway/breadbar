@@ -3,7 +3,7 @@
 //!
 //! Each bar module (`workspaces`, `media`, `clock`, `volume`, `wifi`,
 //! `battery`, `control`, …) is still built exactly where it always was in
-//! `main.rs` — this registry only decouples the ORDER in which those
+//! `main.rs`; this registry only decouples the ORDER in which those
 //! already-constructed widgets get appended into the left/centre/right
 //! containers from the fixed source-code order they were built in. main.rs
 //! registers each widget by its manifest module name once construction is
@@ -13,7 +13,7 @@
 //! A slot entry may also be `widget:<key>`, where `<key>` is either a
 //! `WidgetPlacement` alias (`right_of_workspaces`, `left_of_clock`,
 //! `right_of_clock`, `left_of_stats`, `tray`) or a Lua module name (see
-//! `bread_shared::widget::WidgetSpec::module`) — these route through
+//! `bread_shared::widget::WidgetSpec::module`); these route through
 //! `for_each_in_slot`'s `on_widget` callback rather than this registry,
 //! since their containers are Lua-widget slots created on demand by the
 //! caller, not modules registered here. `WidgetPlacement` itself is a wire
@@ -42,7 +42,7 @@ impl ModuleRegistry {
     /// caller create-or-fetch that Lua widget container and append it at
     /// this exact position. Anything else is looked up as a registered
     /// module name and passed to `on_module`; a name with no registered
-    /// widget is logged and skipped — an unrecognized or unmapped module in
+    /// widget is logged and skipped: an unrecognized or unmapped module in
     /// a theme manifest must never crash the bar.
     pub fn for_each_in_slot(
         &self,
@@ -57,7 +57,7 @@ impl ModuleRegistry {
             }
             match self.0.get(name.as_str()) {
                 Some(widget) => on_module(name, widget),
-                None => eprintln!("breadbar: [bar.slots] names unknown module '{name}' — skipping"),
+                None => eprintln!("breadbar: [bar.slots] names unknown module '{name}': skipping"),
             }
         }
     }
@@ -68,7 +68,7 @@ impl ModuleRegistry {
 /// first use. Called from `for_each_in_slot`'s `on_widget` callback so a
 /// `widget:<key>` slot entry gets a container the first time a theme
 /// places one there, regardless of whether `key` is a `WidgetPlacement`
-/// alias or a Lua module name — `reconcile_widgets` (main.rs) is what
+/// alias or a Lua module name; `reconcile_widgets` (main.rs) is what
 /// gives that distinction meaning when it routes specs into these
 /// containers.
 pub fn widget_slot_container(

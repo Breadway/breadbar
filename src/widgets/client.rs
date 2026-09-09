@@ -15,19 +15,19 @@ use bread_utils::bread_client::BreadClient;
 use relm4::ComponentSender;
 use std::time::Duration;
 
-/// breadbar's own registered app id — already reserved in
+/// breadbar's own registered app id, already reserved in
 /// `bread_shared::apps::KNOWN_APPS` (see `Documentation.md`'s Namespaces
 /// section). Used both to fetch widgets and to publish click events.
 pub const APP_ID: &str = "bar";
 
 /// Safety-net poll interval. `bread.widget.cleared` (emitted once per
-/// daemon reload, including a full restart — see breadd's `reload_internal`)
+/// daemon reload, including a full restart; see breadd's `reload_internal`)
 /// is meant to catch the case where a module stops registering widgets
 /// without anything else re-triggering a fetch, but a *restart* (as opposed
 /// to a live `bread reload`) drops the subscription entirely; if that one
 /// event fires before `BreadClient::subscribe`'s reconnect-with-backoff
 /// finishes re-establishing the stream, it's missed and there's no second
-/// chance from the event side. This poll is the backstop for that race —
+/// chance from the event side. This poll is the backstop for that race:
 /// infrequent enough that it's not a real cost, frequent enough that a missed
 /// event self-heals well within a session rather than needing a manual
 /// breadbar restart to clear stale widgets.
@@ -45,7 +45,7 @@ pub fn spawn(sender: ComponentSender<App>) {
     std::thread::spawn(move || fetch_and_send(&initial));
 
     // `subscribe` already reconnects with backoff on its own background
-    // thread for the lifetime of the process — there is no natural point to
+    // thread for the lifetime of the process; there is no natural point to
     // stop it before the app exits, so the handle is intentionally leaked
     // rather than threaded through App just to be dropped at shutdown.
     let live = sender.clone();
@@ -70,7 +70,7 @@ fn fetch_and_send(sender: &ComponentSender<App>) {
     let Some(result) = client.request("widgets.list", serde_json::Value::Null) else {
         return;
     };
-    // Decode element-wise rather than `Vec<WidgetSpec>` in one shot — one
+    // Decode element-wise rather than `Vec<WidgetSpec>` in one shot: one
     // malformed entry from any module (a bad `class`, an unknown enum value,
     // ...) must not blank out every other module's widgets.
     let raw: Vec<serde_json::Value> = serde_json::from_value(result).unwrap_or_default();

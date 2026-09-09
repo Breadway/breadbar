@@ -15,7 +15,7 @@ enum OsdEvent {
     Brightness { pct: u8 },
 }
 
-/// A fixed sample event for `--screenshot osd-volume`/`osd-brightness` —
+/// A fixed sample event for `--screenshot osd-volume`/`osd-brightness`:
 /// substitutes for the real `pactl subscribe`/backlight-sysfs watchers so a
 /// capture doesn't depend on this machine's actual volume/brightness at
 /// capture time.
@@ -27,7 +27,7 @@ pub enum SampleKind {
 /// Live `pactl subscribe` children spawned by [`volume_watcher`]. Kept so a
 /// best-effort cleanup can kill them when breadbar exits: `pactl subscribe`
 /// blocks until the server connection dies, so without this every breadbar
-/// restart orphaned one that kept its PulseAudio connection open — until
+/// restart orphaned one that kept its PulseAudio connection open: until
 /// pipewire-pulse's client cap filled up and new clients (settings apps
 /// included) were refused, showing "no devices". Also reaped here, so a
 /// watcher that dies on its own never lingers as a zombie.
@@ -73,17 +73,17 @@ impl SampleKind {
     }
 }
 
-/// Builds the OSD window synchronously (so a caller — screenshot mode, via
-/// `sample`, in particular — has a real window to hook `connect_map` on
+/// Builds the OSD window synchronously (so a caller, screenshot mode via
+/// `sample` in particular, has a real window to hook `connect_map` on
 /// before the async event loop below ever runs) and spawns the event loop
 /// that shows/updates/hides it.
 ///
 /// `sample`: `Some` skips the real volume/brightness watchers entirely and
-/// seeds the loop with one fixed sample event instead — screenshot mode
+/// seeds the loop with one fixed sample event instead: screenshot mode
 /// only, so a capture never depends on (or is disrupted by) this machine's
 /// actual audio/backlight state.
 /// `enabled`: which OSD kinds the active shell theme's `[osd].enabled` turns
-/// on — `"volume"` / `"brightness"`. A kind left out gets no watcher (its
+/// on: `"volume"` / `"brightness"`. A kind left out gets no watcher (its
 /// hardware events are ignored). `dismiss_ms`: how long a shown OSD lingers
 /// (`[osd].dismiss_ms`). Both are ignored when `sample` is `Some` (screenshot
 /// mode always shows the one sampled kind).
@@ -127,8 +127,8 @@ fn volume_watcher(tx: mpsc::Sender<OsdEvent>) {
 
     let Some(stdout) = child.stdout.take() else { return };
     // The child is meant to outlive this reader loop (it blocks until
-    // breadbar itself dies), so hand it to `kill_watchers` — the exit
-    // hook plus the SIGINT/SIGTERM handlers in main — instead of letting
+    // breadbar itself dies), so hand it to `kill_watchers` (the exit
+    // hook plus the SIGINT/SIGTERM handlers in main) instead of letting
     // it orphan on restart.
     REGISTER_EXIT_HOOK.call_once(register_exit_hook);
     if let Ok(mut children) = WATCHER_CHILDREN.lock() {
@@ -262,13 +262,13 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>, dismiss
             icon.remove_css_class("osd-icon-muted");
         }
         animate_osd_fill(&pbar, &fill_pct, &fill_anim, &fill_token, pct);
-        // Pin the OSD to the focused output every time it (re)appears —
+        // Pin the OSD to the focused output every time it (re)appears:
         // the only moment focus can have changed since the last show.
         // `bind_auto` on the long-lived, reused window is unreliable here
         // (see `theme::pin_focused_output`); an explicit pin keeps the fill
         // accent this monitor's, never the primary's red on a secondary.
         // Skipped while already visible so a burst of volume-key repeats
-        // doesn't spawn a `hyprctl` per event — focus can't move mid-burst.
+        // doesn't spawn a `hyprctl` per event: focus can't move mid-burst.
         if !window.is_visible() {
             crate::theme::pin_focused_output(&window);
         }
@@ -288,22 +288,22 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>, dismiss
 }
 
 /// How many percentage points the fill runs past its real target before
-/// easing back — subtle, matching the rest of the theme's "spring" motion
+/// easing back: subtle, matching the rest of the theme's "spring" motion
 /// rather than a dramatic bounce.
 const OSD_OVERSHOOT_PCT: i32 = 4;
 /// Leg 1 (toward the overshoot point) / leg 2 (settling back onto the real
 /// target) durations. Two legs, not one: `anim::spring_to` clamps every
 /// frame to `[min(from, to), max(from, to)]` (see its own doc comment and
 /// tests) specifically so a caller like the capsule drawer can never end up
-/// with a negative size request — which also means a single `spring_to`
+/// with a negative size request: which also means a single `spring_to`
 /// call can *never* visibly overshoot `to`, no matter how much the
-/// underlying curve wants to. Chaining two calls — first to a point past
-/// the target, then back onto it — is what actually produces the overshoot.
+/// underlying curve wants to. Chaining two calls, first to a point past
+/// the target, then back onto it, is what actually produces the overshoot.
 const OSD_LEG1_MS: f64 = 160.0;
 const OSD_LEG2_MS: f64 = 200.0;
 
 /// Animates `pbar`'s fraction from wherever `current` says it currently is
-/// to `target`, overshooting slightly past it and settling back — see the
+/// to `target`, overshooting slightly past it and settling back: see the
 /// constants above for why this takes two `spring_to` legs instead of one.
 /// Cancels any run already in flight (a fast double volume-step must
 /// continue from the current visual position, not fight or restart it) and

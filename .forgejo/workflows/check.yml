@@ -21,7 +21,7 @@ jobs:
       # crates to ../bread-ecosystem for fast iteration, but any `cargo build`
       # under it rewrites Cargo.lock to record them as *path* deps. Committing
       # that lock breaks `cargo build --locked` on a lone CI clone (no sibling
-      # repo) — which is what stranded the shell-theme breadbar on the dev
+      # repo), which is what stranded the shell-theme breadbar on the dev
       # track. Fail here if the committed lock isn't the clean git-tag
       # resolution, and if Cargo.toml itself ever commits the patch.
       - name: guard against a patched Cargo.lock
@@ -29,7 +29,7 @@ jobs:
           set -euo pipefail
           cd src
           if grep -qE '^\[patch\."https://git\.breadway\.dev/Breadway/bread-ecosystem"\]' Cargo.toml; then
-            echo "::error::Cargo.toml commits a [patch] for bread-ecosystem — that belongs in the gitignored .cargo/config.toml only"
+            echo "::error::Cargo.toml commits a [patch] for bread-ecosystem; that belongs in the gitignored .cargo/config.toml only"
             exit 1
           fi
           for crate in bread-theme bread-utils bread-launcher bread-screenshots; do

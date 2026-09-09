@@ -127,7 +127,7 @@ pub fn spawn_set_sink(name: String, sender: ComponentSender<App>) {
             .output()
             .await;
         // Default sink alone leaves already-playing streams on the old
-        // device — move them too so the switch is audible immediately.
+        // device; move them too so the switch is audible immediately.
         if let Ok(o) = tokio::process::Command::new("pactl")
             .args(["list", "short", "sink-inputs"])
             .output()
