@@ -2827,6 +2827,26 @@ impl App {
                 self.wifi_pane.append(&row);
             }
         }
+
+        self.wifi_pane
+            .append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+        let settings_row = gtk4::Button::new();
+        settings_row.add_css_class("flat");
+        settings_row.add_css_class("wifi-popover-row");
+        let settings_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        let settings_icon = svg_image(bar::stats::ICON_BT_SETTINGS);
+        settings_icon.add_css_class("stat-icon");
+        settings_box.append(&settings_icon);
+        settings_box.append(&gtk4::Label::new(Some("Wi-Fi settings")));
+        settings_row.set_child(Some(&settings_box));
+        settings_row.connect_clicked(|_| {
+            relm4::spawn(async {
+                let _ = tokio::process::Command::new("bos-settings")
+                    .args(["--page", "network"])
+                    .spawn();
+            });
+        });
+        self.wifi_pane.append(&settings_row);
     }
 
     fn rebuild_bt_popover(&mut self) {
@@ -2917,7 +2937,9 @@ impl App {
         settings_row.set_child(Some(&settings_box));
         settings_row.connect_clicked(|_| {
             relm4::spawn(async {
-                let _ = tokio::process::Command::new("blueman-manager").spawn();
+                let _ = tokio::process::Command::new("bos-settings")
+                    .args(["--page", "bluetooth"])
+                    .spawn();
             });
         });
         self.bt_pane.append(&settings_row);
