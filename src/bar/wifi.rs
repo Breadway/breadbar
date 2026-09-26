@@ -37,9 +37,13 @@ async fn fetch_status() -> Option<CrumbsStatus> {
         ssid: v["ssid"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
         ip: v["ip"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
         internet: v["internet"].as_bool().unwrap_or(true),
-        captive_portal: v["captive_portal"].is_string(),
-        tailscale_ok: v["tailscale"]["ok"].as_bool().unwrap_or(true),
-        tailscale_required: v["tailscale"]["required"].as_bool().unwrap_or(false),
+        // Field shapes per breadcrumbs' `status --json` contract (see its
+        // README): `portal` is a bool, `tailscale` is the health state name
+        // ("Ok", "NeedsLogin", ...) or null when Tailscale isn't installed,
+        // and `tailscale_required` is top-level.
+        captive_portal: v["portal"].as_bool().unwrap_or(false),
+        tailscale_ok: v["tailscale"].as_str().is_none_or(|t| t == "Ok"),
+        tailscale_required: v["tailscale_required"].as_bool().unwrap_or(false),
     })
 }
 
