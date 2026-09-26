@@ -30,10 +30,11 @@ mod close_reason {
 pub fn build_window() -> (gtk4::Window, gtk4::Box) {
     let window = create_window();
     let cards_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    cards_box.set_margin_top(8);
+    // Flush on the anchored (top/right) edges so a card lines up with the
+    // control panel under the same `[surfaces.*]` offset; the far edges
+    // keep room for the card's slide-in.
     cards_box.set_margin_bottom(8);
     cards_box.set_margin_start(8);
-    cards_box.set_margin_end(8);
     window.set_child(Some(&cards_box));
 
     // NOTIFICATION INTERACTION #B: the surface (and `window.surface()`)
@@ -417,7 +418,9 @@ fn make_card(spec: CardSpec<'_>) -> gtk4::Box {
     let overlay = gtk4::Overlay::new();
     overlay.set_child(Some(&content));
 
-    let dismiss_btn = gtk4::Button::with_label("×");
+    let dismiss_btn = gtk4::Button::new();
+    dismiss_btn.set_child(Some(&crate::svg_image_sized(asset!("Close.svg"), 12)));
+    dismiss_btn.set_tooltip_text(Some("Dismiss"));
     dismiss_btn.add_css_class("notification-dismiss");
     dismiss_btn.set_halign(gtk4::Align::End);
     dismiss_btn.set_valign(gtk4::Align::Start);

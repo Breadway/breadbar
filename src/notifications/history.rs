@@ -204,6 +204,23 @@ pub fn build_window(store: Store) -> Ui {
     title.set_hexpand(true);
     header.append(&title);
 
+    let list = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    list.add_css_class("history-list");
+
+    let clear_btn = gtk4::Button::with_label("Clear all");
+    clear_btn.add_css_class("flat");
+    clear_btn.add_css_class("history-close");
+    {
+        let store = store.clone();
+        let list = list.clone();
+        clear_btn.connect_clicked(move |_| {
+            store.lock().unwrap().clear();
+            persist(&store);
+            rebuild(&list, &store);
+        });
+    }
+    header.append(&clear_btn);
+
     let close_btn = gtk4::Button::with_label("Close");
     close_btn.add_css_class("flat");
     close_btn.add_css_class("history-close");
@@ -214,8 +231,8 @@ pub fn build_window(store: Store) -> Ui {
     header.append(&close_btn);
     outer.append(&header);
 
-    let list = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("history-scroll");
     scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
     scroll.set_propagate_natural_height(true);
     scroll.set_max_content_height(480);
@@ -281,12 +298,32 @@ pub fn rebuild(list: &gtk4::Box, store: &Store) {
         return;
     }
 
-    for entry in entries {
-        list.append(&make_row(&entry));
+    for (entry, count) in group_repeats(&entries) {
+        list.append(&make_row(entry, count));
     }
 }
 
-fn make_row(entry: &Entry) -> gtk4::Box {
+/// Collapses runs of back-to-back identical notifications (same app,
+/// summary and body) into their newest entry plus a repeat count, so a
+/// sender that re-fires the same message doesn't flood the list.
+fn group_repeats(entries: &[Entry]) -> Vec<(&Entry, usize)> {
+    let mut out: Vec<(&Entry, usize)> = Vec::new();
+    for e in entries {
+        match out.last_mut() {
+            Some((prev, n))
+                if prev.app_name == e.app_name
+                    && prev.summary == e.summary
+                    && prev.body == e.body =>
+            {
+                *n += 1
+            }
+            _ => out.push((e, 1)),
+        }
+    }
+    out
+}
+
+fn make_row(entry: &Entry, count: usize) -> gtk4::Box {
     let card = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
     card.add_css_class("notification-card");
     card.add_css_class("history-card");
@@ -309,6 +346,11 @@ fn make_row(entry: &Entry) -> gtk4::Box {
         spacer.set_hexpand(true);
         top.append(&spacer);
     }
+    if count > 1 {
+        let badge = gtk4::Label::new(Some(&format!("×{count}")));
+        badge.add_css_class("history-count");
+        top.append(&badge);
+    }
     let time = gtk4::Label::new(Some(&format_time(entry.received)));
     time.add_css_class("history-time");
     time.set_xalign(1.0);
@@ -324,7 +366,7 @@ fn make_row(entry: &Entry) -> gtk4::Box {
         card.append(&summary);
     }
 
-    let body = collapse_ws(&entry.body);
+    let body = collapse_ws(&plain_text(&entry.body));
     if !body.is_empty() {
         let body_lbl = gtk4::Label::new(Some(&truncate(&body, BODY_MAX_CHARS)));
         body_lbl.add_css_class("notification-body");
@@ -348,6 +390,19 @@ fn format_time(received: SystemTime) -> String {
     dt.format("%H:%M")
         .map(|s| s.to_string())
         .unwrap_or_else(|_| "--:--".into())
+}
+
+/// FDO `body-markup` (`<i>`, `<b>`, `&amp;`, ...) reduced to its text. The
+/// history row truncates by character count, which could cut a tag in half,
+/// so it renders plain text rather than markup. Invalid markup is kept as-is.
+fn plain_text(body: &str) -> String {
+    if !body.contains('<') && !body.contains('&') {
+        return body.to_string();
+    }
+    match gtk4::pango::parse_markup(body, '\0') {
+        Ok((_, text, _)) => text.to_string(),
+        Err(_) => body.to_string(),
+    }
 }
 
 fn collapse_ws(s: &str) -> String {
@@ -402,6 +457,31 @@ mod tests {
         assert_eq!(hist[0].id, 1);
         assert_eq!(hist[0].summary, "new");
         assert_eq!(hist[1].id, 2);
+    }
+
+    #[test]
+    fn plain_text_strips_markup_and_keeps_invalid_input() {
+        assert_eq!(
+            plain_text("Saved to <i>/tmp/a.png</i> &amp; copied"),
+            "Saved to /tmp/a.png & copied"
+        );
+        assert_eq!(plain_text("a < b"), "a < b");
+        assert_eq!(plain_text("plain"), "plain");
+    }
+
+    #[test]
+    fn group_repeats_collapses_only_consecutive_duplicates() {
+        let hist = [
+            entry(4, "waiting"),
+            entry(3, "waiting"),
+            entry(2, "other"),
+            entry(1, "waiting"),
+        ];
+        let grouped: Vec<(u32, usize)> = group_repeats(&hist)
+            .iter()
+            .map(|(e, n)| (e.id, *n))
+            .collect();
+        assert_eq!(grouped, vec![(4, 2), (2, 1), (1, 1)]);
     }
 
     #[test]

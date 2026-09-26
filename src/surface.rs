@@ -7,10 +7,10 @@
 //! plan's own anti-goal, §2). `bottom_right` was added for daylight (plan
 //! §11 phase 7, axis 2): the first bottom-anchored bar, whose satellites
 //! need to hug the bottom-right corner the way every top-anchored theme's
-//! already hug the top-right one. `exclusive` zone and `keyboard` mode
-//! aren't part of the `[surfaces.*]` schema (`bread_theme::shell::Surface`
-//! has no such fields) and stay hardcoded at each call site, same as before
-//! this refactor.
+//! already hug the top-right one. `keyboard` mode isn't part of the
+//! `[surfaces.*]` schema (`bread_theme::shell::Surface` has no such field)
+//! and stays hardcoded at each call site. The exclusive zone is always -1
+//! (see [`apply`]).
 
 use bread_theme::shell::SurfaceWidth;
 use gtk4::prelude::*;
@@ -41,6 +41,14 @@ pub fn apply(window: &gtk4::Window, namespace: &str) {
         );
         return;
     };
+
+    // Offsets are measured from the screen edge (themes derive them as
+    // "bar edge + gap"), so every satellite opts out of the bar's exclusive
+    // zone. Without this, a surface is laid out below the bar's reserved
+    // area and its offset counts twice: toasts and the notification
+    // history sat ~36px lower than the control panel under the same
+    // `[16, 44]` offset.
+    window.set_exclusive_zone(-1);
 
     window.set_layer(if surf.layer == "top" {
         Layer::Top
