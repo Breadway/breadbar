@@ -462,6 +462,7 @@ pub struct App {
     tray_section: gtk4::Box,
     tray_sep: gtk4::Separator,
     tray_box: gtk4::Box,
+    tray_count_lbl: gtk4::Label,
     tray_items: std::collections::HashMap<String, gtk4::Button>,
 
     // ── Lua-declared widgets ─────────────────────────────────────────────
@@ -970,7 +971,7 @@ impl SimpleComponent for App {
         // order `[bar.slots].centre` names them.
 
         // ── Stats box (right side, or trailing edge of a vertical dock) ────
-        // Demo order: [vol 64] [wifi] [bat 83] [☰]
+        // Demo order: [vol 64] [wifi] [bat 83] [menu]
         let stats_box = gtk4::Box::new(slot_orientation, 2);
         stats_box.add_css_class("stats-box");
         stats_box.add_css_class("bar-segment");
@@ -1150,7 +1151,7 @@ impl SimpleComponent for App {
         // below, per `[bar.slots].right`.
 
         // ── Control panel popover ────────────────────────────────────────
-        // Liquid Motion chrome: CONTROL / vol / bl / lock·sleep·off.
+        // Liquid Motion chrome: CONTROL / volume / brightness / power tiles.
         // SNI tray + Lua tray widgets still mount here, but only as a
         // headerless icon row when something actually registers.
         let panel_inner = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -1167,7 +1168,7 @@ impl SimpleComponent for App {
         // `panel_inner` in the active theme's `[panel].sections` order: a
         // section whose name the theme drops is simply never parented. The
         // header + caret above are fixed.
-        let vol_row = build_slider_row("vol", 0.0, 1.5, 0.02);
+        let vol_row = build_slider_row(bar::stats::ICON_VOLUME, "Volume", 0.0, 1.5, 0.02);
         let panel_vol_slider = vol_row.1.clone();
 
         let sink_section = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -1175,58 +1176,97 @@ impl SimpleComponent for App {
         let sink_header = gtk4::Label::new(Some("OUTPUT"));
         sink_header.add_css_class("control-panel-header");
         sink_header.set_xalign(0.0);
-        sink_header.set_margin_top(6);
         let sink_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         sink_section.append(&sink_header);
         sink_section.append(&sink_box);
         sink_section.set_visible(false);
 
-        let bright_row = build_slider_row("bl", 0.0, 1.0, 0.02);
+        let bright_row =
+            build_slider_row(bar::stats::ICON_BRIGHTNESS, "Brightness", 0.0, 1.0, 0.02);
         let panel_bright_slider = bright_row.1.clone();
 
         // `system` section = its header + the stats box, wrapped so the pair
         // moves/hides as one unit under `[panel].sections`.
         let sys_section = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        sys_section.add_css_class("control-panel-section");
         let sys_header = gtk4::Label::new(Some("SYSTEM"));
         sys_header.add_css_class("control-panel-header");
         sys_header.set_xalign(0.0);
-        sys_header.set_margin_top(10);
         sys_section.append(&sys_header);
         sys_section.append(&system_stats_box);
 
+        // Equal-width icon tiles. Clicks are wired after `panels` exists
+        // (see "Power actions" below) so an action can close the panel
+        // first instead of leaving it open under the lock screen.
         let power_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         power_row.add_css_class("power-row");
-        power_row.set_halign(gtk4::Align::Center);
-        for (label, cmd) in [
-            // breadlock is the ecosystem's own screen locker: hyprlock is
-            // the thing it was built to replace; the bar shouldn't still
-            // be pointing at it.
-            ("lock", vec!["breadlock"]),
-            ("sleep", vec!["systemctl", "suspend"]),
-            ("off", vec!["systemctl", "poweroff"]),
-        ] {
-            let btn = gtk4::Button::with_label(label);
-            btn.add_css_class("flat");
-            btn.add_css_class("power-btn");
-            btn.connect_clicked(move |_| {
-                let args = cmd.to_vec();
-                relm4::spawn(async move {
-                    let _ = tokio::process::Command::new(args[0])
-                        .args(&args[1..])
-                        .spawn();
-                });
-            });
-            power_row.append(&btn);
-        }
+        power_row.set_homogeneous(true);
+        let power_btns: Vec<(gtk4::Button, gtk4::Label, PowerAction)> = POWER_ACTIONS
+            .iter()
+            .map(|action| {
+                let btn = gtk4::Button::new();
+                btn.add_css_class("flat");
+                btn.add_css_class("power-btn");
+                btn.set_tooltip_text(Some(action.tooltip));
+                let tile = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+                tile.append(&svg_image(action.icon));
+                let lbl = gtk4::Label::new(Some(action.label));
+                lbl.add_css_class("power-btn-label");
+                tile.append(&lbl);
+                btn.set_child(Some(&tile));
+                power_row.append(&btn);
+                (btn, lbl, *action)
+            })
+            .collect();
 
         // SNI / Lua tray sit under the demo chrome so a single icon cannot
         // split the sliders from the power chips.
+        // SNI icons are tucked behind a collapsed "APPS n" toggle: they are
+        // rarely needed, and a loose row of mismatched third-party icons was
+        // the noisiest thing in the panel. Expanded state lasts for the
+        // session (the revealer is never rebuilt).
         let tray_section = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         tray_section.add_css_class("control-panel-section");
+        let tray_toggle = gtk4::Button::new();
+        tray_toggle.add_css_class("flat");
+        tray_toggle.add_css_class("tray-toggle");
+        tray_toggle.set_tooltip_text(Some("Show background apps"));
+        let tray_toggle_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let tray_toggle_lbl = gtk4::Label::new(Some("APPS"));
+        tray_toggle_lbl.add_css_class("control-panel-header");
+        let tray_count_lbl = gtk4::Label::new(None);
+        tray_count_lbl.add_css_class("tray-count");
+        let tray_chevron = svg_image_sized(asset!("Chevron Down.svg"), 14);
+        tray_chevron.add_css_class("tray-chevron");
+        tray_chevron.set_hexpand(true);
+        tray_chevron.set_halign(gtk4::Align::End);
+        tray_toggle_row.append(&tray_toggle_lbl);
+        tray_toggle_row.append(&tray_count_lbl);
+        tray_toggle_row.append(&tray_chevron);
+        tray_toggle.set_child(Some(&tray_toggle_row));
         let tray_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
         tray_box.add_css_class("tray-box");
-        tray_box.set_halign(gtk4::Align::Center);
-        tray_section.append(&tray_box);
+        tray_box.set_halign(gtk4::Align::Start);
+        let tray_revealer = gtk4::Revealer::new();
+        tray_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
+        tray_revealer.set_transition_duration(180);
+        tray_revealer.set_child(Some(&tray_box));
+        tray_toggle.connect_clicked({
+            let revealer = tray_revealer.clone();
+            move |b| {
+                let open = !revealer.reveals_child();
+                revealer.set_reveal_child(open);
+                if open {
+                    b.add_css_class("open");
+                    b.set_tooltip_text(Some("Hide background apps"));
+                } else {
+                    b.remove_css_class("open");
+                    b.set_tooltip_text(Some("Show background apps"));
+                }
+            }
+        });
+        tray_section.append(&tray_toggle);
+        tray_section.append(&tray_revealer);
         tray_section.set_visible(false);
         let tray_sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
         tray_sep.set_visible(false);
@@ -1270,7 +1310,12 @@ impl SimpleComponent for App {
         }
 
         // Hamburger button: same chip chrome as volume / wifi / battery.
-        let hamburger_btn = gtk4::Button::with_label("☰");
+        // A baked Lucide icon, not a "☰" text glyph: the glyph's weight and
+        // size came from whatever font rendered it, so it never matched the
+        // wifi/battery icons beside it.
+        let hamburger_btn = gtk4::Button::new();
+        hamburger_btn.set_child(Some(&svg_image(asset!("Menu.svg"))));
+        hamburger_btn.set_tooltip_text(Some("Control panel"));
         hamburger_btn.add_css_class("flat");
         hamburger_btn.add_css_class("control-panel-btn");
         hamburger_btn.add_css_class("stat-pair");
@@ -1345,6 +1390,65 @@ impl SimpleComponent for App {
             hamburger_btn.connect_clicked(move |_| {
                 panels.toggle(&win);
             });
+        }
+        // Power actions. Restart/off are one stray click from losing the
+        // session, so they arm on the first click (label swaps to
+        // "confirm") and only run on a second click within
+        // POWER_CONFIRM_MS; closing the panel disarms them.
+        {
+            let armed: Rc<RefCell<Option<(gtk4::Button, gtk4::Label, PowerAction)>>> =
+                Rc::new(RefCell::new(None));
+            let disarm = {
+                let armed = armed.clone();
+                move || {
+                    if let Some((btn, lbl, action)) = armed.borrow_mut().take() {
+                        btn.remove_css_class("armed");
+                        lbl.set_label(action.label);
+                    }
+                }
+            };
+            let generation = Rc::new(Cell::new(0u64));
+            for (btn, lbl, action) in power_btns {
+                let panels = panels.clone();
+                let armed = armed.clone();
+                let generation = generation.clone();
+                let disarm = disarm.clone();
+                btn.connect_clicked(move |b| {
+                    let is_armed = armed
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(armed_btn, _, _)| armed_btn == b);
+                    disarm();
+                    if action.confirm && !is_armed {
+                        b.add_css_class("armed");
+                        lbl.set_label("confirm");
+                        *armed.borrow_mut() = Some((b.clone(), lbl.clone(), action));
+                        // Only the timer from the most recent arm may
+                        // disarm: an older one must not cut a re-arm short.
+                        generation.set(generation.get() + 1);
+                        let armed_gen = generation.get();
+                        let generation = generation.clone();
+                        let disarm = disarm.clone();
+                        gtk4::glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(POWER_CONFIRM_MS),
+                            move || {
+                                if generation.get() == armed_gen {
+                                    disarm();
+                                }
+                            },
+                        );
+                        return;
+                    }
+                    panels.hide_all();
+                    let args = action.cmd;
+                    relm4::spawn(async move {
+                        let _ = tokio::process::Command::new(args[0])
+                            .args(&args[1..])
+                            .spawn();
+                    });
+                });
+            }
+            panels.control.connect_unmap(move |_| disarm());
         }
         {
             let panels = panels.clone();
@@ -1917,6 +2021,7 @@ impl SimpleComponent for App {
             tray_section,
             tray_sep,
             tray_box,
+            tray_count_lbl,
             tray_items: std::collections::HashMap::new(),
             widget_containers,
             dropped_widget_warned: std::collections::HashSet::new(),
@@ -1996,6 +2101,7 @@ impl SimpleComponent for App {
                 handle.toggle_history();
             });
             hamburger_btn.add_controller(secondary);
+            hamburger_btn.set_tooltip_text(Some("Control panel (right-click: notifications)"));
         }
         let osd_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
             "osd-volume" => Some(osd::SampleKind::Volume),
@@ -2196,6 +2302,7 @@ impl SimpleComponent for App {
                     return;
                 }
                 let btn = gtk4::Button::new();
+                btn.add_css_class("flat");
                 btn.add_css_class("tray-btn");
                 btn.set_child(Some(&bar::tray::make_tray_image(icon.as_ref())));
                 if !title.is_empty() {
@@ -2205,6 +2312,8 @@ impl SimpleComponent for App {
                 btn.connect_clicked(move |_| bar::tray::spawn_activate(id_click.clone()));
                 self.tray_box.append(&btn);
                 self.tray_items.insert(id, btn);
+                self.tray_count_lbl
+                    .set_label(&self.tray_items.len().to_string());
                 self.tray_section.set_visible(true);
                 self.tray_sep.set_visible(true);
             }
@@ -2212,6 +2321,8 @@ impl SimpleComponent for App {
                 if let Some(btn) = self.tray_items.remove(&id) {
                     self.tray_box.remove(&btn);
                 }
+                self.tray_count_lbl
+                    .set_label(&self.tray_items.len().to_string());
                 let has_items = !self.tray_items.is_empty();
                 self.tray_section.set_visible(has_items);
                 self.tray_sep.set_visible(has_items);
@@ -2948,14 +3059,68 @@ impl App {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn build_slider_row(label: &str, min: f64, max: f64, step: f64) -> (gtk4::Box, gtk4::Scale) {
-    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+/// One tile in the control panel's power row.
+#[derive(Clone, Copy)]
+struct PowerAction {
+    label: &'static str,
+    tooltip: &'static str,
+    icon: &'static str,
+    cmd: &'static [&'static str],
+    /// Needs a second click within [`POWER_CONFIRM_MS`] before it runs.
+    confirm: bool,
+}
+
+const POWER_CONFIRM_MS: u64 = 3_000;
+
+const POWER_ACTIONS: &[PowerAction] = &[
+    // breadlock is the ecosystem's own screen locker: hyprlock is the thing
+    // it was built to replace; the bar shouldn't still be pointing at it.
+    PowerAction {
+        label: "lock",
+        tooltip: "Lock screen",
+        icon: bar::stats::ICON_LOCK,
+        cmd: &["breadlock"],
+        confirm: false,
+    },
+    PowerAction {
+        label: "sleep",
+        tooltip: "Suspend",
+        icon: bar::stats::ICON_SLEEP,
+        cmd: &["systemctl", "suspend"],
+        confirm: false,
+    },
+    PowerAction {
+        label: "restart",
+        tooltip: "Restart (click twice)",
+        icon: bar::stats::ICON_RESTART,
+        cmd: &["systemctl", "reboot"],
+        confirm: true,
+    },
+    PowerAction {
+        label: "off",
+        tooltip: "Power off (click twice)",
+        icon: bar::stats::ICON_SHUTDOWN,
+        cmd: &["systemctl", "poweroff"],
+        confirm: true,
+    },
+];
+
+/// Icon + slider + live percentage readout. The readout tracks the scale
+/// itself (not the `ControlPanelData` poll), so it follows a drag frame by
+/// frame and shows >100% on the volume row's 0..1.5 range.
+fn build_slider_row(
+    icon_svg: &'static str,
+    tooltip: &str,
+    min: f64,
+    max: f64,
+    step: f64,
+) -> (gtk4::Box, gtk4::Scale) {
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
     row.add_css_class("control-panel-row");
 
-    let lbl = gtk4::Label::new(Some(label));
-    lbl.add_css_class("control-panel-row-label");
-    lbl.set_xalign(0.0);
-    lbl.set_width_chars(3);
+    let icon = svg_image(icon_svg);
+    icon.add_css_class("control-panel-row-icon");
+    icon.set_tooltip_text(Some(tooltip));
 
     let slider = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, min, max, step);
     slider.set_draw_value(false);
@@ -2963,8 +3128,18 @@ fn build_slider_row(label: &str, min: f64, max: f64, step: f64) -> (gtk4::Box, g
     slider.set_width_request(160);
     slider.add_css_class("control-panel-slider");
 
-    row.append(&lbl);
+    let value = gtk4::Label::new(Some("0%"));
+    value.add_css_class("control-panel-row-value");
+    value.set_xalign(1.0);
+    value.set_width_chars(4);
+    slider.connect_value_changed({
+        let value = value.clone();
+        move |s| value.set_label(&format!("{:.0}%", s.value() * 100.0))
+    });
+
+    row.append(&icon);
     row.append(&slider);
+    row.append(&value);
     (row, slider)
 }
 

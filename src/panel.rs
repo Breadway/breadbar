@@ -226,7 +226,6 @@ fn make_panel(class: &str, child: &impl IsA<gtk4::Widget>, monitor: &str) -> gtk
     window.init_layer_shell();
     window.set_namespace(Some("breadbar-panel"));
     crate::surface::apply(&window, "breadbar-panel");
-    window.set_exclusive_zone(-1);
     window.set_keyboard_mode(KeyboardMode::OnDemand);
     window.set_child(Some(child));
     bind_layer_monitor(&window, monitor);
@@ -249,7 +248,6 @@ fn make_dismiss(monitor: &str, hole: &DismissHole) -> gtk4::Window {
     // scrim's clickable region. This predates Phase 2 and is preserved
     // exactly for pixel-identical rendering: do not "fix" this gap.
     crate::surface::apply(&window, "breadbar-dismiss");
-    window.set_exclusive_zone(-1);
     window.set_keyboard_mode(KeyboardMode::None);
     // An empty window never maps a hit region. A filling child + a hair of
     // alpha is what actually receives the click-away.
