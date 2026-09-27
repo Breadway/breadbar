@@ -41,19 +41,20 @@ jobs:
           git clone --branch main https://git.breadway.dev/Breadway/bread-ecosystem.git "${ECOSYSTEM_CI_DIR}"
           echo "ECOSYSTEM_CI_DIR=${ECOSYSTEM_CI_DIR}" >> "$GITHUB_ENV"
 
-      # DEV_DEPS_DIR is pinned *inside* the checkout (src/.dev-deps), not
-      # the script's own sibling-directory default: ci/build.sh's docker
-      # wrapper only bind-mounts the checkout root (REPO_ROOT -> /workspace),
-      # so a true sibling clone outside `src` would be invisible to the
-      # containerized build step below. Keeping it inside `src` means the
-      # generated .cargo/config.toml's relative paths resolve identically
-      # on the host (where cargo update runs) and inside the container.
+      # DEV_DEPS_DIR is left at its default (a true sibling of src, in this
+      # job's own working directory): ci/build.sh's docker wrapper mounts
+      # src's PARENT directory, not just src itself, so a sibling clone is
+      # visible inside the container at the same relative position as on
+      # the host. (Earlier revisions of this workflow forced the clone
+      # *inside* src instead, needed only because ci/build.sh used to
+      # bind-mount just the checkout; that workaround broke on any
+      # consumer that is itself a Cargo workspace, so it was dropped from
+      # the shared script instead of copied here.)
       - name: resolve dev dependencies to main
         run: |
           set -euo pipefail
           cd src
-          DEV_DEPS_DIR="$(pwd)/.dev-deps" \
-            bash "${ECOSYSTEM_CI_DIR}/scripts/dev-deps.sh" --root .
+          bash "${ECOSYSTEM_CI_DIR}/scripts/dev-deps.sh" --root .
 
       - name: build
         run: cd src && bash ci/build.sh cargo build --release
