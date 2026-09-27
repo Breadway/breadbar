@@ -54,12 +54,12 @@ pub fn set_shell_theme(theme: ShellTheme) {
 
 /// Returns the ink colour for icon tinting in the stats bar: the same
 /// luminance-picked colour the bar's text uses, so icons stay legible on the
-/// bar whatever lightness pywal gives the background.
+/// bar whatever lightness the current palette gives the background.
 ///
 /// FIXED (axis 1, daylight): this used to be unconditionally
 /// `ink_on(&load_palette().background)`. `load_palette().background` is
 /// `bread_theme::palette::FIXED_BACKGROUND` (`"#0c0c0c"`), pinned dark
-/// regardless of pywal OR the active shell theme (see that constant's own
+/// regardless of the loaded palette OR the active shell theme (see that constant's own
 /// doc comment): so this always resolved to the SAME near-white value,
 /// baked directly into a rasterised SVG texture at icon-build time
 /// (`svg_texture_sized`, the only call site), completely outside CSS and
@@ -150,7 +150,7 @@ where
 
 /// One-time notice when an output has no `palettes/<output>.json` and
 /// `bind_window`/`load_palette_for` will silently fall back to the global
-/// pywal palette: its bar then shows the primary monitor's accent, which
+/// palette: its bar then shows the primary monitor's accent, which
 /// is easy to misread as "per-monitor theming is broken". Fires once per
 /// output name for the process.
 fn warn_if_palette_missing(output: &str) {
@@ -230,7 +230,7 @@ pub fn apply() {
 /// every persistent window so its widget-level per-output providers (which
 /// GTK4 ranks *above* the display-global one regardless of selector) also
 /// rebuild, and finally re-bake the icon textures whose tint is resolved in
-/// Rust outside CSS (`fg_color`). This is what a pywal palette change gets
+/// Rust outside CSS (`fg_color`). This is what a palette change gets
 /// for free via `apply_app_css` + `reload_binds_for_sanitized`; a
 /// `theme.toml` edit or a SIGHUP has to drive it explicitly.
 ///
