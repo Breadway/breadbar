@@ -24,10 +24,22 @@ When working on a bug or issue, create branch `fix/<issue you are fixing>`.
 - `github`: GitHub mirror. Push `origin` only; GitHub auto-mirrors.
 
 ## CI
+- `check.yml` triggers on `push: branches: ['feature/**', 'fix/**']`.
 - `dev-release.yml` triggers on `push: branches: ['main']`.
 - `rc-release.yml` triggers on `vX.Y.Z-rc.N` tag pushes (beta track).
 - `release.yml` triggers on any other `v*` tag push (stable).
   None of these run on plain commits or PRs beyond what's listed.
+- `check.yml` and `dev-release.yml` both build in "dev mode": every
+  `git.breadway.dev` dependency (bread-theme, bread-utils,
+  bread-screenshots, bread-launcher, bread-shared) is patched to its own
+  repo's `main` at build time by bread-ecosystem's `scripts/dev-deps.sh`,
+  and the build runs without `--locked`. `rc-release.yml`/`release.yml`
+  never patch anything: tagged Cargo.toml pins, `--locked`, same as
+  before. Cargo.toml itself always stays tag-pinned; don't hand-edit it to
+  a `rev`/`branch`/`path` to test a cross-repo change; `scripts/lint-pins.sh`
+  (also from bread-ecosystem) fails `check.yml` if you do. See
+  bread-ecosystem's `docs/release-channels.md` ("Cross-repo dependency
+  resolution") for the full model. Part of ECO-38.
 
 ## Architecture
 

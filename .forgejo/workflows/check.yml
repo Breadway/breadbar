@@ -2,6 +2,14 @@ name: check
 
 # Fast-fail lint/test on short-lived work branches, before it ever reaches
 # main and triggers a dev-track release build.
+#
+# Builds in the same dev mode as dev-release.yml (git.breadway.dev
+# dependencies patched to their own repo's main via bread-ecosystem's
+# scripts/dev-deps.sh, no --locked), so a PR that depends on a
+# just-merged, not-yet-tagged change in bread-ecosystem or bread passes
+# here instead of only being testable after a tag bump. See
+# bread-ecosystem's docs/release-channels.md ("Cross-repo dependency
+# resolution") for the full model. Part of ECO-38.
 on:
   push:
     branches: ['feature/**', 'fix/**']
@@ -17,14 +25,30 @@ jobs:
           git clone --branch "${GITHUB_REF_NAME}" --depth 1 \
             "https://git.breadway.dev/${GITHUB_REPOSITORY}.git" src
 
+      - name: clone bread-ecosystem (main)
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/bread-ecosystem-ci-* 2>/dev/null || true
+          ECOSYSTEM_CI_DIR="$(mktemp -d /tmp/bread-ecosystem-ci-XXXXXX)"
+          git clone --branch main https://git.breadway.dev/Breadway/bread-ecosystem.git "${ECOSYSTEM_CI_DIR}"
+          echo "ECOSYSTEM_CI_DIR=${ECOSYSTEM_CI_DIR}" >> "$GITHUB_ENV"
+
+      # Fails if any git.breadway.dev dependency in src's Cargo.toml uses
+      # rev/branch/path instead of tag. Cargo.toml itself must always stay
+      # tag-pinned; dev-mode resolution to main happens only at build time,
+      # below, never by editing the manifest.
+      - name: lint git.breadway.dev dependency pins
+        run: bash "${ECOSYSTEM_CI_DIR}/scripts/lint-pins.sh" --root src
+
       # The local-only .cargo/config.toml [patch] redirects bread-ecosystem
       # crates to ../bread-ecosystem for fast iteration, but any `cargo build`
-      # under it rewrites Cargo.lock to record them as *path* deps. Committing
-      # that lock breaks `cargo build --locked` on a lone CI clone (no sibling
-      # repo), which is what stranded the shell-theme breadbar on the dev
-      # track. Fail here if the committed lock isn't the clean git-tag
-      # resolution, and if Cargo.toml itself ever commits the patch.
-      - name: guard against a patched Cargo.lock
+      # under it rewrites Cargo.lock to record them as *path* deps. A
+      # COMMITTED lock like that breaks `cargo build --locked` on a lone CI
+      # clone (no sibling repo), which is what stranded the shell-theme
+      # breadbar on the dev track. Fail here if the committed lock (as
+      # checked out, before dev-deps.sh below deliberately re-patches it
+      # for this job only) isn't the clean git-tag resolution.
+      - name: guard against a committed patched Cargo.lock
         run: |
           set -euo pipefail
           cd src
@@ -46,8 +70,20 @@ jobs:
           done
           echo "Cargo.lock is the clean git-tag resolution."
 
+      # Same DEV_DEPS_DIR-inside-checkout reasoning as dev-release.yml:
+      # ci/build.sh's docker wrapper only bind-mounts src (REPO_ROOT), so
+      # the cloned dependencies must live inside it to be visible to the
+      # clippy/test steps below, which run inside that container.
+      - name: resolve dev dependencies to main
+        run: |
+          set -euo pipefail
+          cd src
+          DEV_DEPS_DIR="$(pwd)/.dev-deps" \
+            bash "${ECOSYSTEM_CI_DIR}/scripts/dev-deps.sh" --root .
+          rm -rf "${ECOSYSTEM_CI_DIR}"
+
       - name: clippy
-        run: cd src && bash ci/build.sh cargo clippy --all-targets --locked -- -D warnings
+        run: cd src && bash ci/build.sh cargo clippy --all-targets -- -D warnings
 
       - name: test
-        run: cd src && bash ci/build.sh cargo test --locked
+        run: cd src && bash ci/build.sh cargo test
