@@ -42,7 +42,7 @@ A single Rust binary that provides a full-width top bar, a D-Bus notification da
 
 **Theming**:
 
-- Uses `bread-theme` for palette loading; reads `~/.cache/wal/colors.json` (pywal) if present, falls back to a Catppuccin Mocha palette
+- Uses `bread-theme` for palette loading; reads bread-theme's own palette cache (falling back to a pywal `colors.json` if present for compatibility), and bread-theme's built-in bread-toned default palette if neither is found
 - User CSS override: `~/.config/breadbar/style.css`
 - Send `SIGHUP` to reload the theme at runtime (integrates with wallpaper-change hooks)
 
@@ -100,9 +100,9 @@ breadbar claims `org.freedesktop.Notifications` on the session D-Bus on startup.
 
 ## Theming
 
-### pywal integration
+### Palette integration
 
-breadbar reads `~/.cache/wal/colors.json` automatically (via `bread-theme`). To reload after a wallpaper change:
+breadbar reads the current palette automatically (via `bread-theme`). To reload after a wallpaper change:
 
 ```sh
 pkill -HUP breadbar
