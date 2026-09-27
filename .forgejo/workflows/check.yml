@@ -70,16 +70,15 @@ jobs:
           done
           echo "Cargo.lock is the clean git-tag resolution."
 
-      # Same DEV_DEPS_DIR-inside-checkout reasoning as dev-release.yml:
-      # ci/build.sh's docker wrapper only bind-mounts src (REPO_ROOT), so
-      # the cloned dependencies must live inside it to be visible to the
-      # clippy/test steps below, which run inside that container.
+      # Same default-sibling DEV_DEPS_DIR reasoning as dev-release.yml:
+      # ci/build.sh's docker wrapper mounts src's parent directory, so a
+      # sibling clone is visible to the clippy/test steps below without
+      # needing to live inside the checkout.
       - name: resolve dev dependencies to main
         run: |
           set -euo pipefail
           cd src
-          DEV_DEPS_DIR="$(pwd)/.dev-deps" \
-            bash "${ECOSYSTEM_CI_DIR}/scripts/dev-deps.sh" --root .
+          bash "${ECOSYSTEM_CI_DIR}/scripts/dev-deps.sh" --root .
           rm -rf "${ECOSYSTEM_CI_DIR}"
 
       - name: clippy
