@@ -34,10 +34,9 @@ jobs:
       - name: clone bread-ecosystem (main)
         run: |
           set -euo pipefail
-          rm -rf /tmp/bread-ecosystem-ci-* 2>/dev/null || true
           # mktemp: a fixed clone path races when multiple repos' dev/beta
           # workflows run close together on the same self-hosted runner.
-          ECOSYSTEM_CI_DIR="$(mktemp -d /tmp/bread-ecosystem-ci-XXXXXX)"
+          ECOSYSTEM_CI_DIR="$(mktemp -d /tmp/bread-ecosystem-dev-release-XXXXXX)"
           git clone --branch main https://git.breadway.dev/Breadway/bread-ecosystem.git "${ECOSYSTEM_CI_DIR}"
           echo "ECOSYSTEM_CI_DIR=${ECOSYSTEM_CI_DIR}" >> "$GITHUB_ENV"
 
