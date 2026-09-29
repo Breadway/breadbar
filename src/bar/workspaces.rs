@@ -227,6 +227,74 @@ pub fn make_dot_button(
     btn
 }
 
+/// BAR-27 phase 1: `modules.workspaces.display`'s "which workspaces are
+/// shown" filter, applied BEFORE each style's own existing occupied/empty
+/// filtering in `main.rs::rebuild_buttons` (never instead of it): `All` is a
+/// pure no-op (every workspace passes through, deferring entirely to that
+/// existing per-style logic), so a theme that never sets `display` renders
+/// exactly as it did before this filter existed. `None` hides the whole
+/// strip; `Current` keeps only the active workspace.
+pub fn workspace_visible(
+    id: WorkspaceId,
+    active: WorkspaceId,
+    display: bread_theme::shell::WorkspaceDisplay,
+) -> bool {
+    use bread_theme::shell::WorkspaceDisplay;
+    match display {
+        WorkspaceDisplay::None => false,
+        WorkspaceDisplay::Current => id == active,
+        WorkspaceDisplay::All => true,
+    }
+}
+
+/// `display = "current"`: a compact "WS <n>" indicator in place of a row of
+/// chips (mockup: `.ws.current .wsb::before{content:"WS"}` plus the bare
+/// active number, `background:none;color:var(--light)`, i.e. no chip fill
+/// at all, unlike the normal active-workspace treatment). GTK's CSS engine
+/// has no `::before` content generation, so the "WS" prefix is a real
+/// sibling label here instead of a pseudo-element: the closest match GTK4
+/// CSS allows, noted in the task report. Not a button (there is exactly one
+/// entry, and it's already the active workspace, so there is nothing for a
+/// click to do in phase 1).
+pub fn make_current_indicator(name: &str) -> gtk4::Box {
+    let b = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    b.add_css_class("pill-ws-current");
+    b.set_valign(gtk4::Align::Center);
+
+    let prefix = gtk4::Label::new(Some("WS"));
+    prefix.add_css_class("pill-ws-current-label");
+    b.append(&prefix);
+
+    let value = gtk4::Label::new(Some(name));
+    value.add_css_class("pill-ws-current-value");
+    b.append(&value);
+    b
+}
+
+#[cfg(test)]
+mod workspace_visible_tests {
+    use super::workspace_visible;
+    use bread_theme::shell::WorkspaceDisplay;
+
+    #[test]
+    fn none_hides_every_workspace_including_the_active_one() {
+        assert!(!workspace_visible(1, 1, WorkspaceDisplay::None));
+        assert!(!workspace_visible(2, 1, WorkspaceDisplay::None));
+    }
+
+    #[test]
+    fn current_shows_only_the_active_workspace() {
+        assert!(workspace_visible(1, 1, WorkspaceDisplay::Current));
+        assert!(!workspace_visible(2, 1, WorkspaceDisplay::Current));
+    }
+
+    #[test]
+    fn all_shows_every_workspace_deferring_to_the_callers_own_filtering() {
+        assert!(workspace_visible(1, 1, WorkspaceDisplay::All));
+        assert!(workspace_visible(2, 1, WorkspaceDisplay::All));
+    }
+}
+
 /// Maps an open-window count to a [`bread_theme::shell::DotWidths`] index:
 /// 0/1/2 pass through, 3-or-more all collapse onto index 3 (the demo's own
 /// `.dots button[data-n="3"]` never has a "4" variant). Pulled out of

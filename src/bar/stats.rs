@@ -64,8 +64,19 @@ pub struct Stats {
     pub power: String,
     pub power_watts: f32,
     pub bat: String,
+    /// The raw reading `bat`/`bat_icon` are both derived from; `None` when
+    /// there's no battery (desktop, or `/sys/class/power_supply` didn't
+    /// expose one). BAR-27 phase 1: drives the spotlight pill's low-battery
+    /// flag (`is_low_battery`) without re-parsing `bat`'s formatted string.
+    pub bat_pct: Option<u8>,
     pub bat_icon: &'static str,
     pub ac_connected: bool,
+    /// Minutes of battery left at the current draw (discharging only), for
+    /// the stage's status sentence ("5h left").
+    pub bat_minutes_left: Option<u32>,
+    /// The Wi-Fi radio is on (no soft or hard rfkill block on any wlan
+    /// device), for the stage's Wi-Fi chip.
+    pub wifi_radio: bool,
     pub bt_icon: &'static str,
     pub wifi_ssid: String,
     pub wifi_icon: &'static str,
@@ -200,6 +211,23 @@ fn bat_level_icon(pct: u8) -> &'static str {
     }
 }
 
+/// BAR-27 phase 1: the spotlight pill's low-battery flag threshold. A
+/// deliberately separate, lower cutoff than [`bat_level_icon`]'s own `< 34`
+/// ("1 bar" icon): the flag is a "plug in soon" warning
+/// (`bos-ui-demos/proposed/spotlight-stage.html`'s own `12%` sample), not
+/// "the icon changed style", so it fires later than the icon does. No
+/// battery (`None`, e.g. a desktop) is never "low": there's nothing to warn
+/// about plugging in.
+pub const LOW_BATTERY_PCT: u8 = 20;
+
+/// Pure predicate pulled out of the stats poll so both the pill's flag and
+/// its auto-hide "stays down while the battery is low" rule read the exact
+/// same threshold, and so it's testable without a live `/sys/class/
+/// power_supply` reading.
+pub fn is_low_battery(pct: Option<u8>) -> bool {
+    pct.is_some_and(|p| p <= LOW_BATTERY_PCT)
+}
+
 fn read_ac() -> bool {
     AC_PATH
         .get_or_init(|| {
@@ -217,6 +245,56 @@ fn read_ac() -> bool {
         .and_then(|p| fs::read_to_string(p.join("online")).ok())
         .map(|s| s.trim() == "1")
         .unwrap_or(false)
+}
+
+/// Minutes left from a remaining-energy reading and a draw in the same
+/// base unit per hour (µWh and µW, or µAh and µA). `None` without a real
+/// draw, which is what an idle or charging battery reports.
+pub fn minutes_left(remaining: u64, draw: u64) -> Option<u32> {
+    if draw == 0 {
+        return None;
+    }
+    Some((remaining.saturating_mul(60) / draw).min(u64::from(u32::MAX)) as u32)
+}
+
+fn read_minutes_left() -> Option<u32> {
+    let path = bat_path()?;
+    let read = |name: &str| -> Option<u64> {
+        fs::read_to_string(path.join(name))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    };
+    let status = fs::read_to_string(path.join("status")).unwrap_or_default();
+    if status.trim() != "Discharging" {
+        return None;
+    }
+    match (read("energy_now"), read("power_now")) {
+        (Some(e), Some(p)) => minutes_left(e, p),
+        _ => minutes_left(read("charge_now")?, read("current_now")?),
+    }
+}
+
+/// Whether the Wi-Fi radio is on: every wlan rfkill switch unblocked
+/// (`nmcli radio wifi off` sets the soft block). No wlan switch at all
+/// counts as off.
+fn wifi_radio_on() -> bool {
+    let mut any = false;
+    for e in fs::read_dir("/sys/class/rfkill")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let p = e.path();
+        if fs::read_to_string(p.join("type")).is_ok_and(|t| t.trim() == "wlan") {
+            any = true;
+            if fs::read_to_string(p.join("state")).map_or(true, |s| s.trim() != "1") {
+                return false;
+            }
+        }
+    }
+    any
 }
 
 fn bt_rfkill_on() -> bool {
@@ -429,6 +507,8 @@ pub async fn poll() -> Stats {
     let bat = pct.map_or_else(|| "—".into(), |p| format!("{p}"));
     let bat_icon = pct.map_or(BAT_MID, bat_level_icon);
     let ac_connected = read_ac();
+    let bat_minutes_left = read_minutes_left();
+    let wifi_radio = wifi_radio_on();
     // BT and WiFi both refresh every 8 cycles (~16 s); cache in between.
     let bt_icon = {
         let tick = BT_TICK.fetch_add(1, Ordering::Relaxed);
@@ -468,8 +548,11 @@ pub async fn poll() -> Stats {
         power,
         power_watts: power_watts.unwrap_or(0.0),
         bat,
+        bat_pct: pct,
         bat_icon,
         ac_connected,
+        bat_minutes_left,
+        wifi_radio,
         bt_icon,
         wifi_ssid,
         wifi_icon,
@@ -510,4 +593,33 @@ pub fn spawn_poller(sender: ComponentSender<App>) {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod low_battery_tests {
+    use super::*;
+
+    #[test]
+    fn at_or_under_threshold_is_low() {
+        assert!(is_low_battery(Some(LOW_BATTERY_PCT)));
+        assert!(is_low_battery(Some(0)));
+        assert!(is_low_battery(Some(12)));
+    }
+
+    #[test]
+    fn above_threshold_is_not_low() {
+        assert!(!is_low_battery(Some(LOW_BATTERY_PCT + 1)));
+        assert!(!is_low_battery(Some(100)));
+    }
+
+    #[test]
+    fn minutes_left_needs_a_real_draw() {
+        assert_eq!(minutes_left(50_000_000, 10_000_000), Some(300));
+        assert_eq!(minutes_left(1, 0), None);
+    }
+
+    #[test]
+    fn no_battery_reading_is_never_low() {
+        assert!(!is_low_battery(None));
+    }
 }

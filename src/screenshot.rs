@@ -34,6 +34,14 @@ const LIVE_DATA_SETTLE_DELAY: Duration = Duration::from_millis(2_200);
 /// finish first is what makes it actually render.
 const PRE_POPUP_DELAY: Duration = SETTLE_DELAY;
 
+/// BAR-27 phase 1: capture height for every `pill-*` view. Fixed rather than
+/// derived from `bar_capture_height()` (spotlight's own bar is only ~40px
+/// tall): tall enough to frame the hot-zone/lip satellite sitting at the
+/// very top edge as well as the pill itself, with a little margin. Matches
+/// the "crop to the top ~120px" instruction the task itself gives for these
+/// captures, so there is nothing left to crop after the fact.
+const PILL_CAPTURE_HEIGHT: i32 = 120;
+
 const KNOWN_VIEWS: &[&str] = &[
     "bar",
     "control-panel",
@@ -60,6 +68,50 @@ const KNOWN_VIEWS: &[&str] = &[
     // spring animation), so that gap doesn't need its own view.
     "capsule-sections",
     "capsule-calc",
+    // BAR-27 phase 1: the spotlight pill. `main.rs`'s `init()` forces the
+    // exact state each of these wants (hover/low-battery/mock widgets)
+    // before calling `dispatch`, rather than racing the real auto-hide
+    // timers/hover controllers in an isolated capture with no real
+    // pointer; see that call site's own comment. "pill-ws-none"/
+    // "pill-ws-current"/"pill-ws-all" render identically to "pill-shown"
+    // here (a plain bar-region capture): the actual difference comes from
+    // varying `modules.workspaces.display` in the theme passed via
+    // `BREAD_SHELL_THEME`/`XDG_CONFIG_HOME`, not from anything in this
+    // crate, the same "same code, different theme" shape as
+    // "capsule-collapsed" reusing "bar"'s own capture logic above.
+    "pill-shown",
+    "pill-tucked",
+    "pill-hover",
+    "pill-widgets-off",
+    "pill-widgets-on",
+    "pill-ws-none",
+    "pill-ws-current",
+    "pill-ws-all",
+    "pill-low-battery",
+    // Phase-1 review must-fix: the hot-zone's input region while tucked.
+    // There is nothing to see of an input region in a screenshot (it paints
+    // nothing); this view instead paints a debug overlay the exact size of
+    // the real tucked strip, purely so the fix is visually checkable. See
+    // `pill_hotzone::set_debug_visible`.
+    "pill-tucked-input",
+    // BAR-30 phases 2-4: the spotlight stage. Sample notifications/windows/
+    // media are forced the same way `pill-ws-*` mocks workspace data, so a
+    // capture never races the real Hyprland-clients/`pactl`/`playerctl`
+    // sources (there mostly aren't any in the isolated compositor anyway).
+    "stage-idle",
+    "stage-results",
+    "stage-commands",
+    "stage-calc",
+    "stage-power-armed",
+    "stage-narrow",
+    "stage-settings",
+    // BAR-31: the empty-results hint, a notification row's hover state
+    // (its dismiss button), and a critical caption.
+    "stage-empty",
+    "stage-note-hover",
+    "surtitle",
+    "surtitle-critical",
+    "pill-level",
 ];
 
 #[derive(Parser)]
@@ -88,6 +140,22 @@ pub struct Cli {
     /// exit. Keybind-friendly; does not start a second instance.
     #[arg(long)]
     pub history: bool,
+
+    /// BAR-27 phase 1: `toggle` or `show` the spotlight pill on a running
+    /// breadbar, then exit; a Hyprland bind (e.g. Super+Space) target. Does
+    /// not start a second instance. A no-op on a theme with
+    /// `[bar.autohide].enabled = false` (nothing to show/tuck).
+    #[arg(long, value_parser = ["toggle", "show"])]
+    pub pill: Option<String>,
+
+    /// BAR-30 phase 2: `toggle`, `show`, or `hide` the spotlight stage on a
+    /// running breadbar, then exit. The Super+Space Hyprland bind target
+    /// under spotlight (see the task report for the exact bind line): the
+    /// mockup's own Super+Space opens/closes the STAGE, not just the pill,
+    /// so this is the command that bind should point at, not `--pill`.
+    /// Does not start a second instance. A no-op on a theme with no stage.
+    #[arg(long, value_parser = ["toggle", "show", "hide"])]
+    pub stage: Option<String>,
 }
 
 pub struct ScreenshotRequest {
@@ -142,6 +210,13 @@ pub struct Handles {
     /// however tall the results actually grew, rather than a guessed
     /// constant.
     pub drawer_box: gtk4::Box,
+    /// BAR-30 phases 2-4: the stage's own full-screen window, already
+    /// forced into the state each `stage-*` view wants by `main.rs` before
+    /// `dispatch` runs (see its own comment there).
+    pub stage_window: gtk4::Window,
+    /// BAR-30 phase 4: the surtitle caption window, already shown (with a
+    /// long-lived duration) by `main.rs` for the "surtitle" view.
+    pub surtitle_window: gtk4::Window,
 }
 
 /// Capture height for the `bar` view: layer-shell top margin + widget
@@ -185,20 +260,43 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
             root.connect_map(move |_| {
                 let output = output.clone();
                 gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
-                    finish(bread_screenshots::capture_region(0, bar_y, width, bar_height, &output));
+                    finish(bread_screenshots::capture_region(
+                        0, bar_y, width, bar_height, &output,
+                    ));
                 });
             });
         }
         "control-panel" => {
-            open_panel_on_root_map(root, handles.control_panel, LIVE_DATA_SETTLE_DELAY, output, width, height);
+            open_panel_on_root_map(
+                root,
+                handles.control_panel,
+                LIVE_DATA_SETTLE_DELAY,
+                output,
+                width,
+                height,
+            );
         }
         "connectivity-wifi" => {
             handles.wifi_tab_btn.set_active(true);
-            open_panel_on_root_map(root, handles.connectivity_panel, LIVE_DATA_SETTLE_DELAY, output, width, height);
+            open_panel_on_root_map(
+                root,
+                handles.connectivity_panel,
+                LIVE_DATA_SETTLE_DELAY,
+                output,
+                width,
+                height,
+            );
         }
         "connectivity-bluetooth" => {
             handles.bt_tab_btn.set_active(true);
-            open_panel_on_root_map(root, handles.connectivity_panel, LIVE_DATA_SETTLE_DELAY, output, width, height);
+            open_panel_on_root_map(
+                root,
+                handles.connectivity_panel,
+                LIVE_DATA_SETTLE_DELAY,
+                output,
+                width,
+                height,
+            );
         }
         "media-popover" => {
             // Real media state only shows the widget/text when something's
@@ -207,19 +305,34 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
             // widgets to get a representative capture.
             handles.media_widget.set_visible(true);
             handles.media_widget.add_css_class("playing");
-            handles.media_track_lbl.set_text("Sample Track - Sample Artist");
-            open_panel_on_root_map(root, handles.media_panel, SETTLE_DELAY, output, width, height);
+            handles
+                .media_track_lbl
+                .set_text("Sample Track - Sample Artist");
+            open_panel_on_root_map(
+                root,
+                handles.media_panel,
+                SETTLE_DELAY,
+                output,
+                width,
+                height,
+            );
         }
         "notification" | "notification-critical" => {
             let Some(window) = handles.notification_window else {
-                eprintln!("breadbar: internal error: no notification window built for '{}'", req.view);
+                eprintln!(
+                    "breadbar: internal error: no notification window built for '{}'",
+                    req.view
+                );
                 std::process::exit(1);
             };
             capture_standalone_window(window, output, width, height);
         }
         "osd-volume" | "osd-brightness" => {
             let Some(window) = handles.osd_window else {
-                eprintln!("breadbar: internal error: no OSD window built for '{}'", req.view);
+                eprintln!(
+                    "breadbar: internal error: no OSD window built for '{}'",
+                    req.view
+                );
                 std::process::exit(1);
             };
             capture_standalone_window(window, output, width, height);
@@ -230,7 +343,9 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
             root.connect_map(move |_| {
                 let output = output.clone();
                 gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
-                    finish(bread_screenshots::capture_region(0, bar_y, width, bar_height, &output));
+                    finish(bread_screenshots::capture_region(
+                        0, bar_y, width, bar_height, &output,
+                    ));
                 });
             });
         }
@@ -261,7 +376,9 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                     gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
                         let drawer_h = drawer_box.size_request().1.max(0);
                         let capture_h = bar_height + drawer_h;
-                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                        finish(bread_screenshots::capture_region(
+                            0, 0, width, capture_h, &output,
+                        ));
                     });
                 });
             });
@@ -285,7 +402,9 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                     gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
                         let drawer_h = drawer_box.size_request().1.max(0);
                         let capture_h = bar_height + drawer_h;
-                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                        finish(bread_screenshots::capture_region(
+                            0, 0, width, capture_h, &output,
+                        ));
                     });
                 });
             });
@@ -308,8 +427,100 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                     gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
                         let drawer_h = drawer_box.size_request().1.max(0);
                         let capture_h = bar_height + drawer_h;
-                        finish(bread_screenshots::capture_region(0, 0, width, capture_h, &output));
+                        finish(bread_screenshots::capture_region(
+                            0, 0, width, capture_h, &output,
+                        ));
                     });
+                });
+            });
+        }
+        "pill-shown" | "pill-hover" | "pill-widgets-off" | "pill-widgets-on" | "pill-ws-none"
+        | "pill-ws-current" | "pill-ws-all" | "pill-low-battery" => {
+            // A fixed, generous height (not `bar_capture_height()`, which
+            // for spotlight is only ~40px): tall enough to also frame the
+            // hot-zone/lip satellite sitting right at the top edge, and to
+            // leave a little breathing room around the pill itself.
+            root.connect_map(move |_| {
+                let output = output.clone();
+                gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
+                    finish(bread_screenshots::capture_region(
+                        0,
+                        0,
+                        width,
+                        PILL_CAPTURE_HEIGHT,
+                        &output,
+                    ));
+                });
+            });
+        }
+        "pill-tucked" | "pill-tucked-input" => {
+            // The tuck animation (`main.rs::update_pill`'s `spring_to` run,
+            // ~420ms) needs to finish before the pill's surface has
+            // actually left this region; the shared `SETTLE_DELAY` alone
+            // isn't long enough for that on top of the normal first-paint
+            // settle. "pill-tucked-input" frames the same region: the debug
+            // strip `main.rs` turned on sits right at its very top edge.
+            root.connect_map(move |_| {
+                let output = output.clone();
+                gtk4::glib::timeout_add_local_once(Duration::from_millis(650), move || {
+                    finish(bread_screenshots::capture_region(
+                        0,
+                        0,
+                        width,
+                        PILL_CAPTURE_HEIGHT,
+                        &output,
+                    ));
+                });
+            });
+        }
+        "pill-level" => {
+            // `main.rs` plays a real level change once the main loop runs;
+            // this waits for the pill to finish resizing around it, well
+            // inside the 1.4s the level stays up.
+            root.connect_map(move |_| {
+                let output = output.clone();
+                gtk4::glib::timeout_add_local_once(Duration::from_millis(1250), move || {
+                    finish(bread_screenshots::capture_region(
+                        0,
+                        0,
+                        width,
+                        PILL_CAPTURE_HEIGHT,
+                        &output,
+                    ));
+                });
+            });
+        }
+        "stage-idle" | "stage-results" | "stage-commands" | "stage-calc" | "stage-power-armed"
+        | "stage-narrow" | "stage-empty" | "stage-note-hover" | "stage-settings" => {
+            // The stage is its own full-screen Overlay surface. `main.rs`
+            // opens it (in the exact state this view wants) from an idle
+            // callback scheduled AFTER this function returns, specifically
+            // so that only happens once the `connect_map` handler below is
+            // already live; see that call site's own comment for the map-
+            // before-anyone-was-listening race this avoids. Capture shape is
+            // the same as `capture_standalone_window` below, just inlined
+            // since it needs the settle delay tuned for a full layout pass
+            // (idle->results swap, the power-row confirm CSS) rather than
+            // the shorter one a simple popover gets.
+            let stage_window = handles.stage_window;
+            stage_window.connect_map(move |_| {
+                let output = output.clone();
+                gtk4::glib::timeout_add_local_once(LIVE_DATA_SETTLE_DELAY, move || {
+                    finish(bread_screenshots::capture_region(
+                        0, 0, width, height, &output,
+                    ));
+                });
+            });
+        }
+        "surtitle" | "surtitle-critical" => {
+            // Long enough for the caption's .35s slide and fade to finish.
+            let window = handles.surtitle_window;
+            window.connect_map(move |_| {
+                let output = output.clone();
+                gtk4::glib::timeout_add_local_once(LIVE_DATA_SETTLE_DELAY, move || {
+                    finish(bread_screenshots::capture_region(
+                        0, 0, width, height, &output,
+                    ));
                 });
             });
         }
@@ -319,9 +530,18 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                 let output = output.clone();
                 let anchor = anchor.clone();
                 gtk4::glib::timeout_add_local_once(PRE_POPUP_DELAY, move || {
-                    crate::show_add_network_dialog(&anchor, "Sample Network".to_string(), move |dialog| {
-                        capture_standalone_window(dialog.clone(), output.clone(), width, height);
-                    });
+                    crate::show_add_network_dialog(
+                        &anchor,
+                        "Sample Network".to_string(),
+                        move |dialog| {
+                            capture_standalone_window(
+                                dialog.clone(),
+                                output.clone(),
+                                width,
+                                height,
+                            );
+                        },
+                    );
                 });
             });
         }
@@ -356,7 +576,9 @@ fn open_panel_on_root_map(
     panel.connect_map(move |_| {
         let output = output.clone();
         gtk4::glib::timeout_add_local_once(settle, move || {
-            finish(bread_screenshots::capture_region(0, 0, width, height, &output));
+            finish(bread_screenshots::capture_region(
+                0, 0, width, height, &output,
+            ));
         });
     });
 }
@@ -370,7 +592,9 @@ fn capture_standalone_window(window: gtk4::Window, output: PathBuf, width: i32, 
     window.connect_map(move |_| {
         let output = output.clone();
         gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
-            finish(bread_screenshots::capture_region(0, 0, width, height, &output));
+            finish(bread_screenshots::capture_region(
+                0, 0, width, height, &output,
+            ));
         });
     });
 }

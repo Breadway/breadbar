@@ -16,7 +16,7 @@ pub struct CrumbsStatus {
 #[derive(Debug, Clone)]
 pub struct ScanEntry {
     pub ssid: String,
-    pub signal: u8,  // 0–100 percentage
+    pub signal: u8, // 0–100 percentage
     pub saved: bool,
 }
 
@@ -30,12 +30,19 @@ pub struct WifiPopoverData {
 
 async fn fetch_status() -> Option<CrumbsStatus> {
     let stdout =
-        super::proc::stdout_ok("breadcrumbs", &["status", "--json"], Duration::from_secs(8)).await?;
+        super::proc::stdout_ok("breadcrumbs", &["status", "--json"], Duration::from_secs(8))
+            .await?;
     let v: serde_json::Value = serde_json::from_slice(&stdout).ok()?;
     Some(CrumbsStatus {
         profile: v["profile"].as_str().unwrap_or("").to_string(),
-        ssid: v["ssid"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
-        ip: v["ip"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+        ssid: v["ssid"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        ip: v["ip"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         internet: v["internet"].as_bool().unwrap_or(true),
         // Field shapes per breadcrumbs' `status --json` contract (see its
         // README): `portal` is a bool, `tailscale` is the health state name
@@ -60,7 +67,11 @@ async fn fetch_profile_list() -> Vec<(String, bool)> {
         .filter_map(|line| {
             let active = line.starts_with('*');
             let name = line.trim_start_matches(['*', ' ']).trim().to_string();
-            if name.is_empty() { None } else { Some((name, active)) }
+            if name.is_empty() {
+                None
+            } else {
+                Some((name, active))
+            }
         })
         .collect()
 }
@@ -119,6 +130,20 @@ async fn fetch_scan() -> Vec<ScanEntry> {
             })
         })
         .collect()
+}
+
+/// Fire-and-forget: turn the Wi-Fi radio on/off via `nmcli` (BAR-30 phase 2,
+/// the stage's own Wi-Fi toggle chip). Mirrors
+/// `bar::bluetooth::spawn_set_powered`'s shape exactly; NetworkManager (not
+/// rfkill directly) is the right layer here since breadcrumbs itself drives
+/// connections through `nmcli`.
+pub fn spawn_set_enabled(on: bool) {
+    relm4::spawn(async move {
+        let _ = tokio::process::Command::new("nmcli")
+            .args(["radio", "wifi", if on { "on" } else { "off" }])
+            .output()
+            .await;
+    });
 }
 
 /// Background poller: updates internet/TS status every 30 s.
@@ -190,8 +215,8 @@ pub fn spawn_join(ssid: String) {
 /// it as a command-line argument at all. nmcli is never shelled directly
 /// here, since it has no non-interactive, non-argv way to accept a PSK.
 pub fn spawn_add_and_join(ssid: String, password: String) {
-    use tokio::io::AsyncWriteExt;
     use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
 
     relm4::spawn(async move {
         if let Ok(mut child) = tokio::process::Command::new("breadcrumbs")
@@ -210,4 +235,3 @@ pub fn spawn_add_and_join(ssid: String, password: String) {
             .await;
     });
 }
-

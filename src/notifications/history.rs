@@ -405,6 +405,23 @@ fn plain_text(body: &str) -> String {
     }
 }
 
+/// A notification body as one plain line: markup stripped, whitespace
+/// collapsed. What the stage's rows and the pill caption show of it.
+pub(crate) fn plain_body(body: &str) -> String {
+    collapse_ws(&plain_text(body))
+}
+
+/// The pill caption's one line: "title: body", or whichever half exists.
+pub(crate) fn caption_text(summary: &str, body: &str) -> String {
+    let summary = collapse_ws(summary);
+    let body = plain_body(body);
+    match (summary.is_empty(), body.is_empty()) {
+        (_, true) => summary,
+        (true, false) => body,
+        (false, false) => format!("{summary}: {body}"),
+    }
+}
+
 fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -457,6 +474,17 @@ mod tests {
         assert_eq!(hist[0].id, 1);
         assert_eq!(hist[0].summary, "new");
         assert_eq!(hist[1].id, 2);
+    }
+
+    #[test]
+    fn caption_joins_title_and_body_and_tolerates_either_missing() {
+        assert_eq!(
+            caption_text("Screenshot", "Saved to <i>a.png</i>"),
+            "Screenshot: Saved to a.png"
+        );
+        assert_eq!(caption_text("bread", ""), "bread");
+        assert_eq!(caption_text("", "just a body"), "just a body");
+        assert_eq!(caption_text("t", "  two\n lines "), "t: two lines");
     }
 
     #[test]

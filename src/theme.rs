@@ -257,6 +257,9 @@ thread_local! {
 /// - **launcher mode** (Overlay vs Embedded, the capsule drawer wiring)
 /// - **`[panel].sections`**: the control-panel body is assembled once in `init`
 /// - **`[osd].enabled`**: the volume/brightness watcher threads are started once
+/// - **`[bar.autohide]`**: read once into `App::autohide_cfg`; the hover
+///   controller and the hot-zone/lip satellite window are only created at
+///   `init` when it's enabled
 ///
 /// Everything else applies live: CSS via [`reload`], `[bar.window]` geometry
 /// via `apply_window_spec`, `[bar.slots]` order via `assemble_bar_slots`,
@@ -267,6 +270,11 @@ pub(crate) fn needs_restart(cur: &ShellTheme, next: &ShellTheme) -> bool {
         || cur.launcher().mode != next.launcher().mode
         || cur.panel().sections != next.panel().sections
         || cur.osd().enabled != next.osd().enabled
+        // `App::autohide_cfg` is a copy taken at `init`, and the hot-zone
+        // window only exists when it was enabled then: turning auto-hide on
+        // or off, or retuning its hot zone/timings, has nothing live to
+        // update.
+        || cur.autohide() != next.autohide()
         // A horizontal<->vertical switch changes which internal `GtkBox`/
         // `CenterBox` orientation the bar row's widgets need, a live
         // structural rebuild `apply_window_spec`'s in-place geometry update

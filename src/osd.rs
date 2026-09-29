@@ -67,8 +67,30 @@ pub fn kill_watchers() {
 impl SampleKind {
     fn sample_event(&self) -> OsdEvent {
         match self {
-            SampleKind::Volume => OsdEvent::Volume { pct: 65, muted: false },
+            SampleKind::Volume => OsdEvent::Volume {
+                pct: 65,
+                muted: false,
+            },
             SampleKind::Brightness => OsdEvent::Brightness { pct: 80 },
+        }
+    }
+}
+
+impl OsdEvent {
+    /// The mockup's own short level-name label (`.wick`'s `#levelName`),
+    /// used by BAR-30 phase 4's in-pill level display. Not the SVG icon
+    /// name (`icon_svg` in `run_osd`'s match, which stays the bar's own
+    /// existing icon set): this is separate, always-uppercase text.
+    fn pill_label(&self) -> &'static str {
+        match self {
+            OsdEvent::Volume { .. } => "VOL",
+            OsdEvent::Brightness { .. } => "BRI",
+        }
+    }
+
+    fn pct(&self) -> u8 {
+        match self {
+            OsdEvent::Volume { pct, .. } | OsdEvent::Brightness { pct } => *pct,
         }
     }
 }
@@ -87,7 +109,22 @@ impl SampleKind {
 /// hardware events are ignored). `dismiss_ms`: how long a shown OSD lingers
 /// (`[osd].dismiss_ms`). Both are ignored when `sample` is `Some` (screenshot
 /// mode always shows the one sampled kind).
-pub fn spawn(sample: Option<SampleKind>, enabled: &[String], dismiss_ms: u64) -> gtk4::Window {
+/// `on_change`: called once per real volume/brightness event, before the
+/// OSD is shown, with the mockup's own short level label ("VOL"/"BRI") and
+/// percentage. BAR-27 phase 1: lets the spotlight pill's auto-hide peek down
+/// for a level change (`bos-ui-demos/proposed/spotlight-stage.html`'s
+/// `level()` calling `peek(1400)`). BAR-30 phase 4: also what feeds the
+/// in-pill level display when `[osd].style = "pill"` (checked live, per
+/// event, in `run_osd` below, not baked in at `spawn` time: see
+/// `types::OSD_STYLES`'s doc comment for why that needs no restart entry).
+/// `None` in screenshot mode (`sample` is `Some`) and for every
+/// non-spotlight theme.
+pub fn spawn(
+    sample: Option<SampleKind>,
+    enabled: &[String],
+    dismiss_ms: u64,
+    on_change: Option<Box<dyn Fn(&'static str, u8)>>,
+) -> gtk4::Window {
     let (tx, rx) = mpsc::channel::<OsdEvent>(8);
 
     match sample {
@@ -108,7 +145,7 @@ pub fn spawn(sample: Option<SampleKind>, enabled: &[String], dismiss_ms: u64) ->
     }
 
     let window = create_window();
-    relm4::spawn_local(run_osd(window.clone(), rx, dismiss_ms.max(1)));
+    relm4::spawn_local(run_osd(window.clone(), rx, dismiss_ms.max(1), on_change));
     window
 }
 
@@ -125,7 +162,9 @@ fn volume_watcher(tx: mpsc::Sender<OsdEvent>) {
         return;
     };
 
-    let Some(stdout) = child.stdout.take() else { return };
+    let Some(stdout) = child.stdout.take() else {
+        return;
+    };
     // The child is meant to outlive this reader loop (it blocks until
     // breadbar itself dies), so hand it to `kill_watchers` (the exit
     // hook plus the SIGINT/SIGTERM handlers in main) instead of letting
@@ -220,7 +259,12 @@ fn brightness_watcher(tx: mpsc::Sender<OsdEvent>) {
     }
 }
 
-async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>, dismiss_ms: u64) {
+async fn run_osd(
+    window: gtk4::Window,
+    mut rx: mpsc::Receiver<OsdEvent>,
+    dismiss_ms: u64,
+    on_change: Option<Box<dyn Fn(&'static str, u8)>>,
+) {
     let container = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     container.set_margin_top(10);
     container.set_margin_bottom(10);
@@ -250,6 +294,17 @@ async fn run_osd(window: gtk4::Window, mut rx: mpsc::Receiver<OsdEvent>, dismiss
     let fill_token = Rc::new(Cell::new(0u32));
 
     while let Some(event) = rx.recv().await {
+        if let Some(cb) = &on_change {
+            cb(event.pill_label(), event.pct());
+        }
+        // BAR-30 phase 4: `[osd].style = "pill"` draws the level inside the
+        // bar pill instead (see `main.rs`'s `AppInput::LevelChanged`
+        // handler); this standalone window stays hidden entirely. Read live,
+        // per event, rather than once at `spawn` time: see `OSD_STYLES`'s
+        // own doc comment for why this option needs no restart.
+        if crate::theme::shell_theme().osd().style == "pill" {
+            continue;
+        }
         let (icon_svg, pct, muted) = match event {
             OsdEvent::Volume { pct, muted } => (crate::bar::stats::ICON_VOLUME, pct, muted),
             OsdEvent::Brightness { pct } => (crate::bar::stats::ICON_BRIGHTNESS, pct, false),

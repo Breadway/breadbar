@@ -6,21 +6,29 @@ macro_rules! asset {
 
 mod bar;
 mod launcher_command;
+mod motion;
 mod notifications;
 mod osd;
 mod panel;
+mod pill_autohide;
+mod pill_hotzone;
 mod screenshot;
+mod spotlight_prefs;
+mod stage;
 mod surface;
+mod surtitle;
 mod theme;
 mod theme_widgets;
 mod widgets;
 
 use bread_launcher::gtk::ResultsList;
-use bread_theme::shell::{ClockStyle, Exclusive, Keyboard, Width, WindowOrientation, WorkspaceStyle};
+use bread_theme::shell::{
+    ClockStyle, Exclusive, Keyboard, Width, WindowOrientation, WorkspaceDisplay, WorkspaceStyle,
+};
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use hyprland::data::Workspace;
-use hyprland::shared::WorkspaceId;
+use hyprland::shared::{Address, WorkspaceId};
 use relm4::prelude::*;
 use relm4::{Component, ComponentController, Controller};
 use std::cell::Cell;
@@ -250,12 +258,7 @@ mod exclusive_zone_tests {
 
     #[test]
     fn none_is_no_reservation_regardless_of_anchor() {
-        let s = spec(
-            &["bottom"],
-            40,
-            Margin::default(),
-            Exclusive::None,
-        );
+        let s = spec(&["bottom"], 40, Margin::default(), Exclusive::None);
         assert_eq!(exclusive_zone_for(&s), -1);
     }
 
@@ -273,7 +276,12 @@ mod exclusive_zone_tests {
         assert_eq!(exclusive_zone_for(&s), 99);
     }
 
-    fn vertical_spec(anchors: &[&str], width_px: i32, margin: Margin, exclusive: Exclusive) -> WindowSpec {
+    fn vertical_spec(
+        anchors: &[&str],
+        width_px: i32,
+        margin: Margin,
+        exclusive: Exclusive,
+    ) -> WindowSpec {
         WindowSpec {
             anchors: anchors.iter().map(|s| s.to_string()).collect(),
             width: Width::Px(width_px),
@@ -322,7 +330,12 @@ mod exclusive_zone_tests {
 
     #[test]
     fn vertical_none_is_no_reservation() {
-        let s = vertical_spec(&["left", "top", "bottom"], 56, Margin::default(), Exclusive::None);
+        let s = vertical_spec(
+            &["left", "top", "bottom"],
+            56,
+            Margin::default(),
+            Exclusive::None,
+        );
         assert_eq!(exclusive_zone_for(&s), -1);
     }
 
@@ -345,6 +358,9 @@ pub struct BarInit {
     pub screenshot: Option<screenshot::ScreenshotRequest>,
     pub monitor: Option<String>,
     pub primary: bool,
+    /// The primary's shared stage state, for a satellite; `None` for the
+    /// primary itself, which creates it.
+    pub shared: Option<stage::Shared>,
 }
 
 pub struct App {
@@ -476,6 +492,11 @@ pub struct App {
     // `WidgetPlacement` itself never appears here: it's a wire type from
     // the bread daemon API and stays untouched.
     widget_containers: std::collections::HashMap<String, gtk4::Box>,
+    /// The spotlight stage's settings menu (see `spotlight_prefs`); only
+    /// consulted under the pill theme (`autohide_cfg.enabled`).
+    prefs: spotlight_prefs::Prefs,
+    /// Watches `spotlight.json` so a toggle on any monitor applies here.
+    _prefs_monitor: Option<gtk4::gio::FileMonitor>,
     /// Widget ids already reported as undeliverable by `reconcile_widgets`, so
     /// the warning fires once per widget instead of once per reconcile.
     dropped_widget_warned: std::collections::HashSet<String>,
@@ -503,6 +524,81 @@ pub struct App {
     center_area: gtk4::Box,
     stats_box: gtk4::Box,
     drawer_box: gtk4::Box,
+
+    // ── Spotlight pill (BAR-27 phase 1) ─────────────────────────────────
+    /// `[bar.autohide]`, read once at `init` (a restart-gated table, same
+    /// as the workspace/clock style: see `theme::needs_restart`).
+    autohide_cfg: bread_theme::shell::AutoHide,
+    /// The pointer is currently over the pill or its hot-zone.
+    pill_hovering: bool,
+    /// A timed peek (notification/level/workspace-switch) holds the pill
+    /// down until this instant; `None` when nothing is pending.
+    pill_hold_until: Option<std::time::Instant>,
+    /// Bumped on every hover ENTER; a pending "leave" timeout (see
+    /// `AppInput::PillHoverLeaveExpire`) captures the generation at the
+    /// moment of the leave and only actually clears `pill_hovering` if
+    /// nothing re-entered in between, the same debounce idiom `osd.rs`'s
+    /// `dismiss_token` already uses.
+    pill_hover_gen: u32,
+    /// The pill's last-applied shown/tucked state, so `update_pill` only
+    /// (re)starts the margin animation on an actual transition.
+    pill_shown: bool,
+    /// Stays down while true, regardless of hover/peek/timers (`bar.window`'s
+    /// low-battery flag doubles as the auto-hide "stay down" signal).
+    pill_low_battery: bool,
+    /// The hot-zone/lip satellite window (see `pill_hotzone.rs`); `None`
+    /// when `[bar.autohide].enabled` is false, so nothing extra is mapped
+    /// for every builtin but spotlight. Held only to keep the window alive
+    /// for the App's lifetime; never read back.
+    #[allow(dead_code)]
+    pill_hotzone: Option<gtk4::Window>,
+    pill_lip: Option<gtk4::Widget>,
+    /// `[bar.slots]`'s "flag"/"unread" modules: a low-battery flag and an
+    /// unread-notification dot, both hidden by default and toggled by
+    /// `AppInput::StatsUpdate`/a new notification respectively.
+    pill_flag: gtk4::Box,
+    pill_flag_label: gtk4::Label,
+    pill_unread: gtk4::Box,
+    /// The workspaces/clock divider; collapses when `display = "none"`
+    /// leaves the workspace strip empty.
+    pill_sep: gtk4::Separator,
+    /// The layer-shell top margin last applied (or mid-animation towards),
+    /// so an interrupted show/tuck continues from where it visually is
+    /// instead of jumping. `Rc<Cell<_>>` (not a plain field) because the
+    /// running `motion::animate` tick callback also writes it every frame.
+    pill_margin: Rc<Cell<i32>>,
+    /// The in-flight margin animation, if any; cancelled before starting a
+    /// new one, same pattern as `WorkspaceTrail::cancel`.
+    pill_anim: Rc<RefCell<Option<gtk4::TickCallbackId>>>,
+    /// BAR-30 phase 4: `[osd].style = "pill"`'s level row (a label, a bar,
+    /// and a percentage), shown as an overlay covering the pill's own
+    /// regular content for `bar.autohide.level_peek_ms`. `None` for every
+    /// theme (built unconditionally like every other pill widget, but only
+    /// ever shown when the active theme's `[osd].style` is "pill").
+    pill_level_box: gtk4::Box,
+    pill_level_name: gtk4::Label,
+    pill_level_bar: gtk4::ProgressBar,
+    pill_level_pct: gtk4::Label,
+    /// Debounce token for the level display's auto-hide timer, same idiom
+    /// as `osd.rs`'s `dismiss_token`.
+    pill_level_token: Rc<Cell<u32>>,
+    /// The level bar's in-flight width glide, if any.
+    pill_level_anim: Rc<RefCell<Option<gtk4::TickCallbackId>>>,
+    /// Pill items hidden while a level shows, to restore afterwards.
+    pill_leveled: Rc<RefCell<Vec<gtk4::Widget>>>,
+
+    // ── Spotlight stage (BAR-30 phases 2-4) ─────────────────────────────
+    stage: Rc<stage::Stage>,
+    /// BAR-30 phase 4: the surtitle caption window, shown instead of a
+    /// toast when `[notifications].style = "surtitle"`.
+    surtitle: surtitle::Surtitle,
+    /// Do-not-disturb: shared with `Stage`'s own DND chip (same `Rc`, so a
+    /// click there is immediately visible here with no message round-trip).
+    /// Suppresses the surtitle/peek/unread-dot path for a new notification;
+    /// the notification is still recorded to history regardless.
+    dnd: Rc<Cell<bool>>,
+    /// BAR-31: state shared by every bar instance (see `stage::Shared`).
+    shared: stage::Shared,
 }
 
 #[derive(Debug)]
@@ -523,6 +619,9 @@ pub enum AppInput {
     MediaUpdate(bar::media::MediaState),
     ControlPanelData(bar::control::ControlPanelData),
     WidgetsUpdate(Vec<bread_shared::widget::WidgetSpec>),
+    /// The primary's full widget list (daemon + theme widgets), forwarded to
+    /// a satellite bar, which has no widget sources of its own.
+    MirrorWidgets(Vec<bread_shared::widget::WidgetSpec>),
     /// One `[[bar.widget]]` poll landed: store its value and re-render.
     ThemeWidgetTick {
         id: String,
@@ -548,6 +647,62 @@ pub enum AppInput {
     // mechanism behind the startup-open bug (see `connect_enter`'s own
     // comment in `init`).
     OpenLauncher,
+
+    // ── Spotlight pill auto-hide (BAR-27 phase 1) ───────────────────────
+    /// The pointer entered the pill or its hot-zone.
+    PillHoverEnter,
+    /// The pointer left the pill or its hot-zone; re-tucks after
+    /// `bar.autohide.retuck_delay_ms` unless it re-enters first.
+    PillHoverLeave,
+    /// A pending hover-leave's debounce timer fired; `u32` is the
+    /// generation it was scheduled under (see `pill_hover_gen`'s doc).
+    PillHoverLeaveExpire(u32),
+    /// Hold the pill down for `Duration` (a notification/level/workspace
+    /// peek); re-evaluates immediately and again once it expires.
+    PillPeek(std::time::Duration),
+    /// A pending peek's expiry timer fired: just re-evaluate visibility
+    /// (the peek itself already recorded `pill_hold_until`).
+    PillReeval,
+    /// `breadbar --pill show`: force a generous manual peek.
+    PillShowCmd,
+    /// `breadbar --pill toggle`: hide early if currently shown only via a
+    /// live peek/hover-independent hold, otherwise show.
+    PillToggleCmd,
+    /// A notification arrived: lights the unread dot, peeks
+    /// (`bar.autohide.notification_peek_ms`), and (BAR-30 phase 4, when
+    /// `[notifications].style = "surtitle"` and DND is off) shows the
+    /// surtitle caption. Always still recorded to history regardless of any
+    /// of that (`NotifServer::notify` already did so before this fires).
+    NotificationArrived {
+        app: String,
+        summary: String,
+        /// Critical urgency: the surtitle stays up until dismissed.
+        critical: bool,
+    },
+    /// A volume/brightness OSD event fired: peeks
+    /// (`bar.autohide.level_peek_ms`) and, when `[osd].style = "pill"`,
+    /// draws the level inside the pill instead of the standalone OSD
+    /// window (BAR-30 phase 4).
+    LevelChanged {
+        kind: &'static str,
+        pct: u8,
+    },
+
+    // ── Spotlight stage (BAR-30 phases 2-4) ─────────────────────────────
+    /// The stage opened or closed: feeds `pill_autohide::State.open` (the
+    /// pill stays down the whole time) and re-evaluates the pill.
+    StageOpenChanged(bool),
+    /// `spotlight.json` changed (the stage settings menu, or a hand edit).
+    PrefsChanged(spotlight_prefs::Prefs),
+    /// `breadbar --stage toggle` reaches the primary instance the same way
+    /// `--pill toggle` does: forwarded from `notifications::StageCmd` over
+    /// `dev.breadway.Bar`.
+    StageToggleCmd,
+    StageShowCmd,
+    StageHideCmd,
+    /// The pill's time was clicked: toggles this instance's own stage (the
+    /// click already happened on this monitor, so no focus routing).
+    StageClockClicked,
 }
 
 #[relm4::component(pub)]
@@ -690,6 +845,92 @@ impl SimpleComponent for App {
                 root.set_visible(false);
             }
         }
+
+        // ── Spotlight pill: divider, low-battery flag, unread dot
+        // (BAR-27 phase 1) ───────────────────────────────────────────────
+        // Built unconditionally, same "registered but possibly unparented"
+        // convention as every other bar module (`bar::slots::ModuleRegistry`'s
+        // own doc comment): only spotlight's `[bar.slots]` currently names
+        // any of these three, so they stay inert everywhere else.
+        let pill_sep = gtk4::Separator::new(gtk4::Orientation::Vertical);
+        pill_sep.add_css_class("bar-sep");
+        // Hidden until `rebuild_buttons` finds something in the workspace
+        // strip, so a bar with no workspace sync yet (or no Hyprland IPC)
+        // doesn't open with a stray leading divider.
+        pill_sep.set_visible(false);
+
+        let pill_flag = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_flag.add_css_class("pill-flag");
+        pill_flag.set_valign(gtk4::Align::Center);
+        pill_flag.set_visible(false);
+        let pill_flag_dot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_flag_dot.add_css_class("pill-flag-dot");
+        // Without this the dot fills the flag box's full height and draws as
+        // a tall capsule instead of the mockup's 6px circle.
+        pill_flag_dot.set_valign(gtk4::Align::Center);
+        pill_flag.append(&pill_flag_dot);
+        let pill_flag_label = gtk4::Label::new(None);
+        pill_flag_label.add_css_class("pill-flag-label");
+        pill_flag.append(&pill_flag_label);
+
+        let pill_unread = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_unread.add_css_class("pill-unread");
+        pill_unread.set_valign(gtk4::Align::Center);
+        pill_unread.set_visible(false);
+        let pill_unread_dot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_unread_dot.add_css_class("pill-unread-dot");
+        pill_unread_dot.set_valign(gtk4::Align::Center);
+        pill_unread.append(&pill_unread_dot);
+
+        // ── Spotlight pill: auto-hide (BAR-27 phase 1) ────────────────────
+        // `[bar.autohide]`: off (`AutoHide::default()`) for every builtin but
+        // spotlight, so the hover controller and hot-zone/lip satellite
+        // below are simply never created there, and the pill stays at its
+        // theme-configured margin forever (`update_pill` is a no-op while
+        // `!autohide_cfg.enabled`).
+        let autohide_cfg = *theme::shell_theme().autohide();
+        if autohide_cfg.enabled {
+            // BAR-31: the pill draws on the window's inner box inside a
+            // transparent shadow margin (base.css `window.breadbar.pill`), so
+            // the surface sits `SHADOW_TOP` above the theme's margin and only
+            // the pill itself takes input.
+            root.add_css_class("pill");
+            root.set_margin(Edge::Top, pill_margins(&window_spec).0);
+            root.connect_realize(|w| {
+                if let Some(surface) = w.surface() {
+                    surface.connect_layout(|surface, width, height| {
+                        let (x, y, rw, rh) = pill_autohide::input_rect(width, height);
+                        let rect = gtk4::cairo::RectangleInt::new(x, y, rw, rh);
+                        surface
+                            .set_input_region(Some(&gtk4::cairo::Region::create_rectangle(&rect)));
+                    });
+                }
+            });
+        }
+        let (pill_hotzone, pill_lip, pill_hotzone_debug) = if autohide_cfg.enabled {
+            let enter_sender = sender.clone();
+            let leave_sender = sender.clone();
+            let motion = gtk4::EventControllerMotion::new();
+            motion.connect_enter(move |_, _, _| post(&enter_sender, AppInput::PillHoverEnter));
+            motion.connect_leave(move |_| post(&leave_sender, AppInput::PillHoverLeave));
+            root.add_controller(motion);
+
+            let hz_enter = sender.clone();
+            let hz_leave = sender.clone();
+            let (hz_window, lip, debug) = pill_hotzone::spawn(
+                autohide_cfg.hover_zone_width as i32,
+                autohide_cfg.hover_zone_height as i32,
+                move || post(&hz_enter, AppInput::PillHoverEnter),
+                move || post(&hz_leave, AppInput::PillHoverLeave),
+            );
+            if screenshot_req.is_none() {
+                bind_layer_monitor(&hz_window, &monitor_name);
+            }
+            hz_window.present();
+            (Some(hz_window), Some(lip), Some(debug))
+        } else {
+            (None, None, None)
+        };
 
         // ── Workspace row (left) ────────────────────────────────────────
         // Built imperatively (not via the view! macro) so a widget
@@ -880,6 +1121,18 @@ impl SimpleComponent for App {
         clock_plain_box.append(&date_lbl);
         clock_plain_box.append(&clock_plain_lbl);
 
+        // BAR-30 phase 2: clicking the pill's time opens the stage (the
+        // mockup's `#time` button). Only the auto-hiding pill themes have a
+        // stage to open; on every other theme the click stays a no-op, as
+        // before. Wired on both clock variants; only one is ever parented.
+        for clock_widget in [clock_plain_box.upcast_ref::<gtk4::Widget>(), clock_box.upcast_ref()] {
+            let click = gtk4::GestureClick::new();
+            click.set_button(gtk4::gdk::BUTTON_PRIMARY);
+            let s = sender.clone();
+            click.connect_released(move |_, _, _, _| post(&s, AppInput::StageClockClicked));
+            clock_widget.add_controller(click);
+        }
+
         // ── Launcher entry + results (theme 04/spotlight, plan §7) ───────
         // Built unconditionally, exactly like `clock_plain_box` above:
         // placed in a slot only by a theme that names "launcher_entry"/
@@ -896,7 +1149,9 @@ impl SimpleComponent for App {
                 bread_launcher::LAUNCHER_APP,
             ))
             .ok()
-            .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, String>>(&s).ok())
+            .and_then(|s| {
+                serde_json::from_str::<std::collections::HashMap<String, String>>(&s).ok()
+            })
             .unwrap_or_default()
             .into_iter()
             .map(|(k, v)| (k, std::path::PathBuf::from(v)))
@@ -921,7 +1176,9 @@ impl SimpleComponent for App {
             Rc::clone(&launcher_history),
             launcher_cfg.sections,
         );
-        launcher_results.scroller.add_css_class("bread-drawer-scroller");
+        launcher_results
+            .scroller
+            .add_css_class("bread-drawer-scroller");
 
         let launcher_entry = gtk4::Entry::new();
         launcher_entry.add_css_class("launcher-entry");
@@ -949,11 +1206,14 @@ impl SimpleComponent for App {
         // "launcher_entry" anywhere), so this still degrades sanely if a
         // future/user theme places it without also setting the flag.
         let placeholder_clock = theme::shell_theme().modules().clock.placeholder_clock;
-        launcher_entry.set_placeholder_text(Some(if placeholder_clock {
-            bar::clock::time()
-        } else {
-            "Search".to_string()
-        }.as_str()));
+        launcher_entry.set_placeholder_text(Some(
+            if placeholder_clock {
+                bar::clock::time()
+            } else {
+                "Search".to_string()
+            }
+            .as_str(),
+        ));
 
         // Center area: [media_widget · widgets · clock · widgets]
         let center_area = gtk4::Box::new(slot_orientation, 12);
@@ -1299,9 +1559,7 @@ impl SimpleComponent for App {
                 ),
             ];
             for name in &theme::shell_theme().panel().sections {
-                if let Some((_, widgets)) =
-                    section_widgets.iter().find(|(n, _)| n == name)
-                {
+                if let Some((_, widgets)) = section_widgets.iter().find(|(n, _)| n == name) {
                     for w in widgets {
                         panel_inner.append(w);
                     }
@@ -1508,6 +1766,11 @@ impl SimpleComponent for App {
         bar_modules.register("ram", &bar_ram_pair);
         bar_modules.register("launcher_entry", &launcher_entry);
         bar_modules.register("launcher_results", &launcher_results.scroller);
+        // BAR-27 phase 1 (spotlight pill): only spotlight's `[bar.slots]`
+        // names any of these three.
+        bar_modules.register("sep", &pill_sep);
+        bar_modules.register("flag", &pill_flag);
+        bar_modules.register("unread", &pill_unread);
 
         // `tray` never appears in a bar slot: it lives in the control-panel
         // popover, but it's keyed here so `reconcile_widgets`' routing finds
@@ -1515,6 +1778,30 @@ impl SimpleComponent for App {
         let mut widget_containers: std::collections::HashMap<String, gtk4::Box> =
             std::collections::HashMap::new();
         widget_containers.insert("tray".to_string(), widget_tray_box);
+
+        // ── Pill level display (BAR-30 phase 4, BAR-31) ──────────────────
+        // `[osd].style = "pill"` draws a volume/brightness change inside the
+        // pill instead of the standalone OSD window. It is a regular slot
+        // module ("level", placed just before the flag, where the mockup's
+        // `.level` sits) that `show_pill_level` reveals while taking every
+        // other pill item but the flag out of layout, the mockup's
+        // `.wick.leveling>:not(.level):not(.flag){display:none}`. The pill
+        // then resizes to fit the level row exactly as the browser does.
+        let pill_level_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        pill_level_box.add_css_class("pill-level");
+        pill_level_box.set_valign(gtk4::Align::Center);
+        pill_level_box.set_visible(false);
+        let pill_level_name = gtk4::Label::new(None);
+        pill_level_name.add_css_class("pill-level-name");
+        pill_level_box.append(&pill_level_name);
+        let pill_level_bar = gtk4::ProgressBar::new();
+        pill_level_bar.add_css_class("pill-level-bar");
+        pill_level_bar.set_valign(gtk4::Align::Center);
+        pill_level_box.append(&pill_level_bar);
+        let pill_level_pct = gtk4::Label::new(None);
+        pill_level_pct.add_css_class("pill-level-pct");
+        pill_level_box.append(&pill_level_pct);
+        bar_modules.register("level", &pill_level_box);
 
         // ── Assemble ─────────────────────────────────────────────────────
         let widgets = view_output!();
@@ -1524,7 +1811,9 @@ impl SimpleComponent for App {
         // bar row itself needs to know its own orientation; every slot
         // container packed into it already picked `slot_orientation` above.
         if vertical_bar {
-            widgets.center_box.set_orientation(gtk4::Orientation::Vertical);
+            widgets
+                .center_box
+                .set_orientation(gtk4::Orientation::Vertical);
         }
         widgets.center_box.set_start_widget(Some(&workspace_row));
         widgets.center_box.set_center_widget(Some(&center_area));
@@ -1554,6 +1843,19 @@ impl SimpleComponent for App {
         // requests no size at all, which is what "collapsed" actually needs.
         // open_fn/close_fn toggle this back on/off around the height animation.
         widgets.drawer_box.set_visible(false);
+        if autohide_cfg.enabled {
+            // `.wick{gap:10px}`, `.ws{gap:2px}`, `.slot{gap:8px}`; the strip
+            // starts collapsed until the first workspace sync fills it.
+            center_area.set_spacing(10);
+            workspace_box.set_spacing(2);
+            for (key, slot) in &widget_containers {
+                if key != "tray" {
+                    slot.set_spacing(8);
+                }
+            }
+            workspace_trail.overlay.set_visible(false);
+            hide_empty_rows(&[&workspace_row, &stats_box]);
+        }
 
         // ── Query-mode results (plan §7 phase 6c: `=` calc, `>` cmd, `.`
         // url) ───────────────────────────────────────────────────────────
@@ -1633,7 +1935,11 @@ impl SimpleComponent for App {
                     // marks the width animation's starting point below.
                     root.add_css_class("searching");
                     let current_width = root.width();
-                    let from = if current_width > 0 { current_width } else { idle_width };
+                    let from = if current_width > 0 {
+                        current_width
+                    } else {
+                        idle_width
+                    };
                     animate_capsule_width(&root, &anim_width, from, search_width);
                     // Item B: click-away scrim. Shown at a fixed dead-zone
                     // offset (`capsule_dismiss_margin`), never the live
@@ -1646,12 +1952,11 @@ impl SimpleComponent for App {
                     // `capsule_dismiss_hole`'s doc comment. Falls back to
                     // the old full-width dead zone if the live geometry
                     // query fails for any reason.
-                    let hole = hypr_capsule_center_x(&monitor_name_for_dismiss).and_then(
-                        |center_x| {
+                    let hole =
+                        hypr_capsule_center_x(&monitor_name_for_dismiss).and_then(|center_x| {
                             let (origin_x, _) = hypr_monitor_origin(&monitor_name_for_dismiss)?;
                             Some(capsule_dismiss_hole(center_x, origin_x, search_width))
-                        },
-                    );
+                        });
                     panels.show_capsule_dismiss(capsule_dismiss_margin, hole);
                 }
                 let target = drawer_target_height(&drawer_box);
@@ -1960,9 +2265,140 @@ impl SimpleComponent for App {
         if init.primary && screenshot_req.is_none() {
             let later = sender.clone();
             gtk4::glib::idle_add_local_once(move || {
-                later.input(AppInput::ReconcileMonitors);
+                post(&later, AppInput::ReconcileMonitors);
             });
         }
+
+        let notif_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
+            "notification" => Some(notifications::SampleKind::Normal),
+            "notification-critical" => Some(notifications::SampleKind::Critical),
+            _ => None,
+        });
+        // A screenshot run must never touch the real session bus: zbus's
+        // default name flags are AllowReplacement|ReplaceExisting, so a
+        // capture process claiming org.freedesktop.Notifications would
+        // silently take the name from the live breadbar, and the live one
+        // (DoNotQueue) never gets it back once the capture exits.
+        // bread-capture isolates Wayland but not D-Bus, so only the
+        // notification views (whose sample path never connects to D-Bus)
+        // build the notification server here.
+        let claim_notifications = screenshot_req.is_none() || notif_sample.is_some();
+        let (notification_window, notif_handle, notif_store) =
+            if init.primary && claim_notifications {
+                // BAR-27 phase 1: `breadbar --pill toggle|show` reaches this
+                // instance over `dev.breadway.Bar` (same surface as
+                // `--history`), forwarded here rather than through the
+                // notification event loop, which owns that D-Bus connection but
+                // has nothing to do with the pill itself. BAR-30 phase 2:
+                // `breadbar --stage toggle|show|hide` are forwarded the same way.
+                let (pill_cmd_tx, mut pill_cmd_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<notifications::PillCmd>();
+                let pill_cmd_sender = sender.clone();
+                relm4::spawn_local(async move {
+                    while let Some(cmd) = pill_cmd_rx.recv().await {
+                        match cmd {
+                            notifications::PillCmd::Toggle => {
+                                post(&pill_cmd_sender, AppInput::PillToggleCmd)
+                            }
+                            notifications::PillCmd::Show => {
+                                post(&pill_cmd_sender, AppInput::PillShowCmd)
+                            }
+                        }
+                    }
+                });
+                let (stage_cmd_tx, mut stage_cmd_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<notifications::StageCmd>();
+                let stage_cmd_sender = sender.clone();
+                relm4::spawn_local(async move {
+                    while let Some(cmd) = stage_cmd_rx.recv().await {
+                        match cmd {
+                            notifications::StageCmd::Toggle => {
+                                post(&stage_cmd_sender, AppInput::StageToggleCmd)
+                            }
+                            notifications::StageCmd::Show => {
+                                post(&stage_cmd_sender, AppInput::StageShowCmd)
+                            }
+                            notifications::StageCmd::Hide => {
+                                post(&stage_cmd_sender, AppInput::StageHideCmd)
+                            }
+                        }
+                    }
+                });
+                let notify_peek_sender = sender.clone();
+                let on_show: Option<notifications::OnShow> =
+                    Some(Box::new(move |app, summary, critical| {
+                        post(
+                            &notify_peek_sender,
+                            AppInput::NotificationArrived {
+                                app: app.to_string(),
+                                summary: summary.to_string(),
+                                critical,
+                            },
+                        );
+                    }));
+                let (win, handle, store) =
+                    notifications::spawn(notif_sample, on_show, pill_cmd_tx, stage_cmd_tx);
+                (Some(win), handle, store)
+            } else {
+                (None, None, notifications::history::new_store())
+            };
+
+        // Right-click the hamburger toggles the notification-history window
+        // (left-click still opens the control panel, wired above). This is
+        // the no-terminal equivalent of `breadbar --history`; it reaches
+        // the same event loop in-process rather than over `dev.breadway.Bar`.
+        if let Some(handle) = &notif_handle {
+            let secondary = gtk4::GestureClick::new();
+            secondary.set_button(gtk4::gdk::BUTTON_SECONDARY);
+            let handle = handle.clone();
+            secondary.connect_released(move |g, _, _, _| {
+                g.set_state(gtk4::EventSequenceState::Claimed);
+                handle.toggle_history();
+            });
+            hamburger_btn.add_controller(secondary);
+            hamburger_btn.set_tooltip_text(Some("Control panel (right-click: notifications)"));
+        }
+        let osd_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
+            "osd-volume" => Some(osd::SampleKind::Volume),
+            "osd-brightness" => Some(osd::SampleKind::Brightness),
+            _ => None,
+        });
+        let osd_window = if init.primary {
+            let osd_cfg = theme::shell_theme().osd().clone();
+            let level_peek_sender = sender.clone();
+            let on_change: Option<Box<dyn Fn(&'static str, u8)>> =
+                Some(Box::new(move |kind, pct| {
+                    post(&level_peek_sender, AppInput::LevelChanged { kind, pct });
+                }));
+            Some(osd::spawn(
+                osd_sample,
+                &osd_cfg.enabled,
+                osd_cfg.dismiss_ms.max(1) as u64,
+                on_change,
+            ))
+        } else {
+            None
+        };
+
+        // BAR-30 phases 2-4: the stage and (phase 4) the surtitle caption.
+        // Built unconditionally on every instance (primary and satellite
+        // alike), same as `panel::PanelSet`/`pill_hotzone`: `resolve_
+        // launcher_route` (see `AppInput::StageToggleCmd` etc.) is what
+        // decides which one's window actually opens. BAR-31: every instance
+        // shares the primary's `stage::Shared` (history store, DND, which
+        // stage is open, every pill's unread dot), handed to satellites
+        // through `BarInit`, so a satellite's stage shows the real history.
+        let shared = init
+            .shared
+            .clone()
+            .unwrap_or_else(|| stage::Shared::new(notif_store));
+        let dnd = shared.dnd.clone();
+        let stage = stage::build(sender.clone(), shared.clone());
+        let surtitle = surtitle::spawn();
+        if init.primary {
+            *shared.surtitle.borrow_mut() = Some(surtitle.clone());
+        }
+        shared.register_unread_dot(pill_unread.upcast_ref());
 
         let mut model = App {
             monitor: monitor_name,
@@ -2024,6 +2460,16 @@ impl SimpleComponent for App {
             tray_count_lbl,
             tray_items: std::collections::HashMap::new(),
             widget_containers,
+            prefs: if autohide_cfg.enabled {
+                spotlight_prefs::load()
+            } else {
+                spotlight_prefs::Prefs::default()
+            },
+            _prefs_monitor: if autohide_cfg.enabled && screenshot_req.is_none() {
+                watch_prefs(&sender)
+            } else {
+                None
+            },
             dropped_widget_warned: std::collections::HashSet::new(),
             widget_tray_section,
             widget_tray_sep,
@@ -2038,18 +2484,103 @@ impl SimpleComponent for App {
             center_area: center_area.clone(),
             stats_box: stats_box.clone(),
             drawer_box: widgets.drawer_box.clone(),
+            autohide_cfg,
+            pill_hovering: false,
+            pill_hold_until: None,
+            pill_hover_gen: 0,
+            // Assumed shown at construction (the window is placed at its
+            // theme-configured margin by `apply_window_spec` above); the
+            // `update_pill` call right after this literal reconciles it
+            // against the real state immediately, animating a tuck-in on
+            // startup if nothing keeps it down.
+            pill_shown: true,
+            pill_low_battery: false,
+            pill_hotzone,
+            pill_lip,
+            pill_flag,
+            pill_flag_label,
+            pill_unread,
+            pill_sep,
+            pill_margin: Rc::new(Cell::new(if autohide_cfg.enabled {
+                pill_margins(&window_spec).0
+            } else {
+                window_spec.margin.top
+            })),
+            pill_anim: Rc::new(RefCell::new(None)),
+            pill_level_box,
+            pill_level_name,
+            pill_level_bar,
+            pill_level_pct,
+            pill_level_token: Rc::new(Cell::new(0)),
+            pill_level_anim: Rc::new(RefCell::new(None)),
+            pill_leveled: Rc::new(RefCell::new(Vec::new())),
+            stage,
+            surtitle,
+            dnd,
+            shared,
         };
+        // Saved stage settings (auto-hide, widgets, workspace view); this also
+        // runs the initial `update_pill`.
+        if model.autohide_cfg.enabled {
+            model.apply_prefs();
+        } else {
+            model.update_pill();
+        }
 
         theme::apply();
         theme::bind_output(&root, &model.monitor);
-        bar::workspaces::spawn_watcher(sender.clone());
+        // Skipped for "pill-ws-*": those views mock `self.workspaces`
+        // directly below (the isolated capture session has no Hyprland IPC
+        // for a real sync to report anyway, but its own empty-result
+        // `AppInput::WorkspaceSync` would still land after the mock and
+        // wipe it, same race as the widgets/battery views above).
+        if !screenshot_req
+            .as_ref()
+            .is_some_and(|r| r.view.starts_with("pill-ws-") || r.view.starts_with("stage-"))
+        {
+            bar::workspaces::spawn_watcher(sender.clone());
+        }
         bar::clock::spawn_ticker(sender.clone());
-        bar::stats::spawn_poller(sender.clone());
-        bar::wifi::spawn_status_poller(sender.clone());
-        bar::media::spawn_poller(sender.clone());
+        // Skipped for "pill-low-battery": that view forces the pill's flag
+        // state directly (there's no `Option<SampleKind>`-style bypass for
+        // the real `/sys/class/power_supply` poll the way notifications/OSD
+        // have), and a real battery reading racing in during the capture's
+        // settle delay would otherwise clobber the forced state right back
+        // to whatever this machine's actual battery/AC status is.
+        // BAR-31: likewise skipped for the stage and surtitle views, whose
+        // sample battery, network and media data (the mockup's own) a real
+        // reading would otherwise overwrite mid-capture.
+        let sampled_view = screenshot_req.as_ref().is_some_and(|r| {
+            r.view == "pill-low-battery"
+                || r.view.starts_with("stage-")
+                || r.view.starts_with("surtitle")
+        });
+        if !sampled_view {
+            bar::stats::spawn_poller(sender.clone());
+            bar::wifi::spawn_status_poller(sender.clone());
+            bar::media::spawn_poller(sender.clone());
+        }
         if init.primary {
-            bar::tray::spawn_watcher(sender.clone());
-            widgets::client::spawn(sender.clone());
+            // Same D-Bus name-stealing hazard as the notification server
+            // above: a screenshot run must not take
+            // org.kde.StatusNotifierWatcher from the live bar.
+            if screenshot_req.is_none() {
+                bar::tray::spawn_watcher(sender.clone());
+            }
+            // Skipped for "pill-widgets-on": that view mocks its own
+            // sample widgets directly into the left_of_clock/right_of_clock
+            // containers below (there's no `Option<SampleKind>`-style
+            // bypass for the real Lua-widget daemon connection the way
+            // notifications/OSD have); a real daemon happening to be
+            // reachable from the capture session would otherwise race
+            // that mock and wipe it the moment its own (empty, for
+            // spotlight's placements) update arrived.
+            if !screenshot_req
+                .as_ref()
+                .is_some_and(|r| r.view == "pill-widgets-on" || r.view.starts_with("stage-"))
+            {
+                widgets::client::spawn(sender.clone());
+            }
             // `[[bar.widget]]`: theme-declared live widgets. Primary only,
             // matching the Lua-widget path (`widgets::client::spawn` above);
             // the containers exist on every bar from `assemble_bar_slots`,
@@ -2070,61 +2601,203 @@ impl SimpleComponent for App {
             // forwards it to every satellite).
             let watch_sender = sender.clone();
             theme::watch_hot_reload(move |theme| {
-                watch_sender.input(AppInput::ShellThemeChanged(Box::new(theme)));
+                post(&watch_sender, AppInput::ShellThemeChanged(Box::new(theme)));
             });
         }
-
-        // Screenshot mode primes these with sample content instead of the
-        // real D-Bus/pactl/backlight sources; see notifications::SampleKind
-        // and osd::SampleKind's doc comments.
-        let notif_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
-            "notification" => Some(notifications::SampleKind::Normal),
-            "notification-critical" => Some(notifications::SampleKind::Critical),
-            _ => None,
-        });
-        let (notification_window, notif_handle) = if init.primary {
-            let (win, handle) = notifications::spawn(notif_sample);
-            (Some(win), handle)
-        } else {
-            (None, None)
-        };
-
-        // Right-click the hamburger toggles the notification-history window
-        // (left-click still opens the control panel, wired above). This is
-        // the no-terminal equivalent of `breadbar --history`; it reaches
-        // the same event loop in-process rather than over `dev.breadway.Bar`.
-        if let Some(handle) = notif_handle {
-            let secondary = gtk4::GestureClick::new();
-            secondary.set_button(gtk4::gdk::BUTTON_SECONDARY);
-            secondary.connect_released(move |g, _, _, _| {
-                g.set_state(gtk4::EventSequenceState::Claimed);
-                handle.toggle_history();
-            });
-            hamburger_btn.add_controller(secondary);
-            hamburger_btn.set_tooltip_text(Some("Control panel (right-click: notifications)"));
-        }
-        let osd_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
-            "osd-volume" => Some(osd::SampleKind::Volume),
-            "osd-brightness" => Some(osd::SampleKind::Brightness),
-            _ => None,
-        });
-        let osd_window = if init.primary {
-            let osd_cfg = theme::shell_theme().osd().clone();
-            Some(osd::spawn(
-                osd_sample,
-                &osd_cfg.enabled,
-                osd_cfg.dismiss_ms.max(1) as u64,
-            ))
-        } else {
-            None
-        };
 
         if let Some(req) = screenshot_req {
-            let notification_window = notification_window.filter(|_| {
-                matches!(req.view.as_str(), "notification" | "notification-critical")
-            });
+            let notification_window = notification_window
+                .filter(|_| matches!(req.view.as_str(), "notification" | "notification-critical"));
             let osd_window =
                 osd_window.filter(|_| matches!(req.view.as_str(), "osd-volume" | "osd-brightness"));
+            // BAR-27 phase 1: force the spotlight pill into the exact state
+            // each named view wants, deterministically, rather than racing
+            // the real hover/timer machinery in an isolated capture with no
+            // real pointer. Every `pill-*` view except "pill-tucked" itself
+            // wants the pill visibly down (there's nothing to see of the
+            // workspace/widget/flag states otherwise); "hovering" is the
+            // mechanism, since there is no real pointer here to trigger the
+            // mockup's own `.wick:hover` background shade, so phase 1's
+            // capture of "hovering" and "shown some other way" render
+            // pixel-identical anyway (see the task report).
+            if req.view.starts_with("pill-")
+                && req.view != "pill-tucked"
+                && req.view != "pill-tucked-input"
+            {
+                model.pill_hovering = true;
+            }
+            if req.view.as_str() == "pill-tucked-input" {
+                if let Some(debug) = &pill_hotzone_debug {
+                    pill_hotzone::set_debug_visible(debug, true);
+                }
+            }
+            if req.view.as_str() == "pill-low-battery" {
+                model.pill_low_battery = true;
+                model.pill_flag.set_visible(true);
+                model.pill_flag_label.set_label("12%");
+            }
+            if req.view.starts_with("pill-ws-") || req.view.starts_with("stage-") {
+                // The isolated capture session has no Hyprland IPC (same
+                // gap `bar::workspaces::dot_width_index`'s own doc comment
+                // notes for window counts), so `self.workspaces` would
+                // otherwise stay empty forever and every `display` mode
+                // would render identically ("nothing"). Mock a small,
+                // mixed occupied/empty set (matching the mockup's own
+                // sample data shape: an active workspace, an empty one,
+                // and another occupied one) so the three modes actually
+                // differ in the capture.
+                let mon = model.monitor.clone();
+                let fake = |id: WorkspaceId, windows: u16| Workspace {
+                    id,
+                    name: id.to_string(),
+                    monitor: mon.clone(),
+                    monitor_id: None,
+                    windows,
+                    fullscreen: false,
+                    last_window: Address::new("0"),
+                    last_window_title: String::new(),
+                };
+                // The mockup's own `WS=[3,1,0,2,1]` with the first active.
+                model.workspaces = vec![fake(1, 3), fake(2, 1), fake(3, 0), fake(4, 2), fake(5, 1)];
+                model.active_ws = 1;
+                model.rebuild_buttons(false);
+            }
+            if req.view.as_str() == "pill-widgets-on" {
+                // The bread daemon has no widgets in an isolated capture;
+                // the mockup's two examples stand in, through the same
+                // reconcile path real widgets take.
+                model.daemon_widget_specs = screenshot_sample_widgets();
+                model.reconcile_all_widgets();
+            }
+            model.update_pill();
+            if req.view.as_str() == "pill-level" {
+                // Through the real level path, once the main loop runs
+                // (the pill row is only complete then); the capture fires
+                // 300ms after map, well inside the 1.4s level peek.
+                let s = sender.clone();
+                gtk4::glib::idle_add_local_once(move || {
+                    post(
+                        &s,
+                        AppInput::LevelChanged {
+                            kind: "VOL",
+                            pct: 65,
+                        },
+                    );
+                });
+            }
+            // BAR-30 phases 2-4: force the stage/surtitle into the exact
+            // state each named view wants. Deferred to an idle callback
+            // scheduled AFTER `screenshot::dispatch` below registers its own
+            // `connect_map` watcher: unlike `root` (whose first real map is
+            // deferred by relm4 itself until after `init()` returns) or the
+            // notification/OSD windows (whose sample `Show`/OSD event only
+            // reaches `popup::run`/`run_osd`'s loop once the async executor
+            // actually starts pumping, likewise post-`init()`), the stage
+            // and surtitle windows are plain `gtk4::Window`s this code calls
+            // `present()`/`show()` on directly. Doing that SYNCHRONOUSLY
+            // inside `init()`, before `dispatch` had a chance to attach its
+            // `connect_map` handler, let GTK map (and therefore emit `map`
+            // on) the surface before anything was listening: every
+            // `stage-*`/"surtitle" capture hung to `bread-capture`'s 10s
+            // timeout with no error. Queuing the actual open/show here,
+            // after `dispatch` runs, closes that race. Sample notification/
+            // window/media data is still set eagerly (no visibility change,
+            // so no race), matching `Stage::open_for_screenshot`'s own
+            // contract of never kicking off the real pollers itself.
+            let view = req.view.clone();
+            if view.starts_with("stage-") {
+                // The mockup's own sample data, so the capture compares
+                // against it like for like. Every real poller that could
+                // overwrite it is skipped for these views (see the poller
+                // spawns above).
+                model.stage.set_media(&bar::media::MediaState {
+                    title: "Nightcall".into(),
+                    artist: "Kavinsky".into(),
+                    playing: true,
+                    has_player: true,
+                    player: "Spotify".into(),
+                    art: None,
+                });
+                model
+                    .stage
+                    .set_control_data(&bar::control::ControlPanelData {
+                        volume: 0.6,
+                        brightness: 0.8,
+                        sinks: vec![
+                            bar::control::AudioSink {
+                                name: "sample-buds".into(),
+                                description: "All Buds".into(),
+                                is_default: true,
+                            },
+                            bar::control::AudioSink {
+                                name: "sample-speakers".into(),
+                                description: "Speakers".into(),
+                                is_default: false,
+                            },
+                        ],
+                    });
+                model.stage.set_wifi_radio(true);
+                model.stage.set_bluetooth(&bar::bluetooth::BtPopoverData {
+                    powered: false,
+                    devices: vec![],
+                });
+                model.stage.set_windows(vec![
+                    stage::pure::OpenWindow {
+                        address: "0x1".into(),
+                        title: "breadboard.breadway.dev: ECO board".into(),
+                        app: "firefox".into(),
+                        workspace: 1,
+                    },
+                    stage::pure::OpenWindow {
+                        address: "0x2".into(),
+                        title: "~/Projects/breadbar".into(),
+                        app: "kitty".into(),
+                        workspace: 1,
+                    },
+                    stage::pure::OpenWindow {
+                        address: "0x3".into(),
+                        title: "main.rs: breadbar".into(),
+                        app: "code".into(),
+                        workspace: 4,
+                    },
+                    stage::pure::OpenWindow {
+                        address: "0x4".into(),
+                        title: "Nightcall \u{00b7} Kavinsky".into(),
+                        app: "spotify".into(),
+                        workspace: 2,
+                    },
+                    stage::pure::OpenWindow {
+                        address: "0x5".into(),
+                        title: "Arch Wiki: Hyprland".into(),
+                        app: "firefox".into(),
+                        workspace: 1,
+                    },
+                ]);
+                model.stage.seed_sample_apps();
+                model
+                    .stage
+                    .set_status(Some(83), false, Some(300), "Totally NCC");
+                model.stage.set_time(&bar::clock::time());
+                model.stage.seed_sample_notifications();
+                // The pill carries the mockup's two example widgets, which
+                // the reconcile also mirrors into the stage's cards.
+                model.daemon_widget_specs = screenshot_sample_widgets();
+                model.reconcile_all_widgets();
+                // The pill stays down (as it does whenever a stage is open)
+                // rather than racing its tuck animation into the capture.
+                model.pill_hovering = true;
+                model.update_pill();
+            }
+            let surtitle_sender = sender.clone();
+            if req.view.as_str() == "pill-hover" {
+                // No real pointer in the capture: put the pill in its hover
+                // state, as `.wick:hover` would.
+                if let Some(pill) = root.child() {
+                    pill.set_state_flags(gtk4::StateFlags::PRELIGHT, false);
+                }
+            }
+            let stage_for_screenshot = model.stage.clone();
+            let surtitle_for_screenshot = model.surtitle.clone();
             screenshot::dispatch(
                 &root,
                 req,
@@ -2140,11 +2813,82 @@ impl SimpleComponent for App {
                     osd_window,
                     launcher_entry: launcher_entry_for_screenshot,
                     drawer_box: drawer_box_for_screenshot,
+                    stage_window: model.stage.window.clone(),
+                    surtitle_window: model.surtitle.window_for_screenshot(),
                 },
             );
+            if view.starts_with("stage-") || view.starts_with("surtitle") {
+                gtk4::glib::idle_add_local_once(move || match view.as_str() {
+                    "stage-results" => {
+                        stage_for_screenshot.open_for_screenshot();
+                        stage_for_screenshot.force_query("fire");
+                    }
+                    "stage-commands" => {
+                        stage_for_screenshot.open_for_screenshot();
+                        stage_for_screenshot.force_query(">");
+                    }
+                    "stage-calc" => {
+                        stage_for_screenshot.open_for_screenshot();
+                        stage_for_screenshot.force_query("=2+2");
+                    }
+                    "stage-power-armed" => {
+                        stage_for_screenshot.open_for_screenshot();
+                        stage_for_screenshot.force_power_press("restart");
+                    }
+                    "stage-narrow" => {
+                        stage_for_screenshot.open_for_screenshot();
+                        stage_for_screenshot.force_narrow(true);
+                    }
+                    "stage-settings" => {
+                        stage_for_screenshot.open_for_screenshot();
+                        stage_for_screenshot.force_settings_open();
+                    }
+                    "stage-empty" => {
+                        stage_for_screenshot.open_for_screenshot();
+                        stage_for_screenshot.force_query("zzz");
+                    }
+                    "stage-note-hover" => {
+                        stage_for_screenshot.open_for_screenshot();
+                        stage_for_screenshot.force_note_hover();
+                    }
+                    "stage-idle" => stage_for_screenshot.open_for_screenshot(),
+                    // Through the real arrival path, so the pill peeks and
+                    // lights its unread dot as it does live.
+                    "surtitle" => post(
+                        &surtitle_sender,
+                        AppInput::NotificationArrived {
+                            app: "kitty".into(),
+                            summary: "Claude is waiting for your input".into(),
+                            critical: false,
+                        },
+                    ),
+                    "surtitle-critical" => surtitle_for_screenshot.show(
+                        "power",
+                        "Battery at 5%. Plug in now or the machine will suspend.",
+                        true,
+                        std::time::Duration::from_secs(30),
+                    ),
+                    _ => {}
+                });
+            }
         }
 
         ComponentParts { model, widgets }
+    }
+
+    /// Runs when this bar's `Controller` is dropped (a satellite whose monitor
+    /// went away, see `drop_satellite`). Only the root bar window is hidden
+    /// there; the satellite's other layer surfaces would otherwise outlive it
+    /// with signal handlers still aimed at the shut-down runtime.
+    fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
+        if let Some(hz) = &self.pill_hotzone {
+            hz.destroy();
+        }
+        self.shared
+            .unregister_unread_dot(self.pill_unread.upcast_ref());
+        self.stage.window.destroy();
+        self.surtitle.destroy();
+        self.panels.destroy();
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
@@ -2166,6 +2910,13 @@ impl SimpleComponent for App {
                 let rows_changed = visible_ws_rows(&sorted, &self.monitor, new_active)
                     != visible_ws_rows(&self.workspaces, &self.monitor, self.active_ws);
                 let active_changed = new_active != self.active_ws;
+                // BAR-27 phase 1: a workspace switch peeks the pill down
+                // (`bar.autohide.workspace_peek_ms`); a no-op while
+                // auto-hide is off.
+                if active_changed {
+                    let ms = self.autohide_cfg.workspace_peek_ms.max(0) as u64;
+                    self.peek(std::time::Duration::from_millis(ms), &sender);
+                }
                 self.workspaces = sorted;
                 if self.primary {
                     self.reconcile_satellites();
@@ -2199,7 +2950,9 @@ impl SimpleComponent for App {
                 if self.satellites.iter().any(|(n, _)| n == &name) {
                     return;
                 }
-                if let Some(ctrl) = spawn_satellite(&name) {
+                if let Some(ctrl) = spawn_satellite(&name, self.shared.clone()) {
+                    ctrl.sender()
+                        .emit(AppInput::MirrorWidgets(self.mirrored_specs()));
                     self.satellites.push((name, ctrl));
                 }
             }
@@ -2209,6 +2962,7 @@ impl SimpleComponent for App {
             AppInput::ClockTick => {
                 self.time_str = bar::clock::current();
                 self.date_lbl.set_label(&bar::clock::date());
+                self.stage.set_time(&bar::clock::time());
                 let clock_module = theme::shell_theme().modules().clock.clone();
                 match clock_module.style {
                     // Plain (glass-workbench): one label, no flip animation:
@@ -2268,7 +3022,8 @@ impl SimpleComponent for App {
                     &mut self.vol_digits.borrow_mut(),
                     &stats.volume_pct.to_string(),
                 );
-                self.vol_lbl.set_tooltip_text(Some(&format!("volume {}%", stats.volume_pct)));
+                self.vol_lbl
+                    .set_tooltip_text(Some(&format!("volume {}%", stats.volume_pct)));
                 flip_digit_chip(&self.bat_lbl, &mut self.bat_digits.borrow_mut(), &stats.bat);
                 set_svg_icon(&self.bat_img, stats.bat_icon);
                 let bat_tip = if stats.ac_connected {
@@ -2278,12 +3033,31 @@ impl SimpleComponent for App {
                 };
                 self.bat_img.set_tooltip_text(Some(&bat_tip));
                 self.ac_img.set_visible(false);
+
+                // BAR-27 phase 1: the spotlight pill's low-battery flag.
+                // Charging counts as "not low": the flag is a "plug in
+                // soon" warning, meaningless with a charger already
+                // connected.
+                let low = !stats.ac_connected && bar::stats::is_low_battery(stats.bat_pct);
+                self.pill_flag.set_visible(low);
+                self.pill_flag_label.set_label(&format!("{}%", stats.bat));
+                if low != self.pill_low_battery {
+                    self.pill_low_battery = low;
+                    self.update_pill();
+                }
                 set_svg_icon(&self.bt_img, stats.bt_icon);
                 self.current_ssid = stats.wifi_ssid.clone();
                 if stats.wifi_profile.is_some() {
                     self.wifi_profile = stats.wifi_profile;
                 }
                 self.apply_wifi_label();
+                self.stage.set_status(
+                    stats.bat_pct,
+                    low,
+                    stats.bat_minutes_left,
+                    &self.current_ssid,
+                );
+                self.stage.set_wifi_radio(stats.wifi_radio);
                 let internet_ok = self
                     .crumbs_status
                     .as_ref()
@@ -2295,7 +3069,6 @@ impl SimpleComponent for App {
                     stats.wifi_icon
                 };
                 self.wifi_img.set_icon_name(Some(icon));
-
             }
             AppInput::TrayUpdate(bar::tray::TrayUpdate::Add { id, icon, title }) => {
                 if self.tray_items.contains_key(&id) {
@@ -2341,6 +3114,7 @@ impl SimpleComponent for App {
                 self.rebuild_wifi_popover(&sender);
             }
             AppInput::BtPopoverData(data) => {
+                self.stage.set_bluetooth(&data);
                 self.bt_popover_data = Some(data);
                 self.rebuild_bt_popover();
             }
@@ -2349,6 +3123,7 @@ impl SimpleComponent for App {
                 self.apply_wifi_label();
             }
             AppInput::MediaUpdate(state) => {
+                self.stage.set_media(&state);
                 if state.has_player {
                     let label = if state.artist.is_empty() {
                         state.title.clone()
@@ -2397,6 +3172,7 @@ impl SimpleComponent for App {
                 }
             }
             AppInput::ControlPanelData(data) => {
+                self.stage.set_control_data(&data);
                 // Suppress slider value-changed signals during programmatic update
                 self.panel_loading.set(true);
                 self.panel_vol_slider.set_value(data.volume);
@@ -2405,6 +3181,10 @@ impl SimpleComponent for App {
                 self.rebuild_sinks(&data.sinks, &sender);
             }
             AppInput::WidgetsUpdate(specs) => {
+                self.daemon_widget_specs = specs;
+                self.reconcile_all_widgets();
+            }
+            AppInput::MirrorWidgets(specs) => {
                 self.daemon_widget_specs = specs;
                 self.reconcile_all_widgets();
             }
@@ -2433,6 +3213,15 @@ impl SimpleComponent for App {
                 self.rebuild_from_theme(&theme, &sender);
             }
             AppInput::OpenLauncher => {
+                // Themes without the embedded capsule in any slot (spotlight
+                // since BAR-30) launch from the stage instead: breadbox still
+                // forwards Super+Space here because the theme's launcher mode
+                // is "embedded", and without this the request was dropped.
+                // Toggle, so a second press closes it like breadbox would.
+                if open_request_goes_to_stage(&theme::shell_theme()) {
+                    post(&sender, AppInput::StageToggleCmd);
+                    return;
+                }
                 // Only the primary instance subscribes to the open command
                 // (`launcher_command::spawn`), but `self.monitor` here is
                 // whichever output was focused ONCE, at this instance's own
@@ -2445,8 +3234,7 @@ impl SimpleComponent for App {
                 let satellite_names: Vec<&str> =
                     self.satellites.iter().map(|(n, _)| n.as_str()).collect();
                 let focused = primary_hypr_monitor();
-                match resolve_launcher_route(focused.as_deref(), &self.monitor, &satellite_names)
-                {
+                match resolve_launcher_route(focused.as_deref(), &self.monitor, &satellite_names) {
                     LauncherRoute::Satellite(name) => {
                         // resolve_launcher_route only returns a name present in
                         // satellite_names, so this lookup cannot miss.
@@ -2472,6 +3260,187 @@ impl SimpleComponent for App {
                     }
                 }
             }
+
+            // ── Spotlight pill auto-hide (BAR-27 phase 1) ───────────────
+            AppInput::PillHoverEnter => {
+                self.pill_hover_gen = self.pill_hover_gen.wrapping_add(1);
+                self.pill_hovering = true;
+                // Hovering does not clear the unread dot: only opening the
+                // stage does (the mockup's `hoverOn` leaves `.unread` alone).
+                self.update_pill();
+            }
+            AppInput::PillHoverLeave => {
+                let gen = self.pill_hover_gen;
+                let delay = self.autohide_cfg.retuck_delay_ms.max(0) as u64;
+                let s = sender.clone();
+                gtk4::glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(delay),
+                    move || post(&s, AppInput::PillHoverLeaveExpire(gen)),
+                );
+            }
+            AppInput::PillHoverLeaveExpire(gen) => {
+                if gen == self.pill_hover_gen {
+                    self.pill_hovering = false;
+                    self.update_pill();
+                }
+            }
+            AppInput::PillPeek(dur) => self.peek(dur, &sender),
+            AppInput::PillReeval => self.update_pill(),
+            AppInput::PillShowCmd => self.peek(std::time::Duration::from_millis(3000), &sender),
+            AppInput::PillToggleCmd => {
+                let now = std::time::Instant::now();
+                let visible_now = pill_autohide::State {
+                    enabled: self.autohide_cfg.enabled && self.prefs.autohide_on(),
+                    hovering: self.pill_hovering,
+                    low_battery: self.pill_low_battery,
+                    hold_until: self.pill_hold_until,
+                    open: self.stage.is_open(),
+                }
+                .visible(now);
+                if !visible_now {
+                    self.peek(std::time::Duration::from_millis(3000), &sender);
+                } else if !self.pill_hovering && !self.pill_low_battery {
+                    // Only visible via a live hold (or auto-hide is off);
+                    // clear the hold so it can tuck again. Hovering/low-
+                    // battery keep it down regardless, so toggling then is
+                    // a no-op, matching the mockup's own always-on
+                    // `hoverOn`/`lowBat` precedence.
+                    self.pill_hold_until = None;
+                    self.update_pill();
+                }
+            }
+            AppInput::NotificationArrived {
+                app,
+                summary,
+                critical,
+            } => {
+                // The mockup's `notify()`: the history list updates first
+                // (live, on whichever monitor has the stage open), then DND
+                // suppresses the surtitle, the peek and the unread dot. The
+                // surtitle shows even over an open stage (`z-index:39` above
+                // the stage's 30); the dot only lights while no stage is
+                // open. Peeks and the dot reach every monitor's pill.
+                self.shared.refresh_open_notifications();
+                if self.dnd.get() {
+                    return;
+                }
+                if self.shared.open_stage().is_none() {
+                    self.shared.set_unread(true);
+                }
+                let ms = self.autohide_cfg.notification_peek_ms.max(0) as u64;
+                let dur = std::time::Duration::from_millis(ms);
+                self.peek(dur, &sender);
+                for (_, ctrl) in &self.satellites {
+                    ctrl.sender().emit(AppInput::PillPeek(dur));
+                }
+                if theme::shell_theme().notifications().style == "surtitle" {
+                    self.surtitle.show(&app, &summary, critical, dur);
+                }
+            }
+            AppInput::LevelChanged { kind, pct } => {
+                // Every monitor's pill plays the level, not only the
+                // primary's (satellites have no OSD source of their own).
+                for (_, ctrl) in &self.satellites {
+                    ctrl.sender().emit(AppInput::LevelChanged { kind, pct });
+                }
+                let ms = self.autohide_cfg.level_peek_ms.max(0) as u64;
+                self.peek(std::time::Duration::from_millis(ms), &sender);
+                if theme::shell_theme().osd().style == "pill" {
+                    self.show_pill_level(kind, pct, ms);
+                }
+            }
+
+            // ── Spotlight stage (BAR-30 phases 2-4) ─────────────────────
+            AppInput::PrefsChanged(prefs) => {
+                if prefs != self.prefs {
+                    self.prefs = prefs;
+                    self.apply_prefs();
+                }
+            }
+            AppInput::StageOpenChanged(open) => {
+                // The mockup draws the pill (`z-index:40`) above the stage
+                // (30). Both are layer surfaces here, so the pill moves up to
+                // the Overlay layer while this monitor's stage is open,
+                // mapped above it, and back to its theme layer once the
+                // stage has faded out.
+                if open {
+                    if self.autohide_cfg.enabled {
+                        self.root.set_layer(Layer::Overlay);
+                    }
+                } else {
+                    let root = self.root.clone();
+                    let stage = self.stage.clone();
+                    let theme_layer = if theme::shell_theme().window().layer == "overlay" {
+                        Layer::Overlay
+                    } else {
+                        Layer::Top
+                    };
+                    gtk4::glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(320),
+                        move || {
+                            if !stage.is_open() {
+                                root.set_layer(theme_layer);
+                            }
+                        },
+                    );
+                }
+                self.update_pill();
+            }
+            // `breadbar --stage` (and Super+Space) should open on the focused
+            // monitor, same reasoning and the same `resolve_launcher_route`
+            // mechanism as `AppInput::OpenLauncher` above. BAR-31: a toggle
+            // while a stage is open on ANY monitor closes that one instead of
+            // opening a second.
+            AppInput::StageToggleCmd => {
+                if let Some(open) = self.shared.open_stage() {
+                    open.close();
+                    return;
+                }
+                let satellite_names: Vec<&str> =
+                    self.satellites.iter().map(|(n, _)| n.as_str()).collect();
+                let focused = primary_hypr_monitor();
+                match resolve_launcher_route(focused.as_deref(), &self.monitor, &satellite_names) {
+                    LauncherRoute::Satellite(name) => {
+                        if let Some((_, ctrl)) = self.satellites.iter().find(|(n, _)| *n == name) {
+                            ctrl.sender().emit(AppInput::StageToggleCmd);
+                        }
+                    }
+                    LauncherRoute::Local => self.stage.toggle(),
+                }
+            }
+            AppInput::StageShowCmd => {
+                if self.shared.open_stage().is_some() {
+                    return;
+                }
+                let satellite_names: Vec<&str> =
+                    self.satellites.iter().map(|(n, _)| n.as_str()).collect();
+                let focused = primary_hypr_monitor();
+                match resolve_launcher_route(focused.as_deref(), &self.monitor, &satellite_names) {
+                    LauncherRoute::Satellite(name) => {
+                        if let Some((_, ctrl)) = self.satellites.iter().find(|(n, _)| *n == name) {
+                            ctrl.sender().emit(AppInput::StageShowCmd);
+                        }
+                    }
+                    LauncherRoute::Local => self.stage.open(),
+                }
+            }
+            AppInput::StageClockClicked => {
+                if self.autohide_cfg.enabled {
+                    // A stage open on another monitor closes first: only one
+                    // is ever up.
+                    if let Some(open) = self.shared.open_stage() {
+                        if !Rc::ptr_eq(&open, &self.stage) {
+                            open.close();
+                        }
+                    }
+                    self.stage.toggle();
+                }
+            }
+            AppInput::StageHideCmd => {
+                if let Some(open) = self.shared.open_stage() {
+                    open.close();
+                }
+            }
         }
     }
 }
@@ -2481,6 +3450,115 @@ impl SimpleComponent for App {
 /// when no `widget:<module>` container claims its module name specifically.
 /// Kept in one place since both the builtin manifest's slot lists and
 /// `reconcile_widgets`' routing below must agree on these names.
+/// The spotlight pill's layer-shell top margin when shown and when tucked
+/// (see `pill_autohide::margins`: the surface carries a transparent shadow
+/// margin above the visible pill, and tucking travels the mockup's 54px).
+fn pill_margins(spec: &bread_theme::shell::WindowSpec) -> (i32, i32) {
+    pill_autohide::margins(spec.margin.top)
+}
+
+/// Hides an empty side row of the pill's CenterBox: an empty but visible row
+/// still adds its own margin to both sides of the centred content.
+fn hide_empty_rows(rows: &[&gtk4::Box]) {
+    for row in rows {
+        row.set_visible(row.first_child().is_some());
+    }
+}
+
+/// The mockup's two example widgets (a flight and a usage meter), for the
+/// screenshot views that show them in the pill and as stage cards.
+fn screenshot_sample_widgets() -> Vec<bread_shared::widget::WidgetSpec> {
+    use bread_shared::widget::{
+        FontWeight, Orientation, WidgetNode, WidgetPlacement, WidgetSpec, WidgetStyle,
+    };
+    let label = |t: &str, bold: bool| WidgetNode::Label {
+        text: t.into(),
+        class: None,
+        style: bold.then(|| WidgetStyle {
+            weight: Some(FontWeight::Bold),
+            ..WidgetStyle::default()
+        }),
+        on_click: None,
+    };
+    let row = |children: Vec<WidgetNode>| WidgetNode::Box {
+        orientation: Orientation::Horizontal,
+        spacing: Some(6),
+        class: None,
+        style: None,
+        on_click: None,
+        children,
+    };
+    let progress = |v: f64| WidgetNode::Progress {
+        value: v,
+        class: None,
+        style: None,
+        on_click: None,
+    };
+    let spec = |id: &str, placement, tooltip: &str, root| WidgetSpec {
+        id: id.into(),
+        module: "example widget".into(),
+        placement,
+        order: 0,
+        visible: true,
+        tooltip: Some(tooltip.into()),
+        root,
+        updated_at: 0,
+    };
+    vec![
+        spec(
+            "example.flight",
+            WidgetPlacement::LeftOfClock,
+            "Flight VA557\nLands 15:37 Perth time",
+            row(vec![label("\u{2708}", false), label("2h 40m", true)]),
+        ),
+        spec(
+            "example.claude",
+            WidgetPlacement::RightOfClock,
+            "Claude usage\nResets 12:20",
+            row(vec![
+                label("\u{273b}", false),
+                progress(0.81),
+                label("81%", true),
+            ]),
+        ),
+    ]
+}
+
+/// Takes every pill item except the level readout and the low-battery flag
+/// out of layout while a level shows (`leveling`), or puts back exactly the
+/// ones it took out (`hidden` remembers them), the mockup's
+/// `.wick.leveling>:not(.level):not(.flag){display:none}`. Hiding (not just
+/// child-visibility) is what drops them from the row's width and spacing,
+/// so the pill shrinks to the level row as the browser's does.
+fn set_leveling(
+    row: &gtk4::Box,
+    level: &gtk4::Box,
+    flag: &gtk4::Box,
+    hidden: &RefCell<Vec<gtk4::Widget>>,
+    leveling: bool,
+) {
+    let mut hidden = hidden.borrow_mut();
+    if leveling {
+        if !hidden.is_empty() {
+            return;
+        }
+        let mut child = row.first_child();
+        while let Some(w) = child {
+            let keep =
+                &w == level.upcast_ref::<gtk4::Widget>() || &w == flag.upcast_ref::<gtk4::Widget>();
+            if !keep && w.is_visible() {
+                w.set_visible(false);
+                hidden.push(w.clone());
+            }
+            child = w.next_sibling();
+        }
+    } else {
+        for w in hidden.drain(..) {
+            w.set_visible(true);
+        }
+    }
+}
+
 fn placement_alias(placement: bread_shared::widget::WidgetPlacement) -> &'static str {
     use bread_shared::widget::WidgetPlacement::*;
     match placement {
@@ -2493,10 +3571,167 @@ fn placement_alias(placement: bread_shared::widget::WidgetPlacement) -> &'static
 }
 
 impl App {
+    // ── Spotlight pill: auto-hide (BAR-27 phase 1) ────────────────────────
+
+    /// Recomputes [`pill_autohide::State::visible`] from the current
+    /// hover/hold/battery state and, on an actual shown<->tucked
+    /// transition, animates the layer-shell top margin between the theme's
+    /// configured margin and a fully-off-screen value, toggling the lip's
+    /// visibility to match. A no-op while `!autohide_cfg.enabled` (the
+    /// pill just stays at its configured margin forever, same as every
+    /// builtin before this table existed).
+    /// Applies `self.prefs` (the stage settings menu) to the pill: auto-hide,
+    /// the workspace view and widgets. Pill theme only.
+    fn apply_prefs(&mut self) {
+        if !self.autohide_cfg.enabled {
+            return;
+        }
+        if let Some(hz) = &self.pill_hotzone {
+            hz.set_visible(self.prefs.autohide_on());
+        }
+        self.update_pill();
+        self.rebuild_buttons(false);
+        self.reconcile_all_widgets();
+        self.stage.set_prefs(
+            &self.prefs,
+            self.prefs
+                .workspaces_or(theme::shell_theme().modules().workspaces.display),
+        );
+    }
+
+    fn update_pill(&mut self) {
+        if !self.autohide_cfg.enabled {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let state = pill_autohide::State {
+            enabled: self.autohide_cfg.enabled && self.prefs.autohide_on(),
+            hovering: self.pill_hovering,
+            low_battery: self.pill_low_battery,
+            hold_until: self.pill_hold_until,
+            open: self.stage.is_open(),
+        };
+        let shown = state.visible(now);
+        if shown == self.pill_shown {
+            return;
+        }
+        self.pill_shown = shown;
+        // `.lip.gone` and `.wick.tucked`: both fade on CSS transitions.
+        if let Some(lip) = &self.pill_lip {
+            if shown {
+                lip.add_css_class("gone");
+            } else {
+                lip.remove_css_class("gone");
+            }
+        }
+        if shown {
+            self.root.remove_css_class("tucked");
+        } else {
+            self.root.add_css_class("tucked");
+        }
+        // Phase-1 review must-fix: keep the hot zone's input region at a thin
+        // top-edge strip (never its full footprint), so it stops swallowing
+        // clicks meant for whatever window is underneath. Re-applied on
+        // every transition in case the surface was re-created. See
+        // `pill_hotzone::set_input_state` for why it is not emptied while
+        // the pill is shown.
+        if let Some(hz) = &self.pill_hotzone {
+            pill_hotzone::set_input_state(hz, self.autohide_cfg.hover_zone_width as i32);
+        }
+
+        let (shown_margin, tucked_margin) = pill_margins(theme::shell_theme().window());
+        let target = if shown { shown_margin } else { tucked_margin };
+
+        if let Some(id) = self.pill_anim.borrow_mut().take() {
+            id.remove();
+        }
+        // `.wick{transition:transform .42s var(--spring)}`: the real curve,
+        // overshoot included.
+        let from = f64::from(self.pill_margin.get());
+        let win = self.root.clone();
+        let margin_cell = self.pill_margin.clone();
+        *self.pill_anim.borrow_mut() =
+            motion::animate(&self.root, 420.0, 0.0, motion::SPRING, move |p| {
+                let v = motion::lerp(from, f64::from(target), p).round() as i32;
+                margin_cell.set(v);
+                win.set_margin(Edge::Top, v);
+            });
+    }
+
+    /// BAR-30 phase 4: `[osd].style = "pill"` draws a volume/brightness
+    /// change inside the pill instead of the standalone OSD window, for
+    /// `bar.autohide.level_peek_ms` (`ms`), matching the mockup's own
+    /// `level(name,pct)`: shows the level row, hides it again after `ms`
+    /// unless a newer level event supersedes it first (the same debounce
+    /// idiom `osd.rs`'s `dismiss_token` and `pill_hover_gen` both use).
+    fn show_pill_level(&mut self, kind: &'static str, pct: u8, ms: u64) {
+        self.pill_level_name.set_label(kind);
+        // The mockup's readout is the bare number (`levelPct.textContent=pct`).
+        self.pill_level_pct.set_label(&pct.to_string());
+        // `.level .bar i{transition:width .18s}`: glide from the previous
+        // level instead of jumping, unless the row was hidden (a fresh show
+        // starts at the new value, as the browser's hidden element does).
+        let target = f64::from(pct.min(100)) / 100.0;
+        if let Some(id) = self.pill_level_anim.borrow_mut().take() {
+            id.remove();
+        }
+        if self.pill_level_box.is_visible() {
+            let from = self.pill_level_bar.fraction();
+            let bar = self.pill_level_bar.clone();
+            *self.pill_level_anim.borrow_mut() =
+                motion::animate(&self.pill_level_bar, 180.0, 0.0, motion::EASE, move |p| {
+                    bar.set_fraction(motion::lerp(from, target, p));
+                });
+        } else {
+            self.pill_level_bar.set_fraction(target);
+        }
+        self.pill_level_box.set_visible(true);
+        set_leveling(
+            &self.center_area,
+            &self.pill_level_box,
+            &self.pill_flag,
+            &self.pill_leveled,
+            true,
+        );
+
+        let token = self.pill_level_token.get().wrapping_add(1);
+        self.pill_level_token.set(token);
+        let tok_cell = self.pill_level_token.clone();
+        let level_box = self.pill_level_box.clone();
+        let center_area = self.center_area.clone();
+        let flag = self.pill_flag.clone();
+        let leveled = self.pill_leveled.clone();
+        gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+            if tok_cell.get() == token {
+                level_box.set_visible(false);
+                set_leveling(&center_area, &level_box, &flag, &leveled, false);
+            }
+        });
+    }
+
+    /// Holds the pill down for at least `dur` (extending, never shortening,
+    /// an already-longer pending hold), re-evaluates immediately, and
+    /// schedules one more re-evaluation just after `dur` expires, mirroring
+    /// the mockup's own `peek(ms)`: `holdUntil=Math.max(holdUntil,
+    /// Date.now()+ms); wickState(); setTimeout(wickState, ms+20)`.
+    fn peek(&mut self, dur: std::time::Duration, sender: &ComponentSender<Self>) {
+        let candidate = std::time::Instant::now() + dur;
+        self.pill_hold_until = Some(match self.pill_hold_until {
+            Some(existing) if existing > candidate => existing,
+            _ => candidate,
+        });
+        self.update_pill();
+        let s = sender.clone();
+        gtk4::glib::timeout_add_local_once(dur + std::time::Duration::from_millis(20), move || {
+            post(&s, AppInput::PillReeval)
+        });
+    }
+
     /// Merge the daemon's widget specs with the active theme's
     /// `[[bar.widget]]` specs (each rendered from its last poll value) and
     /// reconcile the containers from that combined list.
-    fn reconcile_all_widgets(&mut self) {
+    /// Daemon + theme widget specs, as `reconcile_all_widgets` builds them.
+    fn mirrored_specs(&self) -> Vec<bread_shared::widget::WidgetSpec> {
         let mut specs = self.daemon_widget_specs.clone();
         for tw in &self.theme_widgets {
             let value = self
@@ -2505,6 +3740,20 @@ impl App {
                 .map(String::as_str)
                 .unwrap_or("");
             specs.push(theme_widgets::to_spec(tw, value));
+        }
+        specs
+    }
+
+    fn reconcile_all_widgets(&mut self) {
+        let specs = self.mirrored_specs();
+        // Only the primary subscribes to breadd's widgets and polls theme
+        // widgets, so it hands the finished list to every other monitor's
+        // bar. Without this, widgets showed only on whichever monitor was
+        // focused when breadbar started.
+        if self.primary {
+            for (_, ctrl) in &self.satellites {
+                ctrl.sender().emit(AppInput::MirrorWidgets(specs.clone()));
+            }
         }
         self.reconcile_widgets(specs);
     }
@@ -2577,15 +3826,58 @@ impl App {
         // below, same as the existing SNI tray items): an empty inline
         // slot has no such wrapper, so it must hide itself to stop
         // contributing to its parent box's `spacing` gap.
+        // The stage settings menu can switch the pill's widgets off.
+        let widgets_shown = !self.autohide_cfg.enabled || self.prefs.widgets_on();
         for (key, container) in &self.widget_containers {
             if key == "tray" {
                 continue;
             }
-            container.set_visible(container.first_child().is_some());
+            container.set_visible(widgets_shown && container.first_child().is_some());
         }
 
         self.widget_tray_section.set_visible(has_tray_widgets);
         self.widget_tray_sep.set_visible(has_tray_widgets);
+
+        // BAR-31: the stage's centre-zone cards mirror the widgets that sit
+        // in the pill's own row (the mockup's `.cards`, off with widgets).
+        let centre: &gtk4::Widget = self.center_area.upcast_ref();
+        let mut in_pill: Vec<&bread_shared::widget::WidgetSpec> = specs
+            .iter()
+            .filter(|spec| spec.visible)
+            .filter(|spec| {
+                let key = if self.widget_containers.contains_key(&spec.module) {
+                    spec.module.clone()
+                } else {
+                    placement_alias(spec.placement).to_string()
+                };
+                self.widget_containers
+                    .get(&key)
+                    .and_then(|c| c.parent())
+                    .is_some_and(|p| &p == centre)
+            })
+            .collect();
+        in_pill.sort_by_key(|s| s.order);
+        // Tray-placement widgets (the control panel's cards on other themes)
+        // are the stage's real cards; a pill widget only gets a derived card
+        // when its module registered no tray card of its own.
+        let mut tray: Vec<&bread_shared::widget::WidgetSpec> = specs
+            .iter()
+            .filter(|spec| {
+                spec.visible
+                    && !self.widget_containers.contains_key(&spec.module)
+                    && placement_alias(spec.placement) == "tray"
+            })
+            .collect();
+        tray.sort_by_key(|s| s.order);
+        let derived: Vec<&bread_shared::widget::WidgetSpec> = in_pill
+            .into_iter()
+            .filter(|p| !tray.iter().any(|t| t.module == p.module))
+            .collect();
+        if widgets_shown {
+            self.stage.set_cards(&tray, &derived);
+        } else {
+            self.stage.set_cards(&[], &[]);
+        }
     }
 
     fn reconcile_satellites(&mut self) {
@@ -2611,17 +3903,15 @@ impl App {
             if self.satellites.iter().any(|(n, _)| n == &name) {
                 continue;
             }
-            if let Some(ctrl) = spawn_satellite(&name) {
+            if let Some(ctrl) = spawn_satellite(&name, self.shared.clone()) {
+                ctrl.sender()
+                    .emit(AppInput::MirrorWidgets(self.mirrored_specs()));
                 self.satellites.push((name, ctrl));
             }
         }
     }
 
-    fn rebuild_sinks(
-        &mut self,
-        sinks: &[bar::control::AudioSink],
-        sender: &ComponentSender<Self>,
-    ) {
+    fn rebuild_sinks(&mut self, sinks: &[bar::control::AudioSink], sender: &ComponentSender<Self>) {
         while let Some(child) = self.sink_box.first_child() {
             self.sink_box.remove(&child);
         }
@@ -2674,6 +3964,24 @@ impl App {
         self.workspace_trail.cancel();
 
         apply_window_spec(&self.root, theme.window());
+        // `apply_window_spec` just reset the top margin to the theme's shown
+        // value; while auto-hide has the pill tucked (or mid-animation) that
+        // would leave it drawn down with `pill_shown == false`, and the next
+        // show would then animate from a stale `pill_margin`. Snap back to
+        // where the auto-hide state says it belongs.
+        if self.autohide_cfg.enabled {
+            if let Some(id) = self.pill_anim.borrow_mut().take() {
+                id.remove();
+            }
+            let (shown_margin, tucked_margin) = pill_margins(theme.window());
+            let m = if self.pill_shown {
+                shown_margin
+            } else {
+                tucked_margin
+            };
+            self.pill_margin.set(m);
+            self.root.set_margin(Edge::Top, m);
+        }
 
         assemble_bar_slots(
             theme.slots(),
@@ -2684,6 +3992,9 @@ impl App {
             &self.stats_box,
             &self.drawer_box,
         );
+        if self.autohide_cfg.enabled {
+            hide_empty_rows(&[&self.workspace_row, &self.stats_box]);
+        }
 
         // Colours, radii, spring curves, the `light` axis + icon textures.
         theme::reload();
@@ -2696,8 +4007,7 @@ impl App {
             self.theme_widgets = theme.widgets().to_vec();
             self.theme_widget_values
                 .retain(|id, _| self.theme_widgets.iter().any(|w| &w.id == id));
-            self.theme_widget_pollers =
-                theme_widgets::spawn_pollers(&self.theme_widgets, sender);
+            self.theme_widget_pollers = theme_widgets::spawn_pollers(&self.theme_widgets, sender);
             self.reconcile_all_widgets();
         }
 
@@ -2725,8 +4035,31 @@ impl App {
         let modules = theme::shell_theme().modules().clone();
         let ws_style = modules.workspaces.style;
         let show_empty = modules.workspaces.show_empty;
+        // BAR-27 phase 1: `modules.workspaces.display`. `All` (every
+        // builtin but spotlight, and spotlight's own default) is a pure
+        // no-op filter, so the show_empty/style branching below runs
+        // exactly as it always did; `None` skips every workspace (the
+        // strip renders empty, and `pill_sep` collapses with it below);
+        // `Current` renders one compact "WS n" indicator for the active
+        // workspace instead of a per-workspace button.
+        let display = if self.autohide_cfg.enabled {
+            self.prefs.workspaces_or(modules.workspaces.display)
+        } else {
+            modules.workspaces.display
+        };
         for ws in &self.workspaces {
             if ws.monitor != self.monitor {
+                continue;
+            }
+            if !bar::workspaces::workspace_visible(ws.id, self.active_ws, display) {
+                continue;
+            }
+            if display == WorkspaceDisplay::Current {
+                let indicator = bar::workspaces::make_current_indicator(&ws.name);
+                self.workspace_box.append(&indicator);
+                // No `button_map` entry: `display = "current"` shows only
+                // the (already) active workspace, so there is nothing a
+                // click on it would need to switch to.
                 continue;
             }
             let empty = ws.windows == 0 && ws.id != self.active_ws;
@@ -2780,15 +4113,36 @@ impl App {
             self.workspace_box.append(&btn);
             self.button_map.insert(ws.id, btn);
         }
+        // BAR-27 phase 1: the divider between the workspace strip and
+        // whatever follows it collapses along with an empty strip
+        // (`display = "none"`, or simply no workspaces synced yet).
+        self.pill_sep
+            .set_visible(self.workspace_box.first_child().is_some());
+        // `display = "none"` never has anything in the strip, but the empty
+        // (still visible) strip keeps its slot container's box spacing, which
+        // pushed the clock off-centre inside the pill. Hide the whole module
+        // then (the mockup's `.ws:empty{display:none}`). Gated on `None` so
+        // every theme on the default `All` keeps its layout untouched.
+        // Under the pill an empty strip also collapses (`.ws:empty
+        // {display:none}`), so a bar with nothing synced yet keeps the time
+        // centred; every other theme keeps its layout untouched.
+        let has_items = self.workspace_box.first_child().is_some();
+        self.workspace_trail.overlay.set_visible(
+            display != WorkspaceDisplay::None && (has_items || !self.autohide_cfg.enabled),
+        );
         // Trail style only: pill/dots never call place()/stretch()/clear()
         // at all: the "active" CSS class `make_button` already applies is
-        // the whole of their active-workspace treatment.
-        if ws_style == WorkspaceStyle::Trail {
+        // the whole of their active-workspace treatment. Also skipped
+        // outside `display = "all"`: `Current`/`None` never populate
+        // `button_map`, so the trail pill has nothing of its own to track.
+        if ws_style == WorkspaceStyle::Trail && display == WorkspaceDisplay::All {
             match self.button_map.get(&self.active_ws).cloned() {
                 Some(btn) if animate => self.workspace_trail.stretch(None, &btn),
                 Some(btn) => self.workspace_trail.place(&btn),
                 None => self.workspace_trail.clear(),
             }
+        } else {
+            self.workspace_trail.clear();
         }
     }
 
@@ -2931,7 +4285,7 @@ impl App {
                 let sender_clone = sender.clone();
                 let panels = panels.clone();
                 row.connect_clicked(move |_| {
-                    sender_clone.input(AppInput::SetProfile(name_clone.clone()));
+                    post(&sender_clone, AppInput::SetProfile(name_clone.clone()));
                     bar::wifi::spawn_profile_set(name_clone.clone());
                     panels.hide_all();
                 });
@@ -3059,20 +4413,23 @@ impl App {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// One tile in the control panel's power row.
+/// One tile in the control panel's power row. `pub(crate)` (BAR-30 phase 2):
+/// the stage's own power row (`stage::mod`) reuses this same table rather
+/// than declaring a second one, so the two never drift apart on which
+/// actions exist or what they run.
 #[derive(Clone, Copy)]
-struct PowerAction {
-    label: &'static str,
-    tooltip: &'static str,
-    icon: &'static str,
-    cmd: &'static [&'static str],
+pub(crate) struct PowerAction {
+    pub(crate) label: &'static str,
+    pub(crate) tooltip: &'static str,
+    pub(crate) icon: &'static str,
+    pub(crate) cmd: &'static [&'static str],
     /// Needs a second click within [`POWER_CONFIRM_MS`] before it runs.
-    confirm: bool,
+    pub(crate) confirm: bool,
 }
 
-const POWER_CONFIRM_MS: u64 = 3_000;
+pub(crate) const POWER_CONFIRM_MS: u64 = 3_000;
 
-const POWER_ACTIONS: &[PowerAction] = &[
+pub(crate) const POWER_ACTIONS: &[PowerAction] = &[
     // breadlock is the ecosystem's own screen locker: hyprlock is the thing
     // it was built to replace; the bar shouldn't still be pointing at it.
     PowerAction {
@@ -3155,8 +4512,6 @@ fn wifi_icon_for_signal(pct: u8) -> &'static str {
         _ => WIFI_ICON_OFF,
     }
 }
-
-
 
 /// Small modal prompting for a password, then saves + joins the network via
 /// `breadcrumbs add` + `breadcrumbs join`. `on_build` runs on the freshly
@@ -3570,7 +4925,10 @@ enum ModeAction {
 }
 
 fn mode_row_action(row: &gtk4::ListBoxRow) -> Option<ModeAction> {
-    unsafe { row.data::<ModeAction>("mode_action").map(|p| p.as_ref().clone()) }
+    unsafe {
+        row.data::<ModeAction>("mode_action")
+            .map(|p| p.as_ref().clone())
+    }
 }
 
 /// Pure half of the `.`-mode URL action: adds a scheme when the user typed
@@ -3652,10 +5010,8 @@ fn populate_mode_list(mode_list: &gtk4::ListBox, parsed: &bread_launcher::Parsed
             false
         }
         bread_launcher::QueryKind::Cmd => {
-            let matches = bread_launcher::filter_commands(
-                &parsed.value,
-                bread_launcher::builtin_commands(),
-            );
+            let matches =
+                bread_launcher::filter_commands(&parsed.value, bread_launcher::builtin_commands());
             if matches.is_empty() {
                 mode_list.append(&mode_info_row("No matching commands"));
                 false
@@ -3863,8 +5219,6 @@ pub(crate) fn svg_texture_sized(svg_src: &str, px: u32) -> gtk4::gdk::Texture {
     .upcast()
 }
 
-
-
 fn stat_label() -> gtk4::Label {
     let lbl = gtk4::Label::new(None);
     lbl.add_css_class("stat-label");
@@ -3896,6 +5250,41 @@ fn main() {
             .expect("tokio runtime");
         if let Err(e) = rt.block_on(notifications::toggle_history_remote()) {
             eprintln!("breadbar: could not toggle history (is breadbar running?): {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(mode) = &cli.pill {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let result = match mode.as_str() {
+            "toggle" => rt.block_on(notifications::toggle_pill_remote()),
+            // `Cli::pill`'s `value_parser` already restricts this to
+            // "toggle"/"show"; anything else is unreachable.
+            _ => rt.block_on(notifications::show_pill_remote()),
+        };
+        if let Err(e) = result {
+            eprintln!("breadbar: could not {mode} the pill (is breadbar running?): {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(mode) = &cli.stage {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let result = match mode.as_str() {
+            "toggle" => rt.block_on(notifications::toggle_stage_remote()),
+            "show" => rt.block_on(notifications::show_stage_remote()),
+            // `Cli::stage`'s `value_parser` already restricts this to
+            // "toggle"/"show"/"hide"; anything else is unreachable.
+            _ => rt.block_on(notifications::hide_stage_remote()),
+        };
+        if let Err(e) = result {
+            eprintln!("breadbar: could not {mode} the stage (is breadbar running?): {e}");
             std::process::exit(1);
         }
         return;
@@ -3948,6 +5337,7 @@ fn main() {
         screenshot: screenshot_req,
         monitor: None,
         primary: true,
+        shared: None,
     });
 }
 
@@ -3989,6 +5379,19 @@ fn primary_hypr_monitor() -> Option<String> {
         .map(|m| m.name.clone())
 }
 
+/// Whether a launcher open request (breadbox's `bread.box.open_requested`
+/// redirect, or `bread.command.box.open`) should toggle the stage: only for an
+/// embedded-launcher theme that places the capsule (`launcher_entry`) in no
+/// bar slot, where the capsule is built but never shown. Overlay-launcher
+/// themes keep the existing capsule route untouched.
+fn open_request_goes_to_stage(theme: &bread_theme::shell::ShellTheme) -> bool {
+    let slots = theme.slots();
+    let capsule_placed = [&slots.left, &slots.centre, &slots.right, &slots.drawer]
+        .iter()
+        .any(|slot| slot.iter().any(|m| m == "launcher_entry"));
+    theme.launcher().mode == bread_theme::shell::LauncherMode::Embedded && !capsule_placed
+}
+
 /// Where `AppInput::OpenLauncher` should be actually handled: locally (this
 /// instance grabs its own capsule's focus), or forwarded to a specific
 /// satellite instance. Pure decision logic, split out of the `update` match
@@ -4019,10 +5422,7 @@ fn resolve_launcher_route(focused: Option<&str>, own: &str, satellites: &[&str])
 }
 
 fn hypr_monitor_names() -> Vec<String> {
-    hypr_monitors_live()
-        .into_iter()
-        .map(|m| m.name)
-        .collect()
+    hypr_monitors_live().into_iter().map(|m| m.name).collect()
 }
 
 fn hypr_monitor_origin(name: &str) -> Option<(i32, i32)> {
@@ -4140,7 +5540,7 @@ pub(crate) fn bind_layer_monitor(window: &impl LayerShell, name: &str) -> bool {
     }
 }
 
-fn spawn_satellite(name: &str) -> Option<Controller<App>> {
+fn spawn_satellite(name: &str, shared: stage::Shared) -> Option<Controller<App>> {
     if gdk_monitor_for_hypr(name).is_none() {
         eprintln!("breadbar: skip bar on {name}: no matching GDK output");
         return None;
@@ -4150,10 +5550,44 @@ fn spawn_satellite(name: &str) -> Option<Controller<App>> {
             screenshot: None,
             monitor: Some(name.to_string()),
             primary: false,
+            shared: Some(shared),
         })
         .detach();
     ctrl.widget().present();
     Some(ctrl)
+}
+
+/// Watches `spotlight.json` (creating its directory first, since GIO cannot
+/// watch a path under a missing one) and posts [`AppInput::PrefsChanged`]
+/// on every change.
+fn watch_prefs(sender: &ComponentSender<App>) -> Option<gtk4::gio::FileMonitor> {
+    let path = spotlight_prefs::path()?;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let monitor = gtk4::gio::File::for_path(&path)
+        .monitor_file(
+            gtk4::gio::FileMonitorFlags::WATCH_MOVES,
+            gtk4::gio::Cancellable::NONE,
+        )
+        .ok()?;
+    let s = sender.clone();
+    monitor.connect_changed(move |_, _, _, _| {
+        post(&s, AppInput::PrefsChanged(spotlight_prefs::load()));
+    });
+    Some(monitor)
+}
+
+/// Queue `msg` for this bar instance without panicking if it is gone.
+///
+/// A satellite bar's `Controller` is dropped when its monitor disconnects
+/// (`drop_satellite`), which shuts its runtime down. relm4's `input()` panics
+/// on a shut-down runtime, and a panic inside a GTK signal handler or glib
+/// timer cannot unwind, so the whole process aborted: an orphaned pill hot
+/// zone firing `PillHoverEnter` after a dock replug killed breadbar. Dropping
+/// the message is correct, since there is no bar left to act on it.
+fn post(sender: &ComponentSender<App>, msg: AppInput) {
+    let _ = sender.input_sender().send(msg);
 }
 
 fn drop_satellite(satellites: &mut Vec<(String, Controller<App>)>, name: &str) {
@@ -4165,6 +5599,29 @@ fn drop_satellite(satellites: &mut Vec<(String, Controller<App>)>, name: &str) {
             true
         }
     });
+}
+
+#[cfg(test)]
+mod open_request_goes_to_stage_tests {
+    use super::open_request_goes_to_stage;
+    use bread_theme::shell::load_named;
+
+    #[test]
+    fn spotlight_sends_open_requests_to_the_stage() {
+        assert!(open_request_goes_to_stage(
+            &load_named("spotlight").unwrap()
+        ));
+    }
+
+    #[test]
+    fn overlay_launcher_themes_are_unaffected() {
+        for id in ["liquid-motion", "glass-workbench", "daylight", "loaf"] {
+            assert!(
+                !open_request_goes_to_stage(&load_named(id).unwrap()),
+                "{id}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

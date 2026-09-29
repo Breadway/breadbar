@@ -105,6 +105,18 @@ impl PanelSet {
         which.present();
     }
 
+    /// Destroys every window in the set; see `App::shutdown`.
+    pub fn destroy(&self) {
+        for w in [
+            &self.connectivity,
+            &self.control,
+            &self.media,
+            &self.dismiss,
+        ] {
+            w.destroy();
+        }
+    }
+
     pub fn hide_all(&self) {
         self.hide_panels();
         self.dismiss.set_visible(false);

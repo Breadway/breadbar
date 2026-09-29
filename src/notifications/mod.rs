@@ -175,17 +175,61 @@ struct NotifServer {
     persist_history: bool,
 }
 
+/// `breadbar --pill toggle|show` (BAR-27 phase 1): sent over the same
+/// `dev.breadway.Bar` D-Bus surface as `ToggleHistory`, but forwarded to the
+/// App's own `ComponentSender` via a plain `Send` channel rather than the
+/// notification event loop: the pill lives on the bar window, which
+/// `notifications::spawn`'s caller (`main.rs`) owns, not this module.
+#[derive(Debug, Clone, Copy)]
+pub enum PillCmd {
+    Toggle,
+    Show,
+}
+
+/// `breadbar --stage toggle|show|hide` (BAR-30 phase 2): same D-Bus
+/// forwarding shape as [`PillCmd`], and for the same reason (the stage
+/// lives on the App's own `ComponentSender`, not this module's event loop).
+#[derive(Debug, Clone, Copy)]
+pub enum StageCmd {
+    Toggle,
+    Show,
+    Hide,
+}
+
 /// Private breadbar control surface on the same connection as
 /// `org.freedesktop.Notifications`. `breadbar --history` is a one-shot
-/// client of `ToggleHistory`; there is no other IPC.
+/// client of `ToggleHistory`; `breadbar --pill toggle|show` and
+/// `breadbar --stage toggle|show|hide` are the other methods here.
 struct BarService {
     tx: mpsc::Sender<NotifEvent>,
+    pill_tx: mpsc::UnboundedSender<PillCmd>,
+    stage_tx: mpsc::UnboundedSender<StageCmd>,
 }
 
 #[zbus::interface(name = "dev.breadway.Bar")]
 impl BarService {
     async fn toggle_history(&self) {
         let _ = self.tx.send(NotifEvent::ToggleHistory).await;
+    }
+
+    async fn toggle_pill(&self) {
+        let _ = self.pill_tx.send(PillCmd::Toggle);
+    }
+
+    async fn show_pill(&self) {
+        let _ = self.pill_tx.send(PillCmd::Show);
+    }
+
+    async fn toggle_stage(&self) {
+        let _ = self.stage_tx.send(StageCmd::Toggle);
+    }
+
+    async fn show_stage(&self) {
+        let _ = self.stage_tx.send(StageCmd::Show);
+    }
+
+    async fn hide_stage(&self) {
+        let _ = self.stage_tx.send(StageCmd::Hide);
     }
 }
 
@@ -205,6 +249,60 @@ pub async fn toggle_history_remote() -> zbus::Result<()> {
         &(),
     )
     .await?;
+    Ok(())
+}
+
+/// Ask a running breadbar to toggle its spotlight pill. Used by
+/// `breadbar --pill toggle`; a no-op (server-side) on a theme with
+/// `[bar.autohide].enabled = false`, since there's nothing to toggle.
+pub async fn toggle_pill_remote() -> zbus::Result<()> {
+    let conn = zbus::Connection::session().await?;
+    conn.call_method(Some(BAR_DEST), BAR_PATH, Some(BAR_IFACE), "TogglePill", &())
+        .await?;
+    Ok(())
+}
+
+/// Ask a running breadbar to show its spotlight pill. Used by
+/// `breadbar --pill show`.
+pub async fn show_pill_remote() -> zbus::Result<()> {
+    let conn = zbus::Connection::session().await?;
+    conn.call_method(Some(BAR_DEST), BAR_PATH, Some(BAR_IFACE), "ShowPill", &())
+        .await?;
+    Ok(())
+}
+
+/// Ask a running breadbar to toggle its spotlight stage. Used by
+/// `breadbar --stage toggle`; the Super+Space bind target under spotlight
+/// (see the task report for the exact Hyprland `bind` line). A no-op
+/// (server-side) on a theme with no stage wired up.
+pub async fn toggle_stage_remote() -> zbus::Result<()> {
+    let conn = zbus::Connection::session().await?;
+    conn.call_method(
+        Some(BAR_DEST),
+        BAR_PATH,
+        Some(BAR_IFACE),
+        "ToggleStage",
+        &(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Ask a running breadbar to show its spotlight stage. Used by
+/// `breadbar --stage show`.
+pub async fn show_stage_remote() -> zbus::Result<()> {
+    let conn = zbus::Connection::session().await?;
+    conn.call_method(Some(BAR_DEST), BAR_PATH, Some(BAR_IFACE), "ShowStage", &())
+        .await?;
+    Ok(())
+}
+
+/// Ask a running breadbar to hide its spotlight stage. Used by
+/// `breadbar --stage hide`.
+pub async fn hide_stage_remote() -> zbus::Result<()> {
+    let conn = zbus::Connection::session().await?;
+    conn.call_method(Some(BAR_DEST), BAR_PATH, Some(BAR_IFACE), "HideStage", &())
+        .await?;
     Ok(())
 }
 
@@ -304,6 +402,12 @@ impl NotifServer {
     }
 }
 
+/// `spawn`'s `on_show` callback: `(app_name, summary, critical)`, called once per
+/// `Show` event before the card (or, under `[notifications].style =
+/// "surtitle"`, nothing) is built. Named so the type doesn't have to be
+/// spelled out at every call site (`clippy::type_complexity`).
+pub type OnShow = Box<dyn Fn(&str, &str, bool)>;
+
 /// A fixed sample notification for `--screenshot notification`/
 /// `notification-critical`; substitutes for a real `Notify` D-Bus call so a
 /// capture doesn't depend on some external sender firing one at just the
@@ -343,22 +447,31 @@ impl SampleKind {
 /// well-known name for no benefit, since nothing needs to reach this
 /// instance externally.
 ///
-/// Returns the notification window plus, outside screenshot mode, a
+/// Returns the notification window, outside screenshot mode a
 /// [`NotifHandle`] the bar keeps so a click on it can toggle the history
-/// window without a D-Bus round-trip. Screenshot mode has no history UI
-/// wired up, so there is nothing to hand back.
-pub fn spawn(sample: Option<SampleKind>) -> (gtk4::Window, Option<NotifHandle>) {
+/// window without a D-Bus round-trip, and the history [`history::Store`]
+/// itself (BAR-30 phase 4: the stage's own notifications zone reads the same
+/// shared store directly, rather than duplicating a second history). In
+/// screenshot mode there is no history UI wired up and the store is a fresh,
+/// unpersisted one the caller can pre-seed with sample entries.
+pub fn spawn(
+    sample: Option<SampleKind>,
+    on_show: Option<OnShow>,
+    pill_tx: mpsc::UnboundedSender<PillCmd>,
+    stage_tx: mpsc::UnboundedSender<StageCmd>,
+) -> (gtk4::Window, Option<NotifHandle>, history::Store) {
     let (window, cards_box) = popup::build_window();
     let (tx, rx) = mpsc::channel(32);
 
     match sample {
         Some(kind) => {
+            let store = history::new_store();
             let _ = tx.try_send(kind.sample_event());
             let window_for_loop = window.clone();
             relm4::spawn_local(async move {
-                popup::run(window_for_loop, cards_box, rx, None, None).await;
+                popup::run(window_for_loop, cards_box, rx, None, None, None).await;
             });
-            (window, None)
+            (window, None, store)
         }
         None => {
             let handle = NotifHandle { tx: tx.clone() };
@@ -366,6 +479,7 @@ pub fn spawn(sample: Option<SampleKind>) -> (gtk4::Window, Option<NotifHandle>) 
             let store = history::load_store();
             let next_id = history::next_id(&store);
             let history_ui = history::build_window(store.clone());
+            let store_for_return = store.clone();
 
             relm4::spawn(async move {
                 let server = NotifServer {
@@ -375,7 +489,11 @@ pub fn spawn(sample: Option<SampleKind>) -> (gtk4::Window, Option<NotifHandle>) 
                     history: store,
                     persist_history: true,
                 };
-                let bar = BarService { tx };
+                let bar = BarService {
+                    tx,
+                    pill_tx,
+                    stage_tx,
+                };
                 // Builder failures here would only occur with invalid static strings; safe to unwrap.
                 let conn = zbus::connection::Builder::session()
                     .unwrap()
@@ -398,11 +516,19 @@ pub fn spawn(sample: Option<SampleKind>) -> (gtk4::Window, Option<NotifHandle>) 
             let window_for_loop = window.clone();
             relm4::spawn_local(async move {
                 if let Ok(conn) = conn_rx.await {
-                    popup::run(window_for_loop, cards_box, rx, Some(conn), Some(history_ui)).await;
+                    popup::run(
+                        window_for_loop,
+                        cards_box,
+                        rx,
+                        Some(conn),
+                        Some(history_ui),
+                        on_show,
+                    )
+                    .await;
                 }
             });
 
-            (window, Some(handle))
+            (window, Some(handle), store_for_return)
         }
     }
 }

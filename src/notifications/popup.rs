@@ -68,6 +68,15 @@ pub async fn run(
     mut rx: Receiver<NotifEvent>,
     conn: Option<zbus::Connection>,
     history_ui: Option<history::Ui>,
+    // BAR-27 phase 1: called once per `Show`, before the card is built, with
+    // the notification's app name and summary, so the spotlight pill's
+    // auto-hide can peek down for a new notification
+    // (`bos-ui-demos/proposed/spotlight-stage.html`'s `notify()` calling
+    // `peek(3800)`) and (BAR-30 phase 4) so the stage's surtitle caption has
+    // text to show. `None` in screenshot mode (there is no pill state to
+    // peek in an isolated capture) and for every non-spotlight theme (the
+    // caller only ever passes `Some` when `[bar.autohide].enabled`).
+    on_show: Option<super::OnShow>,
 ) {
     let cards: Cards = Rc::new(RefCell::new(HashMap::new()));
     let generations: Generations = Rc::new(RefCell::new(HashMap::new()));
@@ -84,6 +93,27 @@ pub async fn run(
                 actions,
                 inline_reply,
             } => {
+                if let Some(cb) = &on_show {
+                    // The caption is one line, so it carries the title and the
+                    // body together ("Screenshot: Saved to ...").
+                    cb(
+                        &app_name,
+                        &super::history::caption_text(&summary, &body),
+                        urgency == super::Urgency::Critical,
+                    );
+                }
+                // BAR-30 phase 4: `[notifications].style = "surtitle"` shows
+                // the caption under the pill instead (`on_show` above, wired
+                // to `AppInput::NotificationArrived` in main.rs) and this
+                // standalone toast stays hidden entirely; the notification
+                // is still recorded to history regardless (that already
+                // happened in `NotifServer::notify`, before this event loop
+                // ever sees it). Read live, per event: see `OSD_STYLES`'s
+                // sibling doc comment on `NOTIFICATION_STYLES` for why this
+                // needs no restart.
+                if crate::theme::shell_theme().notifications().style == "surtitle" {
+                    continue;
+                }
                 // Replace existing card with same id (replaces_id case)
                 if let Some(old) = cards.borrow_mut().remove(&id) {
                     cards_box.remove(&old);
