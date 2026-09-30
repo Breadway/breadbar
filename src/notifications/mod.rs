@@ -2,8 +2,8 @@ pub mod history;
 pub mod popup;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use zbus::zvariant::OwnedValue;
@@ -196,6 +196,59 @@ pub enum StageCmd {
     Hide,
 }
 
+/// Set while the active theme shows notifications on the spotlight stage:
+/// `breadbar --history` then toggles the stage, whose notifications zone is
+/// the history, instead of the separate history window.
+static HISTORY_OPENS_STAGE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_history_opens_stage(on: bool) {
+    HISTORY_OPENS_STAGE.store(on, Ordering::Relaxed);
+}
+
+/// The session-bus connection serving `org.freedesktop.Notifications`, once
+/// claimed, so the stage can answer a notification's action buttons.
+static CONNECTION: OnceLock<zbus::Connection> = OnceLock::new();
+
+/// Runs notification `id`'s action `key` on the sender's behalf, from the
+/// stage's action buttons: `ActionInvoked(id, key)`, then
+/// `NotificationClosed(id, 2)` (dismissed by the user), as a popup's own
+/// button does.
+pub fn invoke_action(id: u32, key: String) {
+    let Some(conn) = CONNECTION.get().cloned() else {
+        return;
+    };
+    relm4::spawn(async move {
+        for (member, result) in [
+            (
+                "ActionInvoked",
+                conn.emit_signal(
+                    None::<&str>,
+                    "/org/freedesktop/Notifications",
+                    "org.freedesktop.Notifications",
+                    "ActionInvoked",
+                    &(id, key.as_str()),
+                )
+                .await,
+            ),
+            (
+                "NotificationClosed",
+                conn.emit_signal(
+                    None::<&str>,
+                    "/org/freedesktop/Notifications",
+                    "org.freedesktop.Notifications",
+                    "NotificationClosed",
+                    &(id, 2u32),
+                )
+                .await,
+            ),
+        ] {
+            if let Err(e) = result {
+                eprintln!("breadbar: failed to emit {member} for {id}: {e}");
+            }
+        }
+    });
+}
+
 /// Private breadbar control surface on the same connection as
 /// `org.freedesktop.Notifications`. `breadbar --history` is a one-shot
 /// client of `ToggleHistory`; `breadbar --pill toggle|show` and
@@ -209,7 +262,11 @@ struct BarService {
 #[zbus::interface(name = "dev.breadway.Bar")]
 impl BarService {
     async fn toggle_history(&self) {
-        let _ = self.tx.send(NotifEvent::ToggleHistory).await;
+        if HISTORY_OPENS_STAGE.load(Ordering::Relaxed) {
+            let _ = self.stage_tx.send(StageCmd::Toggle);
+        } else {
+            let _ = self.tx.send(NotifEvent::ToggleHistory).await;
+        }
     }
 
     async fn toggle_pill(&self) {
@@ -362,6 +419,7 @@ impl NotifServer {
                 body: body.to_string(),
                 urgency,
                 received: SystemTime::now(),
+                actions: actions.clone(),
             },
         );
         if self.persist_history {
@@ -509,6 +567,7 @@ pub fn spawn(
                 // Hand the connection to popup::run so it can emit `NotificationClosed`
                 // (spec-mandated whenever a notification actually goes away); the
                 // dismiss decisions all happen over there, not in this interface impl.
+                let _ = CONNECTION.set(conn.clone());
                 let _ = conn_tx.send(conn);
                 std::future::pending::<()>().await
             });

@@ -1,5 +1,6 @@
 //! The spotlight stage's settings menu: per-user overrides for pill
-//! auto-hide, widgets and the workspace view, stored in
+//! auto-hide, widgets, the workspace view, the now-playing title and the
+//! stage's System card, stored in
 //! `$XDG_CONFIG_HOME/breadbar/spotlight.json`. Each field left unset falls
 //! back to the active theme. Every bar instance watches the file, so a toggle
 //! made on one monitor's stage applies on all of them.
@@ -17,6 +18,11 @@ pub struct Prefs {
     pub widgets: Option<bool>,
     /// Which workspaces the pill shows.
     pub workspaces: Option<WorkspacesPref>,
+    /// Show the playing track's title in the pill.
+    pub nowplaying: Option<bool>,
+    /// Show the System card (CPU, RAM, GPU, power draw, network) on the
+    /// stage.
+    pub system: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +60,14 @@ impl Prefs {
 
     pub fn widgets_on(&self) -> bool {
         self.widgets.unwrap_or(true)
+    }
+
+    pub fn nowplaying_on(&self) -> bool {
+        self.nowplaying.unwrap_or(true)
+    }
+
+    pub fn system_on(&self) -> bool {
+        self.system.unwrap_or(true)
     }
 
     pub fn workspaces_or(&self, theme_default: WorkspaceDisplay) -> WorkspaceDisplay {
@@ -104,6 +118,8 @@ mod tests {
             let p = parse(text);
             assert!(p.autohide_on(), "{text}");
             assert!(p.widgets_on(), "{text}");
+            assert!(p.nowplaying_on(), "{text}");
+            assert!(p.system_on(), "{text}");
             assert_eq!(
                 p.workspaces_or(WorkspaceDisplay::Current),
                 WorkspaceDisplay::Current
@@ -128,6 +144,8 @@ mod tests {
             autohide: Some(false),
             widgets: None,
             workspaces: Some(WorkspacesPref::Current),
+            nowplaying: Some(false),
+            system: None,
         };
         assert_eq!(parse(&serde_json::to_string(&p).unwrap()), p);
     }

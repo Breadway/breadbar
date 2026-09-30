@@ -29,6 +29,7 @@
 pub mod pure;
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
@@ -39,15 +40,20 @@ use relm4::ComponentSender;
 use crate::bar::bluetooth::BtPopoverData;
 use crate::bar::control::{AudioSink, ControlPanelData};
 use crate::bar::media::MediaState;
+use crate::bar::stats::Stats;
+use crate::bar::wifi::{CrumbsStatus, WifiPopoverData};
 use crate::motion;
 use crate::notifications::history;
 use crate::{App, AppInput};
-use pure::{OpenWindow, PowerConfirm, StageResults};
+use pure::{HintMode, OpenWindow, PowerConfirm, StageResults};
 
 /// How many recent-app tiles the idle row shows (the mockup's `RECENT`).
 const MAX_RECENT_TILES: usize = 6;
-/// At most this many notification rows (`NOTES.slice(0,5)`).
-const MAX_NOTES: usize = 5;
+/// How many network samples the System card's sparkline shows (one per
+/// stats poll, so about the last minute).
+const SPARK_SAMPLES: usize = 30;
+/// The notifications list scrolls past this height once expanded.
+const NOTES_MAX_HEIGHT: i32 = 420;
 /// `.column{padding-top:64px}` and its hidden `translateY(-10px)`.
 const COLUMN_TOP: i32 = 64;
 const COLUMN_SLIDE: i32 = 10;
@@ -72,9 +78,12 @@ pub struct Shared {
     pub dnd: Rc<Cell<bool>>,
     open: Rc<RefCell<Weak<Stage>>>,
     stages: Rc<RefCell<Vec<Weak<Stage>>>>,
-    /// Every pill's unread dot, so opening a stage on any monitor clears
-    /// them all and a new notification lights them all.
+    /// Every pill's unread count, so opening a stage on any monitor clears
+    /// them all and a new notification bumps them all.
     unread_dots: Rc<RefCell<Vec<gtk4::Widget>>>,
+    unread: Rc<Cell<u32>>,
+    /// Every pill's do-not-disturb mark.
+    dnd_marks: Rc<RefCell<Vec<gtk4::Widget>>>,
     /// The primary's surtitle (the only one that ever shows): opening a
     /// stage on any monitor clears it.
     pub surtitle: Rc<RefCell<Option<crate::surtitle::Surtitle>>>,
@@ -88,6 +97,8 @@ impl Shared {
             open: Rc::new(RefCell::new(Weak::new())),
             stages: Rc::new(RefCell::new(Vec::new())),
             unread_dots: Rc::new(RefCell::new(Vec::new())),
+            unread: Rc::new(Cell::new(0)),
+            dnd_marks: Rc::new(RefCell::new(Vec::new())),
             surtitle: Rc::new(RefCell::new(None)),
         }
     }
@@ -103,24 +114,68 @@ impl Shared {
         stages.iter().filter_map(Weak::upgrade).collect()
     }
 
+    /// Registers a pill's unread count: a box whose first child is the
+    /// count's label.
     pub fn register_unread_dot(&self, dot: &gtk4::Widget) {
         self.unread_dots.borrow_mut().push(dot.clone());
+        self.paint_unread();
     }
 
     pub fn unregister_unread_dot(&self, dot: &gtk4::Widget) {
         self.unread_dots.borrow_mut().retain(|d| d != dot);
     }
 
+    /// `true` counts one more unseen notification; `false` clears the count
+    /// (a stage opened).
     pub fn set_unread(&self, on: bool) {
+        self.unread.set(if on {
+            self.unread.get().saturating_add(1)
+        } else {
+            0
+        });
+        self.paint_unread();
+    }
+
+    fn paint_unread(&self) {
+        let n = self.unread.get();
+        let text = if n > 99 {
+            "99+".to_string()
+        } else {
+            n.to_string()
+        };
         for dot in self.unread_dots.borrow().iter() {
-            dot.set_visible(on);
+            dot.set_visible(n > 0);
+            if let Some(label) = dot.first_child().and_downcast::<gtk4::Label>() {
+                label.set_label(&text);
+            }
         }
+    }
+
+    pub fn register_dnd_mark(&self, mark: &gtk4::Widget) {
+        mark.set_visible(self.dnd.get());
+        self.dnd_marks.borrow_mut().push(mark.clone());
+    }
+
+    pub fn unregister_dnd_mark(&self, mark: &gtk4::Widget) {
+        self.dnd_marks.borrow_mut().retain(|m| m != mark);
     }
 
     pub fn set_dnd(&self, on: bool) {
         self.dnd.set(on);
         for stage in self.live_stages() {
             set_chip_on(&stage.dnd_chip, on);
+        }
+        for mark in self.dnd_marks.borrow().iter() {
+            mark.set_visible(on);
+        }
+    }
+
+    /// Empties the notification history everywhere.
+    pub fn clear_notifications(&self) {
+        self.store.lock().unwrap().clear();
+        history::persist(&self.store);
+        for stage in self.live_stages() {
+            stage.refresh_notifications();
         }
     }
 
@@ -171,7 +226,32 @@ struct RowSlot {
 struct ResultPool {
     groups: Vec<(gtk4::Label, Vec<RowSlot>)>,
     answer: gtk4::Label,
+    /// The line under the answer: "keep typing", "enter copies 87".
+    calc_note: gtk4::Label,
     empty: gtk4::Label,
+}
+
+/// A split chip: the left half toggles a radio, the arrow opens its drawer.
+struct SplitChip {
+    root: gtk4::Box,
+    main: gtk4::Button,
+    sub: gtk4::Label,
+    more: gtk4::Button,
+    drawer: gtk4::Box,
+}
+
+/// The System card's live values.
+struct SystemCard {
+    card: gtk4::Box,
+    cpu: gtk4::Label,
+    ram: gtk4::Label,
+    gpu: gtk4::Label,
+    gpu_box: gtk4::Box,
+    watts: gtk4::Label,
+    foot: gtk4::Label,
+    spark: gtk4::DrawingArea,
+    /// Download rate samples, newest last (KB/s).
+    samples: Rc<RefCell<VecDeque<f32>>>,
 }
 
 /// The stage's settings menu (a "Settings" button at the end of the power
@@ -183,6 +263,8 @@ struct SettingsPanel {
     revealer: gtk4::Revealer,
     autohide: gtk4::Button,
     widgets: gtk4::Button,
+    nowplaying: gtk4::Button,
+    system: gtk4::Button,
     /// None / Current / All, in that order.
     workspaces: [gtk4::Button; 3],
     prefs: Cell<crate::spotlight_prefs::Prefs>,
@@ -221,14 +303,25 @@ pub struct Stage {
     media_play_btn: gtk4::Button,
     bri_scale: gtk4::Scale,
     bri_pct_lbl: gtk4::Label,
-    wifi_chip: gtk4::Button,
-    bt_chip: gtk4::Button,
+    wifi: SplitChip,
+    bt: SplitChip,
     dnd_chip: gtk4::Button,
+    /// The Wi-Fi drawer's sources: breadcrumbs' status, and its profiles
+    /// and scan (fetched when the drawer opens).
+    wifi_crumbs: RefCell<Option<CrumbsStatus>>,
+    wifi_data: RefCell<Option<WifiPopoverData>>,
+    wifi_radio: Cell<bool>,
+    bt_data: RefCell<Option<BtPopoverData>>,
+    /// Background apps (the SNI tray), keyed by item id.
+    tray_section: gtk4::Box,
+    tray_box: gtk4::FlowBox,
+    tray_items: RefCell<HashMap<String, gtk4::Widget>>,
 
     // Centre zone
     big_time_lbl: gtk4::Label,
     sentence_lbl: gtk4::Label,
     cards_box: gtk4::Box,
+    system: SystemCard,
     /// A never-shown label styled `color: @accent`: the brass colour for
     /// Pango markup (the calc answer), read at render time.
     brass_probe: gtk4::Label,
@@ -236,12 +329,19 @@ pub struct Stage {
 
     // Notifications zone
     notes_box: gtk4::Box,
+    notes_scroller: gtk4::ScrolledWindow,
+    notes_more_btn: gtk4::Button,
+    notes_expanded: Cell<bool>,
     clear_all_btn: gtk4::Button,
 
     // Power row
     power_buttons: Vec<PowerButton>,
     power_confirm: RefCell<PowerConfirm>,
     power_hint: gtk4::Label,
+
+    // Key hints
+    foot: gtk4::Box,
+    hint_mode: Cell<Option<HintMode>>,
 
     // Shared / cross-cutting state
     open: Cell<bool>,
@@ -263,6 +363,8 @@ pub struct Stage {
     /// `ControlPanelData` poll, so `connect_value_changed` doesn't
     /// re-issue the same value as a user edit.
     loading: Cell<bool>,
+    /// The output width the layout was last computed for.
+    layout_width: Cell<i32>,
     self_weak: RefCell<Weak<Stage>>,
     sender: ComponentSender<App>,
 }
@@ -292,6 +394,9 @@ impl Stage {
         }
         self.open_common(true);
         crate::bar::control::spawn_load(self.sender.clone());
+        // The Bluetooth chip names the connected device, which only this
+        // load reports.
+        crate::bar::bluetooth::spawn_popover_load(self.sender.clone());
         self.refresh_windows();
     }
 
@@ -316,6 +421,8 @@ impl Stage {
         self.entry.set_text("");
         *self.query.borrow_mut() = String::new();
         self.rec_sel.set(0);
+        self.notes_expanded.set(false);
+        self.update_hints(HintMode::Idle);
         if !self.sample_apps.get() {
             let entries = bread_launcher::load_sorted_entries(
                 &std::collections::HashMap::new(),
@@ -394,6 +501,7 @@ impl Stage {
     /// `1fr 1.15fr 1fr` grid for an output `width` px wide, stacking the
     /// floor below the 860px breakpoint.
     fn apply_layout(&self, width: i32) {
+        self.layout_width.set(width);
         let inner = pure::column_inner_width(width);
         self.column.set_size_request(inner, -1);
         let content = CONTENT_WIDTH.min(inner);
@@ -405,6 +513,29 @@ impl Stage {
             w.set_size_request(content, -1);
         }
         self.force_narrow_with(width < NARROW_BREAKPOINT_PX, inner);
+    }
+
+    /// The surface was resized (its output changed mode, scale or layout):
+    /// re-lay the column out for the new width, stacking or unstacking the
+    /// floor across the breakpoint. Deferred a main-loop turn, since this
+    /// runs from inside a size allocation.
+    fn on_resized(&self, width: i32) {
+        tracing::debug!(
+            target: "breadbar::stage",
+            width,
+            laid_out_for = self.layout_width.get(),
+            window = self.window.width(),
+            "stage surface resized"
+        );
+        if width <= 0 || width == self.layout_width.get() {
+            return;
+        }
+        let s = self.self_rc();
+        gtk4::glib::idle_add_local_once(move || {
+            if width != s.layout_width.get() {
+                s.apply_layout(width);
+            }
+        });
     }
 
     /// Screenshot-mode helper: types `text` into the search field, driving
@@ -475,6 +606,7 @@ impl Stage {
         self.entry.set_text("");
         *self.query.borrow_mut() = String::new();
         self.rec_sel.set(-1);
+        self.show_drawer(None);
         self.power_confirm.borrow_mut().disarm();
         self.reset_power_buttons();
         self.window.set_keyboard_mode(KeyboardMode::None);
@@ -575,14 +707,281 @@ impl Stage {
         });
     }
 
-    /// The Wi-Fi chip is the radio itself (on/off), labelled "Wi-Fi" as in
-    /// the mockup; the network name belongs to the status sentence.
+    /// The Wi-Fi chip's left half is the radio itself (on/off); its sub
+    /// line names the network.
     pub fn set_wifi_radio(&self, on: bool) {
-        set_chip_on(&self.wifi_chip, on);
+        self.wifi_radio.set(on);
+        self.paint_wifi_chip();
+    }
+
+    fn paint_wifi_chip(&self) {
+        let on = self.wifi_radio.get();
+        set_split_on(&self.wifi, on);
+        let network = self.status.borrow().network.clone();
+        let sub = if !on {
+            "Off".to_string()
+        } else if network.is_empty() || network == "\u{2014}" {
+            "Not connected".to_string()
+        } else {
+            network
+        };
+        self.wifi.sub.set_label(&sub);
     }
 
     pub fn set_bluetooth(&self, data: &BtPopoverData) {
-        set_chip_on(&self.bt_chip, data.powered);
+        set_split_on(&self.bt, data.powered);
+        let connected: Vec<&str> = data
+            .devices
+            .iter()
+            .filter(|d| d.connected)
+            .map(|d| d.name.as_str())
+            .collect();
+        let sub = match (data.powered, connected.as_slice()) {
+            (false, _) => "Off".to_string(),
+            (true, []) => "On".to_string(),
+            (true, [one]) => (*one).to_string(),
+            (true, [first, rest @ ..]) => format!("{first} +{}", rest.len()),
+        };
+        self.bt.sub.set_label(&sub);
+        *self.bt_data.borrow_mut() = Some(data.clone());
+        if self.bt.drawer.is_visible() {
+            self.render_bt_drawer();
+        }
+    }
+
+    /// The Wi-Fi drawer's data: breadcrumbs' status (online, IP, Tailscale)
+    /// and/or its profiles and nearby networks. Either may be `None` to keep
+    /// what is already there.
+    pub fn set_wifi_details(&self, crumbs: Option<&CrumbsStatus>, data: Option<&WifiPopoverData>) {
+        if let Some(c) = crumbs {
+            *self.wifi_crumbs.borrow_mut() = Some(c.clone());
+        }
+        if let Some(d) = data {
+            *self.wifi_data.borrow_mut() = Some(d.clone());
+        }
+        if self.wifi.drawer.is_visible() {
+            self.render_wifi_drawer();
+        }
+    }
+
+    /// Opens one drawer (closing the other), or closes both with `None`.
+    fn show_drawer(&self, which: Option<&SplitChip>) {
+        for chip in [&self.wifi, &self.bt] {
+            let open = which.is_some_and(|w| std::ptr::eq(w, chip));
+            chip.drawer.set_visible(open);
+            if open {
+                chip.more.add_css_class("open");
+            } else {
+                chip.more.remove_css_class("open");
+            }
+        }
+    }
+
+    fn toggle_wifi_drawer(&self) {
+        if self.wifi.drawer.is_visible() {
+            self.show_drawer(None);
+            return;
+        }
+        self.show_drawer(Some(&self.wifi));
+        self.render_wifi_drawer();
+        crate::bar::wifi::spawn_popover_load(self.sender.clone());
+    }
+
+    fn toggle_bt_drawer(&self) {
+        if self.bt.drawer.is_visible() {
+            self.show_drawer(None);
+            return;
+        }
+        self.show_drawer(Some(&self.bt));
+        self.render_bt_drawer();
+        crate::bar::bluetooth::spawn_popover_load(self.sender.clone());
+    }
+
+    fn render_wifi_drawer(&self) {
+        let drawer = &self.wifi.drawer;
+        clear_box(drawer);
+        if let Some(c) = self.wifi_crumbs.borrow().as_ref() {
+            let facts = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+            facts.add_css_class("stage-facts");
+            let online = if c.captive_portal {
+                "Sign-in needed"
+            } else if c.internet {
+                "Online"
+            } else {
+                "Offline"
+            };
+            facts.append(&gtk4::Label::new(Some(online)));
+            if let Some(ip) = &c.ip {
+                facts.append(&gtk4::Label::new(Some(&format!("IP {ip}"))));
+            }
+            if c.tailscale_required || c.tailscale_ok {
+                let ts = if c.tailscale_ok { "on" } else { "off" };
+                facts.append(&gtk4::Label::new(Some(&format!("Tailscale {ts}"))));
+            }
+            drawer.append(&facts);
+        }
+        let data = self.wifi_data.borrow().clone();
+        let Some(data) = data else {
+            drawer.append(&drawer_note("Looking for networks\u{2026}"));
+            return;
+        };
+        let profiles = crate::unique_profiles(&data.profiles);
+        if !profiles.is_empty() {
+            drawer.append(&drawer_head("Profiles"));
+            for (name, active) in profiles {
+                let meta = if active { "active" } else { "switch" };
+                let row = drawer_row(&name, meta, active);
+                let sender = self.sender.clone();
+                let s = self.self_rc();
+                row.connect_clicked(move |_| {
+                    let _ = sender
+                        .input_sender()
+                        .send(AppInput::SetProfile(name.clone()));
+                    crate::bar::wifi::spawn_profile_set(name.clone());
+                    s.reload_drawer_soon();
+                });
+                drawer.append(&row);
+            }
+        }
+        drawer.append(&drawer_head("Nearby"));
+        if !data.scan_ready {
+            drawer.append(&drawer_note("Scanning\u{2026}"));
+        } else if data.scan.is_empty() {
+            drawer.append(&drawer_note("No networks in range"));
+        } else {
+            for entry in data.scan.iter().take(6) {
+                let meta = if entry.saved {
+                    format!("{}%", entry.signal)
+                } else {
+                    format!("\u{1f512} {}%", entry.signal)
+                };
+                let current = self.status.borrow().network == entry.ssid;
+                let row = drawer_row(&entry.ssid, &meta, current);
+                let ssid = entry.ssid.clone();
+                let saved = entry.saved;
+                let s = self.self_rc();
+                row.connect_clicked(move |_| {
+                    if saved {
+                        crate::bar::wifi::spawn_join(ssid.clone());
+                        s.reload_drawer_soon();
+                    } else {
+                        // A new network needs a password: bos-settings asks.
+                        run_shell("bos-settings --page network");
+                        s.close();
+                    }
+                });
+                drawer.append(&row);
+            }
+        }
+    }
+
+    fn render_bt_drawer(&self) {
+        let drawer = &self.bt.drawer;
+        clear_box(drawer);
+        let data = self.bt_data.borrow().clone();
+        let Some(data) = data else {
+            drawer.append(&drawer_note("Loading devices\u{2026}"));
+            return;
+        };
+        if !data.powered {
+            drawer.append(&drawer_note("Bluetooth is off"));
+            return;
+        }
+        let paired: Vec<_> = data.devices.iter().filter(|d| d.paired).collect();
+        drawer.append(&drawer_head("Paired"));
+        if paired.is_empty() {
+            drawer.append(&drawer_note("No paired devices"));
+        }
+        for dev in paired {
+            let meta = if dev.connected {
+                "disconnect"
+            } else {
+                "connect"
+            };
+            let row = drawer_row(&dev.name, meta, dev.connected);
+            let address = dev.address.clone();
+            let connected = dev.connected;
+            let s = self.self_rc();
+            row.connect_clicked(move |_| {
+                if connected {
+                    crate::bar::bluetooth::spawn_disconnect(address.clone());
+                } else {
+                    crate::bar::bluetooth::spawn_connect(address.clone());
+                }
+                s.reload_drawer_soon();
+            });
+            drawer.append(&row);
+        }
+    }
+
+    /// Re-fetches the open drawer's data shortly after an action, so the
+    /// row it changed shows its new state.
+    fn reload_drawer_soon(&self) {
+        let s = self.self_rc();
+        gtk4::glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+            if s.wifi.drawer.is_visible() {
+                crate::bar::wifi::spawn_popover_load(s.sender.clone());
+            } else if s.bt.drawer.is_visible() {
+                crate::bar::bluetooth::spawn_popover_load(s.sender.clone());
+            }
+        });
+    }
+
+    /// Adds (or replaces) one background app's button.
+    pub fn tray_add(&self, id: &str, icon: Option<&crate::bar::tray::TrayIconData>, title: &str) {
+        self.tray_remove(id);
+        let btn = gtk4::Button::new();
+        btn.add_css_class("stage-tray-btn");
+        btn.set_child(Some(&crate::bar::tray::make_tray_image(icon)));
+        if !title.is_empty() {
+            btn.set_tooltip_text(Some(title));
+        }
+        let item = id.to_string();
+        btn.connect_clicked(move |_| crate::bar::tray::spawn_activate(item.clone()));
+        self.tray_box.append(&btn);
+        let child = btn.parent().unwrap_or_else(|| btn.clone().upcast());
+        self.tray_items.borrow_mut().insert(id.to_string(), child);
+        self.tray_section.set_visible(true);
+    }
+
+    pub fn tray_remove(&self, id: &str) {
+        if let Some(child) = self.tray_items.borrow_mut().remove(id) {
+            self.tray_box.remove(&child);
+        }
+        self.tray_section
+            .set_visible(!self.tray_items.borrow().is_empty());
+    }
+
+    /// The System card's numbers, from the bar's own stats poll.
+    pub fn set_system(&self, stats: &Stats) {
+        let sys = &self.system;
+        sys.cpu.set_label(&format!("{:.0}%", stats.cpu_pct));
+        sys.ram.set_label(&stats.mem);
+        match stats.gpu_usage {
+            Some(g) => {
+                sys.gpu.set_label(&format!("{g}%"));
+                sys.gpu_box.set_visible(true);
+            }
+            None => sys.gpu_box.set_visible(false),
+        }
+        sys.watts.set_label(&if stats.power_watts >= 0.1 {
+            format!("{:.1}W", stats.power_watts)
+        } else {
+            "\u{2014}".to_string()
+        });
+        sys.foot.set_label(&format!(
+            "\u{2193} {} \u{00b7} \u{2191} {}",
+            pure::format_rate(stats.net_rx_kbs),
+            pure::format_rate(stats.net_tx_kbs)
+        ));
+        {
+            let mut samples = sys.samples.borrow_mut();
+            samples.push_back(stats.net_rx_kbs.max(0.0));
+            while samples.len() > SPARK_SAMPLES {
+                samples.pop_front();
+            }
+        }
+        sys.spark.queue_draw();
     }
 
     /// The centre zone's status sentence (the mockup's `sentence()`).
@@ -600,6 +999,7 @@ impl Stage {
             network: network.to_string(),
         };
         self.render_status();
+        self.paint_wifi_chip();
     }
 
     fn render_status(&self) {
@@ -661,6 +1061,9 @@ impl Stage {
         self.settings.prefs.set(*prefs);
         set_chip_on(&self.settings.autohide, prefs.autohide_on());
         set_chip_on(&self.settings.widgets, prefs.widgets_on());
+        set_chip_on(&self.settings.nowplaying, prefs.nowplaying_on());
+        set_chip_on(&self.settings.system, prefs.system_on());
+        self.system.card.set_visible(prefs.system_on());
         for (chip, d) in self.settings.workspaces.iter().zip([
             WorkspaceDisplay::None,
             WorkspaceDisplay::Current,
@@ -714,6 +1117,7 @@ impl Stage {
                 body: body.to_string(),
                 urgency: crate::notifications::Urgency::Normal,
                 received,
+                actions: Vec::new(),
             });
         }
         drop(store);
@@ -763,25 +1167,29 @@ impl Stage {
 
     /// Rebuilds the notifications zone from the shared history store: the
     /// same store the surtitle path and the history window write to, on
-    /// every monitor.
+    /// every monitor. Critical notices are pinned first; past
+    /// [`pure::NOTES_COLLAPSED`] rows, "Show all" expands the list in place
+    /// (scrolling past [`NOTES_MAX_HEIGHT`]).
     pub fn refresh_notifications(&self) {
-        while let Some(c) = self.notes_box.first_child() {
-            self.notes_box.remove(&c);
-        }
-        let entries: Vec<(u32, String, String, String, std::time::SystemTime)> = self
+        clear_box(&self.notes_box);
+        let entries: Vec<pure::NoteIn<std::time::SystemTime>> = self
             .shared
             .store
             .lock()
             .unwrap()
             .iter()
-            .map(|e| {
-                (
-                    e.id,
-                    e.app_name.clone(),
-                    e.summary.clone(),
-                    history::plain_body(&e.body),
-                    e.received,
-                )
+            .map(|e| pure::NoteIn {
+                id: e.id,
+                app: e.app_name.clone(),
+                title: e.summary.clone(),
+                body: history::plain_body(&e.body),
+                time: e.received,
+                critical: e.urgency == crate::notifications::Urgency::Critical,
+                actions: e
+                    .actions
+                    .iter()
+                    .map(|a| (a.key.clone(), a.label.clone()))
+                    .collect(),
             })
             .collect();
         let rows = pure::stack_notes(&entries);
@@ -791,16 +1199,53 @@ impl Stage {
             empty.add_css_class("stage-note-empty");
             empty.set_xalign(0.0);
             self.notes_box.append(&empty);
+            self.notes_more_btn.set_visible(false);
+            self.size_notes(false);
             return;
         }
-        for row in rows.iter().take(MAX_NOTES) {
+        let expanded = self.notes_expanded.get();
+        let shown = if expanded {
+            rows.len()
+        } else {
+            rows.len().min(pure::NOTES_COLLAPSED)
+        };
+        for row in rows.iter().take(shown) {
             self.notes_box.append(&self.make_note_row(row));
         }
+        let hidden = rows.len() - shown;
+        self.notes_more_btn
+            .set_visible(hidden > 0 || (expanded && rows.len() > pure::NOTES_COLLAPSED));
+        if let Some(label) = self.notes_more_btn.child().and_downcast::<gtk4::Label>() {
+            label.set_label(&if hidden > 0 {
+                format!("Show all {}", rows.len())
+            } else {
+                "Show fewer".to_string()
+            });
+        }
+        self.size_notes(expanded);
+    }
+
+    /// Collapsed, the list takes its natural height; expanded, it scrolls
+    /// once it would pass [`NOTES_MAX_HEIGHT`].
+    fn size_notes(&self, expanded: bool) {
+        self.notes_scroller
+            .set_max_content_height(if expanded { NOTES_MAX_HEIGHT } else { -1 });
+        self.notes_scroller.set_policy(
+            gtk4::PolicyType::Never,
+            if expanded {
+                gtk4::PolicyType::Automatic
+            } else {
+                gtk4::PolicyType::Never
+            },
+        );
     }
 
     fn make_note_row(&self, note: &pure::NoteRow<std::time::SystemTime>) -> gtk4::Box {
         let row = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
         row.add_css_class("stage-note");
+        if note.critical {
+            row.add_css_class("critical");
+        }
         let top = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
         let app = gtk4::Label::new(Some(&note.app));
         app.add_css_class("stage-note-app");
@@ -854,7 +1299,44 @@ impl Stage {
             body.set_single_line_mode(true);
             row.append(&body);
         }
+        let buttons = pure::note_buttons(&note.actions, crate::notifications::INLINE_REPLY_KEY);
+        if !buttons.is_empty() {
+            let acts = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            acts.add_css_class("stage-note-actions");
+            // The newest stacked entry is the one whose actions these are.
+            let id = note.ids[0];
+            for (i, (key, label)) in buttons.into_iter().enumerate() {
+                let btn = gtk4::Button::with_label(&label);
+                btn.add_css_class("stage-note-act");
+                if i == 0 {
+                    btn.add_css_class("primary");
+                }
+                let s = self.self_rc();
+                btn.connect_clicked(move |_| s.invoke_note_action(id, key.clone()));
+                acts.append(&btn);
+            }
+            row.append(&acts);
+        }
         row
+    }
+
+    /// Runs one of a notification's actions for its sender, then drops that
+    /// notification's buttons (a sender answers an action once) and closes
+    /// the stage, since an action usually brings the sender's window up.
+    fn invoke_note_action(&self, id: u32, key: String) {
+        crate::notifications::invoke_action(id, key);
+        if let Some(e) = self
+            .shared
+            .store
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|e| e.id == id)
+        {
+            e.actions.clear();
+        }
+        self.refresh_notifications();
+        self.close();
     }
 
     fn refresh_windows(&self) {
@@ -928,6 +1410,7 @@ impl Stage {
         self.results_box.set_visible(has_query);
 
         let parsed = bread_launcher::parse_query(&query);
+        self.update_hints(HintMode::from_query(parsed.kind, !has_query));
         self.mode_badge.set_visible(matches!(
             parsed.kind,
             bread_launcher::QueryKind::Calc | bread_launcher::QueryKind::Cmd
@@ -971,6 +1454,7 @@ impl Stage {
             let pool_ref = self.result_pool.borrow();
             let pool = pool_ref.as_ref().expect("result pool built above");
             pool.answer.set_visible(false);
+            pool.calc_note.set_visible(false);
             pool.empty.set_visible(false);
             for (header, slots) in &pool.groups {
                 header.set_visible(false);
@@ -980,19 +1464,38 @@ impl Stage {
             }
             match results {
                 StageResults::Calc { expr, answer } => {
-                    // `.answer`: "<expr> = <b>result</b>", the result in brass.
+                    // `.answer`: "<expr> = <b>result</b>", the result in
+                    // brass. A half-typed or unsupported sum shows a quiet
+                    // ellipsis instead of an error in display type.
                     let expr = if expr.trim().is_empty() {
                         "\u{2026}".to_string()
                     } else {
                         expr.trim().to_string()
                     };
-                    let brass = hex(&self.brass_probe.color());
+                    let view = pure::calc_view(answer.as_deref());
+                    let result = match &view {
+                        pure::CalcView::Answer(a) => {
+                            let brass = hex(&self.brass_probe.color());
+                            format!(
+                                "<span weight=\"500\" foreground=\"{brass}\">{}</span>",
+                                gtk4::glib::markup_escape_text(a)
+                            )
+                        }
+                        _ => "<span fgalpha=\"30%\">\u{2026}</span>".to_string(),
+                    };
                     pool.answer.set_markup(&format!(
-                        "{} = <span weight=\"500\" foreground=\"{brass}\">{}</span>",
+                        "{} = {result}",
                         gtk4::glib::markup_escape_text(&expr),
-                        gtk4::glib::markup_escape_text(answer.as_deref().unwrap_or("?")),
                     ));
                     pool.answer.set_visible(true);
+                    pool.calc_note.set_label(&match view {
+                        pure::CalcView::Pending => "keep typing".to_string(),
+                        pure::CalcView::Unsupported => {
+                            "use numbers, + \u{2212} \u{00d7} \u{00f7} and brackets".to_string()
+                        }
+                        pure::CalcView::Answer(a) => format!("enter copies {a}"),
+                    });
+                    pool.calc_note.set_visible(true);
                 }
                 StageResults::Empty { query } => {
                     pool.empty.set_label(&format!(
@@ -1008,7 +1511,11 @@ impl Stage {
                         header.set_visible(true);
                         for (row, slot) in group.rows.iter().zip(slots) {
                             slot.glyph.set_label(&row.glyph);
-                            slot.name.set_label(&row.name);
+                            slot.name.set_markup(&highlight_markup(
+                                &row.name,
+                                &row.marks,
+                                &hex(&self.brass_probe.color()),
+                            ));
                             slot.sub.set_label(&row.sub);
                             slot.act
                                 .set_label(&format!("{} \u{21b5}", row.kind.action_label()));
@@ -1033,6 +1540,12 @@ impl Stage {
         answer.set_justify(gtk4::Justification::Center);
         answer.set_visible(false);
         self.results_box.append(&answer);
+
+        let calc_note = gtk4::Label::new(None);
+        calc_note.add_css_class("stage-calc-note");
+        calc_note.set_justify(gtk4::Justification::Center);
+        calc_note.set_visible(false);
+        self.results_box.append(&calc_note);
 
         let empty = gtk4::Label::new(None);
         empty.add_css_class("stage-empty");
@@ -1062,6 +1575,7 @@ impl Stage {
         *self.result_pool.borrow_mut() = Some(ResultPool {
             groups,
             answer,
+            calc_note,
             empty,
         });
     }
@@ -1079,8 +1593,9 @@ impl Stage {
         name.set_xalign(0.0);
         name.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         hbox.append(&name);
-        // `.sub{margin-left:auto}` pushes itself right; with it hidden on
-        // the selected row, the act badge follows the name directly.
+        // `.sub{margin-left:auto}` pushes itself right; the act badge after
+        // it only shows on the selected row, but keeps its room on every
+        // row so the sub labels line up and never move.
         let sub = gtk4::Label::new(None);
         sub.add_css_class("stage-row-sub");
         sub.set_hexpand(true);
@@ -1089,7 +1604,7 @@ impl Stage {
         let act = gtk4::Label::new(None);
         act.add_css_class("stage-row-act");
         act.set_valign(gtk4::Align::Center);
-        act.set_visible(false);
+        act.set_opacity(0.0);
         hbox.append(&act);
         btn.set_child(Some(&hbox));
         let index = Rc::new(Cell::new(-1));
@@ -1121,15 +1636,15 @@ impl Stage {
             if !slot.btn.is_visible() {
                 continue;
             }
-            // `.row.sel .act{display:block}` / `.row.sel .sub{display:none}`.
+            // The act badge shows on the selected row; the sub label stays,
+            // so the selected row still says which app and workspace it is.
             let selected = slot.index.get() == sel;
             if selected {
                 slot.btn.add_css_class("sel");
             } else {
                 slot.btn.remove_css_class("sel");
             }
-            slot.act.set_visible(selected);
-            slot.sub.set_visible(!selected);
+            slot.act.set_opacity(if selected { 1.0 } else { 0.0 });
         }
     }
 
@@ -1156,7 +1671,19 @@ impl Stage {
             self.activate_recent_tile(self.rec_sel.get());
             return;
         }
-        self.activate_result(self.sel.get());
+        let answer = match &*self.results.borrow() {
+            StageResults::Calc { answer, .. } => Some(pure::calc_view(answer.as_deref())),
+            _ => None,
+        };
+        match answer {
+            // Enter copies the answer, then closes.
+            Some(pure::CalcView::Answer(a)) => {
+                self.window.clipboard().set_text(&a);
+                self.close();
+            }
+            Some(_) => {}
+            None => self.activate_result(self.sel.get()),
+        }
     }
 
     fn activate_recent_tile(&self, index: i32) {
@@ -1209,8 +1736,25 @@ impl Stage {
                         pure::CommandAction::ToggleDnd => {
                             self.shared.set_dnd(!self.shared.dnd.get());
                         }
+                        pure::CommandAction::ToggleWifi => {
+                            let on = !self.wifi_radio.get();
+                            crate::bar::wifi::spawn_set_enabled(on);
+                            self.set_wifi_radio(on);
+                        }
+                        pure::CommandAction::ToggleBluetooth => {
+                            let on = !self.bt.root.has_css_class("on");
+                            crate::bar::bluetooth::spawn_set_powered(on);
+                            set_split_on(&self.bt, on);
+                        }
+                        pure::CommandAction::ClearNotifications => {
+                            self.shared.clear_notifications();
+                        }
                     }
                 }
+                self.close();
+            }
+            pure::ResultKind::Setting => {
+                run_shell(&format!("bos-settings --page {}", row.target));
                 self.close();
             }
         }
@@ -1224,6 +1768,24 @@ impl Stage {
     }
 
     // ── Footer ─────────────────────────────────────────────────────────
+
+    /// Rebuilds the key hints for `mode`, when it changed.
+    fn update_hints(&self, mode: HintMode) {
+        if self.hint_mode.get() == Some(mode) {
+            return;
+        }
+        self.hint_mode.set(Some(mode));
+        clear_box(&self.foot);
+        for (key, word) in pure::footer_hints(mode) {
+            // `<span><b>key</b> word</span>`: the key light at weight 500.
+            let hint = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            let k = gtk4::Label::new(Some(key));
+            k.add_css_class("stage-foot-key");
+            hint.append(&k);
+            hint.append(&gtk4::Label::new(Some(&format!(" {word}"))));
+            self.foot.append(&hint);
+        }
+    }
 
     // ── Power row ──────────────────────────────────────────────────────
 
@@ -1361,6 +1923,161 @@ fn set_chip_on(btn: &gtk4::Button, on: bool) {
     } else {
         btn.remove_css_class("on");
     }
+}
+
+fn set_split_on(chip: &SplitChip, on: bool) {
+    if on {
+        chip.root.add_css_class("on");
+    } else {
+        chip.root.remove_css_class("on");
+    }
+}
+
+/// A Wi-Fi/Bluetooth split chip and its (hidden) drawer.
+fn make_split_chip(name: &str, more_tip: &str) -> SplitChip {
+    let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    root.add_css_class("stage-split");
+    root.set_hexpand(true);
+    let main = gtk4::Button::new();
+    main.add_css_class("stage-split-main");
+    main.set_hexpand(true);
+    let text = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    let title = gtk4::Label::new(Some(name));
+    title.add_css_class("stage-split-name");
+    title.set_xalign(0.0);
+    text.append(&title);
+    let sub = gtk4::Label::new(None);
+    sub.add_css_class("stage-split-sub");
+    sub.set_xalign(0.0);
+    sub.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    sub.set_max_width_chars(1);
+    sub.set_hexpand(true);
+    text.append(&sub);
+    main.set_child(Some(&text));
+    main.set_tooltip_text(Some(&format!("Turn {name} on or off")));
+    root.append(&main);
+    let more = gtk4::Button::with_label("\u{25be}");
+    more.add_css_class("stage-split-more");
+    more.set_tooltip_text(Some(more_tip));
+    root.append(&more);
+    let drawer = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+    drawer.add_css_class("stage-drawer");
+    drawer.set_visible(false);
+    SplitChip {
+        root,
+        main,
+        sub,
+        more,
+        drawer,
+    }
+}
+
+fn clear_box(b: &gtk4::Box) {
+    while let Some(c) = b.first_child() {
+        b.remove(&c);
+    }
+}
+
+fn drawer_head(text: &str) -> gtk4::Label {
+    let l = gtk4::Label::new(Some(text));
+    l.add_css_class("stage-dhead");
+    l.set_xalign(0.0);
+    l
+}
+
+fn drawer_note(text: &str) -> gtk4::Label {
+    let l = gtk4::Label::new(Some(text));
+    l.add_css_class("stage-drawer-empty");
+    l.set_xalign(0.0);
+    l
+}
+
+/// One drawer row: a name on the left, a mono hint of what a click does (or
+/// the state) on the right; `current` marks the active network or device.
+fn drawer_row(name: &str, meta: &str, current: bool) -> gtk4::Button {
+    let row = gtk4::Button::new();
+    row.add_css_class("stage-drow");
+    if current {
+        row.add_css_class("cur");
+    }
+    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
+    let n = gtk4::Label::new(Some(name));
+    n.add_css_class("stage-drow-name");
+    n.set_xalign(0.0);
+    n.set_hexpand(true);
+    n.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    n.set_max_width_chars(1);
+    hbox.append(&n);
+    let m = gtk4::Label::new(Some(meta));
+    m.add_css_class("stage-drow-meta");
+    hbox.append(&m);
+    row.set_child(Some(&hbox));
+    row
+}
+
+/// `name` as Pango markup with the characters at `marks` (char indices) in
+/// `colour`: the query's matched letters.
+fn highlight_markup(name: &str, marks: &[usize], colour: &str) -> String {
+    let mut out = String::with_capacity(name.len() + marks.len() * 40);
+    for (i, c) in name.chars().enumerate() {
+        let esc = gtk4::glib::markup_escape_text(&c.to_string());
+        if marks.contains(&i) {
+            out.push_str(&format!("<span foreground=\"{colour}\">{esc}</span>"));
+        } else {
+            out.push_str(&esc);
+        }
+    }
+    out
+}
+
+/// The System card's download sparkline: a line in the widget's CSS colour
+/// over a faint fill, scaled to the window's own peak.
+fn draw_spark(
+    area: &gtk4::DrawingArea,
+    cr: &gtk4::cairo::Context,
+    width: i32,
+    height: i32,
+    samples: &VecDeque<f32>,
+) {
+    if samples.len() < 2 {
+        return;
+    }
+    let (w, h) = (f64::from(width), f64::from(height));
+    let peak = samples.iter().copied().fold(1.0f32, f32::max) as f64;
+    let step = w / (SPARK_SAMPLES - 1) as f64;
+    let x0 = w - step * (samples.len() - 1) as f64;
+    let point = |i: usize, v: f32| {
+        (
+            x0 + step * i as f64,
+            h - 1.0 - (f64::from(v) / peak) * (h - 3.0),
+        )
+    };
+    let c = area.color();
+    let (r, g, b) = (
+        f64::from(c.red()),
+        f64::from(c.green()),
+        f64::from(c.blue()),
+    );
+    for (i, v) in samples.iter().enumerate() {
+        let (x, y) = point(i, *v);
+        if i == 0 {
+            cr.move_to(x, y);
+        } else {
+            cr.line_to(x, y);
+        }
+    }
+    let line = cr.copy_path();
+    cr.line_to(w, h);
+    cr.line_to(x0, h);
+    cr.close_path();
+    cr.set_source_rgba(r, g, b, 0.22);
+    let _ = cr.fill();
+    if let Ok(path) = line {
+        cr.append_path(&path);
+    }
+    cr.set_source_rgba(r, g, b, 1.0);
+    cr.set_line_width(1.4);
+    let _ = cr.stroke();
 }
 
 fn make_chip(label: &str) -> gtk4::Button {
@@ -1707,7 +2424,12 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     column.set_margin_top(COLUMN_TOP - COLUMN_SLIDE);
     column.set_margin_bottom(32);
     let scroller = gtk4::ScrolledWindow::new();
-    scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+    // `External` horizontally: never scroll sideways, and never pass the
+    // column's width up as the window's minimum. With `Never`, a column laid
+    // out for a wide output held the surface at that width after the output
+    // shrank, so it never took the new size and never re-laid itself out
+    // (BAR-39).
+    scroller.set_policy(gtk4::PolicyType::External, gtk4::PolicyType::Automatic);
     scroller.set_child(Some(&column));
     root.add_overlay(&scroller);
     root.set_measure_overlay(&scroller, false);
@@ -1727,7 +2449,7 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     entry.add_css_class("stage-entry");
     entry.set_hexpand(true);
     entry.set_valign(gtk4::Align::Center);
-    entry.set_placeholder_text(Some("Search apps and windows"));
+    entry.set_placeholder_text(Some("Search apps, windows and settings"));
     search_row.append(&entry);
     let esc_hint = gtk4::Label::new(Some("esc"));
     esc_hint.add_css_class("stage-kbd");
@@ -1841,14 +2563,29 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     bri_ctl.append(&bri_scale);
     controls_zone.append(&bri_ctl);
 
-    let toggle_row = make_chip_row();
-    let wifi_chip = make_chip("Wi-Fi");
-    toggle_row.append(&wifi_chip);
-    let bt_chip = make_chip("Bluetooth");
-    toggle_row.append(&bt_chip);
+    // Wi-Fi and Bluetooth as split chips side by side, do-not-disturb under
+    // them, then whichever radio's drawer is open.
+    let toggles = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    let radios = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    radios.set_homogeneous(true);
+    let wifi = make_split_chip("Wi-Fi", "Networks");
+    radios.append(&wifi.root);
+    let bt = make_split_chip("Bluetooth", "Devices");
+    radios.append(&bt.root);
+    toggles.append(&radios);
     let dnd_chip = make_chip("Do not disturb");
-    toggle_row.append(&dnd_chip);
-    controls_zone.append(&toggle_row);
+    toggles.append(&dnd_chip);
+    controls_zone.append(&toggles);
+    controls_zone.append(&wifi.drawer);
+    controls_zone.append(&bt.drawer);
+
+    // Background apps: the SNI tray, hidden while empty.
+    let tray_section = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    tray_section.append(&label_row("Background apps", None));
+    let tray_box = make_chip_row();
+    tray_section.append(&tray_box);
+    tray_section.set_visible(false);
+    controls_zone.append(&tray_section);
     let controls_zone = zone_holder(&controls_zone);
     floor.append(&controls_zone);
 
@@ -1869,6 +2606,60 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     cards_box.add_css_class("stage-cards");
     cards_box.set_visible(false);
     centre_zone.append(&cards_box);
+    // The System card, under the widget cards.
+    let sys_card = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    sys_card.add_css_class("stage-card");
+    let sys_title = gtk4::Label::new(Some("System"));
+    sys_title.add_css_class("stage-card-title");
+    sys_title.set_xalign(0.0);
+    sys_card.append(&sys_title);
+    let sys_grid = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    sys_grid.set_homogeneous(true);
+    let stat = |label: &str| {
+        let b = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        let v = gtk4::Label::new(Some("\u{2014}"));
+        v.add_css_class("stage-sys-value");
+        v.set_xalign(0.0);
+        b.append(&v);
+        let l = gtk4::Label::new(Some(label));
+        l.add_css_class("stage-sys-label");
+        l.set_xalign(0.0);
+        b.append(&l);
+        sys_grid.append(&b);
+        (b, v)
+    };
+    let (_, sys_cpu) = stat("CPU");
+    let (_, sys_ram) = stat("RAM");
+    let (sys_gpu_box, sys_gpu) = stat("GPU");
+    let (_, sys_watts) = stat("Draw");
+    sys_card.append(&sys_grid);
+    let spark = gtk4::DrawingArea::new();
+    spark.add_css_class("stage-spark");
+    spark.set_content_height(26);
+    spark.set_hexpand(true);
+    let samples: Rc<RefCell<VecDeque<f32>>> = Rc::new(RefCell::new(VecDeque::new()));
+    {
+        let samples = samples.clone();
+        spark.set_draw_func(move |area, cr, w, h| draw_spark(area, cr, w, h, &samples.borrow()));
+    }
+    sys_card.append(&spark);
+    let sys_foot = gtk4::Label::new(None);
+    sys_foot.add_css_class("stage-sys-foot");
+    sys_foot.set_xalign(0.0);
+    sys_card.append(&sys_foot);
+    centre_zone.append(&sys_card);
+    let system = SystemCard {
+        card: sys_card,
+        cpu: sys_cpu,
+        ram: sys_ram,
+        gpu: sys_gpu,
+        gpu_box: sys_gpu_box,
+        watts: sys_watts,
+        foot: sys_foot,
+        spark,
+        samples,
+    };
+
     let brass_probe = gtk4::Label::new(None);
     brass_probe.add_css_class("stage-brass-probe");
     brass_probe.set_visible(false);
@@ -1888,7 +2679,15 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     notif_zone.append(&notif_header);
     let notes_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     notes_box.add_css_class("stage-notes");
-    notif_zone.append(&notes_box);
+    let notes_scroller = gtk4::ScrolledWindow::new();
+    notes_scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Never);
+    notes_scroller.set_propagate_natural_height(true);
+    notes_scroller.set_child(Some(&notes_box));
+    notif_zone.append(&notes_scroller);
+    let notes_more_btn = gtk4::Button::with_label("Show all");
+    notes_more_btn.add_css_class("stage-notes-more");
+    notes_more_btn.set_visible(false);
+    notif_zone.append(&notes_more_btn);
     let notif_zone = zone_holder(&notif_zone);
     floor.append(&notif_zone);
 
@@ -1910,16 +2709,22 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
             label,
         });
     }
-    let power_hint = gtk4::Label::new(None);
-    power_hint.add_css_class("stage-power-hint");
-    power_row.append(&power_hint);
     let settings_toggle = gtk4::Button::new();
     settings_toggle.add_css_class("stage-power-btn");
     settings_toggle.add_css_class("stage-settings-toggle");
     settings_toggle.set_child(Some(&gtk4::Label::new(Some("Settings"))));
     settings_toggle.set_tooltip_text(Some("Pill and widget settings"));
     power_row.append(&settings_toggle);
-    idle_box.append(&power_row);
+    // The "press again" hint on its own line, always holding its height,
+    // so arming a button never moves the row under the pointer.
+    let power_block = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    power_block.set_halign(gtk4::Align::Center);
+    power_block.append(&power_row);
+    let power_hint = gtk4::Label::new(None);
+    power_hint.add_css_class("stage-power-hint");
+    power_hint.set_halign(gtk4::Align::Center);
+    power_block.append(&power_hint);
+    idle_box.append(&power_block);
 
     // ── Settings menu ──────────────────────────────────────────────────
     let settings_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 18);
@@ -1938,12 +2743,18 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     };
     let autohide_chip = make_chip("Auto-hide");
     let widgets_chip = make_chip("Widgets");
+    let nowplaying_chip = make_chip("Now playing");
+    let system_chip = make_chip("System card");
     let ws_chips = [make_chip("None"), make_chip("Current"), make_chip("All")];
-    settings_row.append(&group("Pill", &[&autohide_chip, &widgets_chip]));
+    settings_row.append(&group(
+        "Pill",
+        &[&autohide_chip, &widgets_chip, &nowplaying_chip],
+    ));
     settings_row.append(&group(
         "Workspaces",
         &[&ws_chips[0], &ws_chips[1], &ws_chips[2]],
     ));
+    settings_row.append(&group("Stage", &[&system_chip]));
     let settings_revealer = gtk4::Revealer::new();
     settings_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
     settings_revealer.set_transition_duration(180);
@@ -1958,18 +2769,10 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     column.append(&results_box);
 
     // ── Key hints ──────────────────────────────────────────────────────
+    // Filled by `update_hints`, per mode.
     let foot = gtk4::Box::new(gtk4::Orientation::Horizontal, 16);
     foot.add_css_class("stage-foot");
     foot.set_halign(gtk4::Align::Center);
-    for (key, word) in pure::FOOTER_HINTS {
-        // `<span><b>key</b> word</span>`: the key light at weight 500.
-        let hint = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        let k = gtk4::Label::new(Some(key));
-        k.add_css_class("stage-foot-key");
-        hint.append(&k);
-        hint.append(&gtk4::Label::new(Some(&format!(" {word}"))));
-        foot.append(&hint);
-    }
     column.append(&foot);
 
     // Clicking the dimmed house closes; clicking content does not. Decided
@@ -1988,6 +2791,8 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         recent_box.clone().upcast(),
         recent_inner.clone().upcast(),
         power_row.clone().upcast(),
+        power_block.clone().upcast(),
+        power_hint.clone().upcast(),
         settings_row.clone().upcast(),
         foot.clone().upcast(),
         results_box.clone().upcast(),
@@ -2026,6 +2831,8 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
             revealer: settings_revealer,
             autohide: autohide_chip,
             widgets: widgets_chip,
+            nowplaying: nowplaying_chip,
+            system: system_chip,
             workspaces: ws_chips,
             prefs: Cell::new(crate::spotlight_prefs::load()),
         },
@@ -2039,19 +2846,32 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         media_play_btn,
         bri_scale,
         bri_pct_lbl,
-        wifi_chip,
-        bt_chip,
+        wifi,
+        bt,
         dnd_chip,
+        wifi_crumbs: RefCell::new(None),
+        wifi_data: RefCell::new(None),
+        wifi_radio: Cell::new(false),
+        bt_data: RefCell::new(None),
+        tray_section,
+        tray_box,
+        tray_items: RefCell::new(HashMap::new()),
         big_time_lbl,
         sentence_lbl,
         cards_box,
+        system,
         brass_probe,
         status: RefCell::new(Status::default()),
         notes_box,
+        notes_scroller,
+        notes_more_btn,
+        notes_expanded: Cell::new(false),
         clear_all_btn,
         power_buttons,
         power_confirm: RefCell::new(PowerConfirm::new()),
         power_hint,
+        foot,
+        hint_mode: Cell::new(None),
         open: Cell::new(false),
         query: RefCell::new(String::new()),
         shared: shared.clone(),
@@ -2064,11 +2884,17 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         launcher_history: RefCell::new(launcher_history),
         sample_apps: Cell::new(false),
         loading: Cell::new(false),
+        layout_width: Cell::new(0),
         self_weak: RefCell::new(Weak::new()),
         sender,
     });
     *stage.self_weak.borrow_mut() = Rc::downgrade(&stage);
     shared.stages.borrow_mut().push(Rc::downgrade(&stage));
+    stage.update_hints(HintMode::Idle);
+    stage
+        .system
+        .card
+        .set_visible(stage.settings.prefs.get().system_on());
 
     // ── Wire every closure that calls back into `stage` ────────────────
 
@@ -2104,11 +2930,23 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     }
     {
         let s = stage.clone();
-        stage.clear_all_btn.connect_clicked(move |_| {
-            s.shared.store.lock().unwrap().clear();
-            history::persist(&s.shared.store);
+        stage
+            .clear_all_btn
+            .connect_clicked(move |_| s.shared.clear_notifications());
+        let s = stage.clone();
+        stage.notes_more_btn.connect_clicked(move |_| {
+            s.notes_expanded.set(!s.notes_expanded.get());
             s.refresh_notifications();
         });
+    }
+    {
+        // Follow the output's size: the cone fills the whole surface, so its
+        // size is the output's (logical) size. Reading the monitor's geometry
+        // at open time missed a mode change on an output the stage was
+        // already bound to, leaving the three-column floor on a narrow
+        // screen.
+        let s = stage.clone();
+        cone.connect_resize(move |_, width, _| s.on_resized(width));
     }
     for (i, tile) in stage.recent_tiles.iter().enumerate() {
         let s = stage.clone();
@@ -2137,16 +2975,27 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
             crate::bar::control::spawn_set_brightness(sc.value());
         });
     }
-    stage.wifi_chip.connect_clicked(|btn| {
-        let on = !btn.has_css_class("on");
-        crate::bar::wifi::spawn_set_enabled(on);
-        set_chip_on(btn, on);
-    });
-    stage.bt_chip.connect_clicked(|btn| {
-        let on = !btn.has_css_class("on");
-        crate::bar::bluetooth::spawn_set_powered(on);
-        set_chip_on(btn, on);
-    });
+    {
+        let s = stage.clone();
+        stage.wifi.main.connect_clicked(move |_| {
+            let on = !s.wifi_radio.get();
+            crate::bar::wifi::spawn_set_enabled(on);
+            s.set_wifi_radio(on);
+        });
+        let s = stage.clone();
+        stage
+            .wifi
+            .more
+            .connect_clicked(move |_| s.toggle_wifi_drawer());
+        let s = stage.clone();
+        stage.bt.main.connect_clicked(move |_| {
+            let on = !s.bt.root.has_css_class("on");
+            crate::bar::bluetooth::spawn_set_powered(on);
+            set_split_on(&s.bt, on);
+        });
+        let s = stage.clone();
+        stage.bt.more.connect_clicked(move |_| s.toggle_bt_drawer());
+    }
     {
         let shared = shared.clone();
         stage.dnd_chip.connect_clicked(move |_| {
@@ -2167,6 +3016,14 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         let s = stage.clone();
         stage.settings.widgets.connect_clicked(move |_| {
             s.change_prefs(|p| p.widgets = Some(!p.widgets_on()));
+        });
+        let s = stage.clone();
+        stage.settings.nowplaying.connect_clicked(move |_| {
+            s.change_prefs(|p| p.nowplaying = Some(!p.nowplaying_on()));
+        });
+        let s = stage.clone();
+        stage.settings.system.connect_clicked(move |_| {
+            s.change_prefs(|p| p.system = Some(!p.system_on()));
         });
         use crate::spotlight_prefs::WorkspacesPref;
         for (chip, pref) in stage.settings.workspaces.iter().zip([

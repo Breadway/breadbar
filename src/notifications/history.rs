@@ -23,6 +23,10 @@ pub struct Entry {
     pub body: String,
     pub urgency: Urgency,
     pub received: SystemTime,
+    /// The sender's actions, while it can still receive them: kept in
+    /// memory only (never persisted), since a sender's pending actions do
+    /// not survive either side restarting. Cleared once one is invoked.
+    pub actions: Vec<super::Action>,
 }
 
 pub struct Ui {
@@ -143,6 +147,7 @@ fn from_persisted(entry: PersistedEntry) -> Entry {
         body: entry.body,
         urgency: urgency_from_name(&entry.urgency),
         received: SystemTime::UNIX_EPOCH + Duration::from_secs(entry.received_unix),
+        actions: Vec::new(),
     }
 }
 
@@ -448,6 +453,7 @@ mod tests {
             body: String::new(),
             urgency: Urgency::Normal,
             received: SystemTime::UNIX_EPOCH,
+            actions: Vec::new(),
         }
     }
 

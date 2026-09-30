@@ -6,13 +6,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use zbus::{interface, object_server::SignalEmitter};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TrayIconData {
     Pixels { width: i32, height: i32, data: Vec<u8> },
     Name(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TrayUpdate {
     Add { id: String, icon: Option<TrayIconData>, title: String },
     Remove { id: String },

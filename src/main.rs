@@ -559,6 +559,12 @@ pub struct App {
     pill_flag: gtk4::Box,
     pill_flag_label: gtk4::Label,
     pill_unread: gtk4::Box,
+    /// BAR-38: the pill's now-playing title and do-not-disturb mark.
+    pill_nowplaying: gtk4::Box,
+    pill_nowplaying_title: gtk4::Label,
+    pill_dnd: gtk4::Box,
+    /// The current player's `(title, playing)`, while there is one.
+    nowplaying: Option<(String, bool)>,
     /// The workspaces/clock divider; collapses when `display = "none"`
     /// leaves the workspace strip empty.
     pill_sep: gtk4::Separator,
@@ -877,10 +883,41 @@ impl SimpleComponent for App {
         pill_unread.add_css_class("pill-unread");
         pill_unread.set_valign(gtk4::Align::Center);
         pill_unread.set_visible(false);
-        let pill_unread_dot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        pill_unread_dot.add_css_class("pill-unread-dot");
-        pill_unread_dot.set_valign(gtk4::Align::Center);
-        pill_unread.append(&pill_unread_dot);
+        // BAR-38: a count of notifications since the stage was last open,
+        // where the plain dot used to be (`stage::Shared` sets its text).
+        let pill_unread_count = gtk4::Label::new(None);
+        pill_unread_count.add_css_class("pill-unread-count");
+        pill_unread_count.set_valign(gtk4::Align::Center);
+        pill_unread.append(&pill_unread_count);
+
+        // BAR-38: the pill's glance items. `nowplaying` is three bouncing
+        // bars and the track title while a player plays; `dnd` is a crescent
+        // while do-not-disturb is on (`stage::Shared::set_dnd` shows it).
+        let pill_nowplaying = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        pill_nowplaying.add_css_class("pill-nowplaying");
+        pill_nowplaying.set_valign(gtk4::Align::Center);
+        pill_nowplaying.set_visible(false);
+        let pill_eq = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+        pill_eq.add_css_class("pill-nowplaying-eq");
+        pill_eq.set_valign(gtk4::Align::Center);
+        for class in ["b1", "b2", "b3"] {
+            let bar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            bar.add_css_class("pill-eq-bar");
+            bar.add_css_class(class);
+            bar.set_valign(gtk4::Align::End);
+            pill_eq.append(&bar);
+        }
+        pill_nowplaying.append(&pill_eq);
+        let pill_nowplaying_title = gtk4::Label::new(None);
+        pill_nowplaying_title.add_css_class("pill-nowplaying-title");
+        pill_nowplaying_title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        pill_nowplaying_title.set_max_width_chars(18);
+        pill_nowplaying.append(&pill_nowplaying_title);
+        let pill_dnd = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_dnd.add_css_class("pill-dnd");
+        pill_dnd.set_valign(gtk4::Align::Center);
+        pill_dnd.set_tooltip_text(Some("Do not disturb is on"));
+        pill_dnd.set_visible(false);
 
         // ── Spotlight pill: auto-hide (BAR-27 phase 1) ────────────────────
         // `[bar.autohide]`: off (`AutoHide::default()`) for every builtin but
@@ -1125,7 +1162,10 @@ impl SimpleComponent for App {
         // mockup's `#time` button). Only the auto-hiding pill themes have a
         // stage to open; on every other theme the click stays a no-op, as
         // before. Wired on both clock variants; only one is ever parented.
-        for clock_widget in [clock_plain_box.upcast_ref::<gtk4::Widget>(), clock_box.upcast_ref()] {
+        for clock_widget in [
+            clock_plain_box.upcast_ref::<gtk4::Widget>(),
+            clock_box.upcast_ref(),
+        ] {
             let click = gtk4::GestureClick::new();
             click.set_button(gtk4::gdk::BUTTON_PRIMARY);
             let s = sender.clone();
@@ -1771,6 +1811,8 @@ impl SimpleComponent for App {
         bar_modules.register("sep", &pill_sep);
         bar_modules.register("flag", &pill_flag);
         bar_modules.register("unread", &pill_unread);
+        bar_modules.register("nowplaying", &pill_nowplaying);
+        bar_modules.register("dnd", &pill_dnd);
 
         // `tray` never appears in a bar slot: it lives in the control-panel
         // popover, but it's keyed here so `reconcile_widgets`' routing finds
@@ -2399,6 +2441,14 @@ impl SimpleComponent for App {
             *shared.surtitle.borrow_mut() = Some(surtitle.clone());
         }
         shared.register_unread_dot(pill_unread.upcast_ref());
+        shared.register_dnd_mark(pill_dnd.upcast_ref());
+        // Under spotlight, `breadbar --history` opens the stage, whose
+        // notifications zone is the history (BAR-45).
+        if init.primary && screenshot_req.is_none() {
+            notifications::set_history_opens_stage(
+                theme::shell_theme().notifications().style == "surtitle",
+            );
+        }
 
         let mut model = App {
             monitor: monitor_name,
@@ -2500,6 +2550,10 @@ impl SimpleComponent for App {
             pill_flag,
             pill_flag_label,
             pill_unread,
+            pill_nowplaying,
+            pill_nowplaying_title,
+            pill_dnd,
+            nowplaying: None,
             pill_sep,
             pill_margin: Rc::new(Cell::new(if autohide_cfg.enabled {
                 pill_margins(&window_spec).0
@@ -2886,6 +2940,7 @@ impl SimpleComponent for App {
         }
         self.shared
             .unregister_unread_dot(self.pill_unread.upcast_ref());
+        self.shared.unregister_dnd_mark(self.pill_dnd.upcast_ref());
         self.stage.window.destroy();
         self.surtitle.destroy();
         self.panels.destroy();
@@ -2992,6 +3047,7 @@ impl SimpleComponent for App {
                 }
             }
             AppInput::StatsUpdate(stats) => {
+                self.stage.set_system(&stats);
                 let cpu = match stats.cpu_temp {
                     Some(t) => format!("{} · {:.0}°", stats.cpu, t),
                     None => stats.cpu,
@@ -3071,6 +3127,19 @@ impl SimpleComponent for App {
                 self.wifi_img.set_icon_name(Some(icon));
             }
             AppInput::TrayUpdate(bar::tray::TrayUpdate::Add { id, icon, title }) => {
+                // Only the primary watches the tray; every monitor's stage
+                // shows it as Background apps.
+                if self.primary {
+                    for (_, ctrl) in &self.satellites {
+                        ctrl.sender()
+                            .emit(AppInput::TrayUpdate(bar::tray::TrayUpdate::Add {
+                                id: id.clone(),
+                                icon: icon.clone(),
+                                title: title.clone(),
+                            }));
+                    }
+                }
+                self.stage.tray_add(&id, icon.as_ref(), &title);
                 if self.tray_items.contains_key(&id) {
                     return;
                 }
@@ -3091,6 +3160,15 @@ impl SimpleComponent for App {
                 self.tray_sep.set_visible(true);
             }
             AppInput::TrayUpdate(bar::tray::TrayUpdate::Remove { id }) => {
+                if self.primary {
+                    for (_, ctrl) in &self.satellites {
+                        ctrl.sender()
+                            .emit(AppInput::TrayUpdate(bar::tray::TrayUpdate::Remove {
+                                id: id.clone(),
+                            }));
+                    }
+                }
+                self.stage.tray_remove(&id);
                 if let Some(btn) = self.tray_items.remove(&id) {
                     self.tray_box.remove(&btn);
                 }
@@ -3101,6 +3179,7 @@ impl SimpleComponent for App {
                 self.tray_sep.set_visible(has_items);
             }
             AppInput::CrumbsStatus(status) => {
+                self.stage.set_wifi_details(Some(&status), None);
                 self.crumbs_status = Some(status);
                 // CrumbsStatus and WifiPopoverData arrive independently (different
                 // pollers); whichever lands second must still repaint the header:
@@ -3110,6 +3189,7 @@ impl SimpleComponent for App {
                 }
             }
             AppInput::WifiPopoverData(data) => {
+                self.stage.set_wifi_details(None, Some(&data));
                 self.wifi_popover_data = Some(data);
                 self.rebuild_wifi_popover(&sender);
             }
@@ -3124,6 +3204,13 @@ impl SimpleComponent for App {
             }
             AppInput::MediaUpdate(state) => {
                 self.stage.set_media(&state);
+                let nowplaying = state
+                    .has_player
+                    .then(|| (state.title.clone(), state.playing));
+                if nowplaying != self.nowplaying {
+                    self.nowplaying = nowplaying;
+                    self.refresh_nowplaying();
+                }
                 if state.has_player {
                     let label = if state.artist.is_empty() {
                         state.title.clone()
@@ -3358,6 +3445,14 @@ impl SimpleComponent for App {
                 }
             }
             AppInput::StageOpenChanged(open) => {
+                tracing::debug!(
+                    target: "breadbar::stage",
+                    open,
+                    autohide = self.autohide_cfg.enabled,
+                    layer = ?self.root.layer(),
+                    mapped = self.root.is_mapped(),
+                    "stage open changed"
+                );
                 // The mockup draws the pill (`z-index:40`) above the stage
                 // (30). Both are layer surfaces here, so the pill moves up to
                 // the Overlay layer while this monitor's stage is open,
@@ -3365,7 +3460,21 @@ impl SimpleComponent for App {
                 // stage has faded out.
                 if open {
                     if self.autohide_cfg.enabled {
-                        self.root.set_layer(Layer::Overlay);
+                        // Deferred a moment: on the stage's first open its own
+                        // layer surface is created in the same instant, and
+                        // Hyprland dropped the pill's layer move sent alongside
+                        // it, leaving the pill under the stage (BAR-47). The
+                        // stage's .28s fade covers the delay.
+                        let root = self.root.clone();
+                        let stage = self.stage.clone();
+                        gtk4::glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(60),
+                            move || {
+                                if stage.is_open() {
+                                    root.set_layer(Layer::Overlay);
+                                }
+                            },
+                        );
                     }
                 } else {
                     let root = self.root.clone();
@@ -3530,6 +3639,24 @@ fn screenshot_sample_widgets() -> Vec<bread_shared::widget::WidgetSpec> {
 /// `.wick.leveling>:not(.level):not(.flag){display:none}`. Hiding (not just
 /// child-visibility) is what drops them from the row's width and spacing,
 /// so the pill shrinks to the level row as the browser's does.
+/// Shrinks the spotlight pill's surface to its content. The pill is anchored
+/// to the top edge only, so its width is its content's; GTK grows a window
+/// whose content needs more room, but never gives space back on its own, so
+/// hiding the workspaces or widgets left a wide, mostly empty pill until
+/// something else (the stage closing, which moves the pill between layers)
+/// forced a fresh configure. Setting the default width to the natural width
+/// makes the next layout shrink it. Deferred a main-loop turn so it measures
+/// the content after the visibility changes that prompted it.
+fn fit_pill_width(root: &gtk4::ApplicationWindow) {
+    let root = root.clone();
+    gtk4::glib::idle_add_local_once(move || {
+        let (_, natural, _, _) = root.measure(gtk4::Orientation::Horizontal, -1);
+        if natural > 0 && root.default_width() != natural {
+            root.set_default_width(natural);
+        }
+    });
+}
+
 fn set_leveling(
     row: &gtk4::Box,
     level: &gtk4::Box,
@@ -3592,11 +3719,52 @@ impl App {
         self.update_pill();
         self.rebuild_buttons(false);
         self.reconcile_all_widgets();
+        self.refresh_nowplaying();
+        fit_pill_width(&self.root);
         self.stage.set_prefs(
             &self.prefs,
             self.prefs
                 .workspaces_or(theme::shell_theme().modules().workspaces.display),
         );
+    }
+
+    /// Shows or hides one pill item. While the pill is showing a level, the
+    /// item stays hidden and is queued to come back (or not) when the level
+    /// ends: showing it now would put it beside the level row (BAR-40).
+    fn set_pill_item_visible(&self, item: &gtk4::Widget, visible: bool) {
+        let mut leveled = self.pill_leveled.borrow_mut();
+        if leveled.is_empty() {
+            item.set_visible(visible);
+            return;
+        }
+        item.set_visible(false);
+        leveled.retain(|w| w != item);
+        if visible {
+            leveled.push(item.clone());
+        }
+    }
+
+    /// The pill's now-playing title: shown while a player plays (and the
+    /// setting is on), bars still while it is paused, gone when it stops.
+    fn refresh_nowplaying(&self) {
+        if !self.autohide_cfg.enabled {
+            return;
+        }
+        let shown = match &self.nowplaying {
+            Some((title, playing)) if self.prefs.nowplaying_on() && !title.is_empty() => {
+                self.pill_nowplaying_title.set_label(title);
+                self.pill_nowplaying.set_tooltip_text(Some(title));
+                if *playing {
+                    self.pill_nowplaying.remove_css_class("paused");
+                } else {
+                    self.pill_nowplaying.add_css_class("paused");
+                }
+                *playing
+            }
+            _ => false,
+        };
+        self.set_pill_item_visible(self.pill_nowplaying.upcast_ref(), shown);
+        fit_pill_width(&self.root);
     }
 
     fn update_pill(&mut self) {
@@ -3693,6 +3861,7 @@ impl App {
             &self.pill_leveled,
             true,
         );
+        fit_pill_width(&self.root);
 
         let token = self.pill_level_token.get().wrapping_add(1);
         self.pill_level_token.set(token);
@@ -3701,10 +3870,12 @@ impl App {
         let center_area = self.center_area.clone();
         let flag = self.pill_flag.clone();
         let leveled = self.pill_leveled.clone();
+        let root = self.root.clone();
         gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
             if tok_cell.get() == token {
                 level_box.set_visible(false);
                 set_leveling(&center_area, &level_box, &flag, &leveled, false);
+                fit_pill_width(&root);
             }
         });
     }
@@ -3759,6 +3930,11 @@ impl App {
     }
 
     fn reconcile_widgets(&mut self, specs: Vec<bread_shared::widget::WidgetSpec>) {
+        // A widget that went away can leave the pill wider than its content
+        // (satellites land here straight from `MirrorWidgets`).
+        if self.autohide_cfg.enabled {
+            fit_pill_width(&self.root);
+        }
         for container in self.widget_containers.values() {
             while let Some(child) = container.first_child() {
                 container.remove(&child);
@@ -3832,7 +4008,10 @@ impl App {
             if key == "tray" {
                 continue;
             }
-            container.set_visible(widgets_shown && container.first_child().is_some());
+            self.set_pill_item_visible(
+                container.upcast_ref(),
+                widgets_shown && container.first_child().is_some(),
+            );
         }
 
         self.widget_tray_section.set_visible(has_tray_widgets);
@@ -4018,6 +4197,10 @@ impl App {
     }
 
     fn rebuild_buttons(&mut self, animate: bool) {
+        // A closed workspace can leave the pill wider than its content.
+        if self.autohide_cfg.enabled {
+            fit_pill_width(&self.root);
+        }
         self.workspace_trail.cancel();
         let prev: std::collections::HashSet<WorkspaceId> =
             self.button_map.keys().copied().collect();
