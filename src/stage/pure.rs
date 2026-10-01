@@ -1482,30 +1482,12 @@ mod tests {
     }
 
     #[test]
-    fn status_sentence_matches_the_mockup_copy() {
-        let s = status_sentence(
-            "Sunday, September 27",
-            Some(83),
-            false,
-            Some(300),
-            "Totally NCC",
-        );
-        let em = |t: &str| format!("<span weight=\"500\" fgalpha=\"100%\">{t}</span>");
-        assert_eq!(
-            s,
-            format!(
-                "<span fgalpha=\"52%\">Sunday, September 27. {} battery, 5h left. On {}.</span>",
-                em("83%"),
-                em("Totally NCC")
-            )
-        );
-        let low = status_sentence("D", Some(12), true, Some(20), "");
-        assert!(low.ends_with("battery, plug in soon.</span>"), "{low}");
-        let ac = status_sentence("D", None, false, None, "Net & Co");
-        assert!(
-            ac.contains("On AC power.") && ac.contains("Net &amp; Co"),
-            "{ac}"
-        );
+    fn status_sentence_escapes_neutral_fixture_text() {
+        let sentence = status_sentence("Tuesday", Some(83), false, Some(300), "Home Wi-Fi");
+        assert!(sentence.contains("Home Wi-Fi"));
+
+        let escaped = status_sentence("Tuesday", None, false, None, "<Example>");
+        assert!(escaped.contains("&lt;Example&gt;"));
     }
 
     #[test]

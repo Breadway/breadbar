@@ -2871,7 +2871,7 @@ impl SimpleComponent for App {
                 model.stage.seed_sample_apps();
                 model
                     .stage
-                    .set_status(Some(83), false, Some(300), "Totally NCC");
+                    .set_status(Some(83), false, Some(300), "Home Wi-Fi");
                 model.stage.set_time(&bar::clock::time());
                 model.stage.seed_sample_notifications();
                 // The pill carries the mockup's two example widgets, which
@@ -3630,8 +3630,8 @@ fn screenshot_sample_widgets() -> Vec<bread_shared::widget::WidgetSpec> {
     use bread_shared::widget::{
         FontWeight, Orientation, WidgetNode, WidgetPlacement, WidgetSpec, WidgetStyle,
     };
-    let label = |t: &str, bold: bool| WidgetNode::Label {
-        text: t.into(),
+    let label = |text: &str, bold: bool| WidgetNode::Label {
+        text: text.into(),
         class: None,
         style: bold.then(|| WidgetStyle {
             weight: Some(FontWeight::Bold),
@@ -3647,15 +3647,15 @@ fn screenshot_sample_widgets() -> Vec<bread_shared::widget::WidgetSpec> {
         on_click: None,
         children,
     };
-    let progress = |v: f64| WidgetNode::Progress {
-        value: v,
+    let progress = |value: f64| WidgetNode::Progress {
+        value,
         class: None,
         style: None,
         on_click: None,
     };
     let spec = |id: &str, placement, tooltip: &str, root| WidgetSpec {
         id: id.into(),
-        module: "example widget".into(),
+        module: "screenshot".into(),
         placement,
         order: 0,
         visible: true,
@@ -3665,19 +3665,19 @@ fn screenshot_sample_widgets() -> Vec<bread_shared::widget::WidgetSpec> {
     };
     vec![
         spec(
-            "example.flight",
+            "screenshot.build_timer",
             WidgetPlacement::LeftOfClock,
-            "Flight VA557\nLands 15:37 Perth time",
-            row(vec![label("\u{2708}", false), label("2h 40m", true)]),
+            "Example build timer",
+            row(vec![label("Build", false), label("12 min", true)]),
         ),
         spec(
-            "example.claude",
+            "screenshot.disk_usage",
             WidgetPlacement::RightOfClock,
-            "Claude usage\nResets 12:20",
+            "Example disk usage",
             row(vec![
-                label("\u{273b}", false),
-                progress(0.81),
-                label("81%", true),
+                label("Disk", false),
+                progress(0.62),
+                label("62%", true),
             ]),
         ),
     ]
