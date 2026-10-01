@@ -563,6 +563,11 @@ pub struct App {
     pill_nowplaying: gtk4::Box,
     pill_nowplaying_title: gtk4::Label,
     pill_dnd: gtk4::Box,
+    pill_battery: gtk4::Box,
+    pill_battery_fill: gtk4::Box,
+    pill_battery_pct: gtk4::Label,
+    /// The last stats poll's battery: `None` on a machine without one.
+    battery: Option<PillBattery>,
     /// The current player's `(title, playing)`, while there is one.
     nowplaying: Option<(String, bool)>,
     /// The workspaces/clock divider; collapses when `display = "none"`
@@ -913,6 +918,30 @@ impl SimpleComponent for App {
         pill_nowplaying_title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         pill_nowplaying_title.set_max_width_chars(18);
         pill_nowplaying.append(&pill_nowplaying_title);
+        // The pill's battery: an outlined gauge whose fill tracks the charge
+        // (sized in `refresh_battery`), its tip, and the percentage.
+        let pill_battery = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        pill_battery.add_css_class("pill-battery");
+        pill_battery.set_valign(gtk4::Align::Center);
+        pill_battery.set_visible(false);
+        let pill_battery_gauge = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_battery_gauge.set_valign(gtk4::Align::Center);
+        let pill_battery_shell = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_battery_shell.add_css_class("pill-battery-shell");
+        pill_battery_shell.set_valign(gtk4::Align::Center);
+        let pill_battery_fill = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_battery_fill.add_css_class("pill-battery-fill");
+        pill_battery_fill.set_halign(gtk4::Align::Start);
+        pill_battery_shell.append(&pill_battery_fill);
+        pill_battery_gauge.append(&pill_battery_shell);
+        let pill_battery_tip = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        pill_battery_tip.add_css_class("pill-battery-tip");
+        pill_battery_tip.set_valign(gtk4::Align::Center);
+        pill_battery_gauge.append(&pill_battery_tip);
+        pill_battery.append(&pill_battery_gauge);
+        let pill_battery_pct = gtk4::Label::new(None);
+        pill_battery_pct.add_css_class("pill-battery-pct");
+        pill_battery.append(&pill_battery_pct);
         let pill_dnd = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         pill_dnd.add_css_class("pill-dnd");
         pill_dnd.set_valign(gtk4::Align::Center);
@@ -1813,6 +1842,7 @@ impl SimpleComponent for App {
         bar_modules.register("unread", &pill_unread);
         bar_modules.register("nowplaying", &pill_nowplaying);
         bar_modules.register("dnd", &pill_dnd);
+        bar_modules.register("pill_battery", &pill_battery);
 
         // `tray` never appears in a bar slot: it lives in the control-panel
         // popover, but it's keyed here so `reconcile_widgets`' routing finds
@@ -2553,6 +2583,10 @@ impl SimpleComponent for App {
             pill_nowplaying,
             pill_nowplaying_title,
             pill_dnd,
+            pill_battery,
+            pill_battery_fill,
+            pill_battery_pct,
+            battery: None,
             nowplaying: None,
             pill_sep,
             pill_margin: Rc::new(Cell::new(if autohide_cfg.enabled {
@@ -2689,6 +2723,13 @@ impl SimpleComponent for App {
                 model.pill_low_battery = true;
                 model.pill_flag.set_visible(true);
                 model.pill_flag_label.set_label("12%");
+                model.battery = Some(PillBattery {
+                    pct: 12,
+                    charging: false,
+                    low: true,
+                    minutes_left: Some(25),
+                });
+                model.refresh_battery();
             }
             if req.view.starts_with("pill-ws-") || req.view.starts_with("stage-") {
                 // The isolated capture session has no Hyprland IPC (same
@@ -3095,7 +3136,16 @@ impl SimpleComponent for App {
                 // soon" warning, meaningless with a charger already
                 // connected.
                 let low = !stats.ac_connected && bar::stats::is_low_battery(stats.bat_pct);
-                self.pill_flag.set_visible(low);
+                self.battery = stats.bat_pct.map(|pct| PillBattery {
+                    pct,
+                    charging: stats.ac_connected,
+                    low,
+                    minutes_left: stats.bat_minutes_left,
+                });
+                // The battery item, when shown, carries the low warning
+                // itself; the flag is for when it is off.
+                self.pill_flag.set_visible(low && !self.battery_item_on());
+                self.refresh_battery();
                 self.pill_flag_label.set_label(&format!("{}%", stats.bat));
                 if low != self.pill_low_battery {
                     self.pill_low_battery = low;
@@ -3639,6 +3689,19 @@ fn screenshot_sample_widgets() -> Vec<bread_shared::widget::WidgetSpec> {
 /// `.wick.leveling>:not(.level):not(.flag){display:none}`. Hiding (not just
 /// child-visibility) is what drops them from the row's width and spacing,
 /// so the pill shrinks to the level row as the browser's does.
+/// The pill battery gauge's inner width in px (`.pill-battery-shell`'s
+/// `min-width` in base.css).
+const PILL_BATTERY_PX: i32 = 18;
+
+/// The pill's battery reading, from the stats poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PillBattery {
+    pct: u8,
+    charging: bool,
+    low: bool,
+    minutes_left: Option<u32>,
+}
+
 /// Shrinks the spotlight pill's surface to its content. The pill is anchored
 /// to the top edge only, so its width is its content's; GTK grows a window
 /// whose content needs more room, but never gives space back on its own, so
@@ -3720,6 +3783,7 @@ impl App {
         self.rebuild_buttons(false);
         self.reconcile_all_widgets();
         self.refresh_nowplaying();
+        self.refresh_battery();
         fit_pill_width(&self.root);
         self.stage.set_prefs(
             &self.prefs,
@@ -3742,6 +3806,47 @@ impl App {
         if visible {
             leveled.push(item.clone());
         }
+    }
+
+    fn battery_item_on(&self) -> bool {
+        self.autohide_cfg.enabled && self.prefs.battery_on() && self.battery.is_some()
+    }
+
+    /// The pill's battery: the gauge filled to the charge, the percentage,
+    /// red when low and accent-filled while charging. Hidden when the
+    /// setting is off or the machine has no battery.
+    fn refresh_battery(&self) {
+        if !self.autohide_cfg.enabled {
+            return;
+        }
+        let shown = self.battery_item_on();
+        if let Some(b) = &self.battery {
+            // The shell's content is `PILL_BATTERY_PX` wide; the fill keeps
+            // at least a sliver so an empty battery still reads as a gauge.
+            let width = (f64::from(PILL_BATTERY_PX) * f64::from(b.pct.min(100)) / 100.0)
+                .round()
+                .max(1.0) as i32;
+            self.pill_battery_fill.set_size_request(width, -1);
+            self.pill_battery_pct.set_label(&format!("{}%", b.pct));
+            for (class, on) in [("charging", b.charging), ("low", b.low)] {
+                if on {
+                    self.pill_battery.add_css_class(class);
+                } else {
+                    self.pill_battery.remove_css_class(class);
+                }
+            }
+            let mut tip = format!("Battery {}%", b.pct);
+            if b.charging {
+                tip.push_str(", charging");
+            } else if let Some(m) = b.minutes_left {
+                tip.push_str(&format!(", {}", stage::pure::format_time_left(m)));
+            }
+            self.pill_battery.set_tooltip_text(Some(&tip));
+            self.pill_flag
+                .set_visible(b.low && !shown && self.pill_leveled.borrow().is_empty());
+        }
+        self.set_pill_item_visible(self.pill_battery.upcast_ref(), shown);
+        fit_pill_width(&self.root);
     }
 
     /// The pill's now-playing title: shown while a player plays (and the

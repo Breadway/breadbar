@@ -264,6 +264,7 @@ struct SettingsPanel {
     autohide: gtk4::Button,
     widgets: gtk4::Button,
     nowplaying: gtk4::Button,
+    battery: gtk4::Button,
     system: gtk4::Button,
     /// None / Current / All, in that order.
     workspaces: [gtk4::Button; 3],
@@ -1062,6 +1063,7 @@ impl Stage {
         set_chip_on(&self.settings.autohide, prefs.autohide_on());
         set_chip_on(&self.settings.widgets, prefs.widgets_on());
         set_chip_on(&self.settings.nowplaying, prefs.nowplaying_on());
+        set_chip_on(&self.settings.battery, prefs.battery_on());
         set_chip_on(&self.settings.system, prefs.system_on());
         self.system.card.set_visible(prefs.system_on());
         for (chip, d) in self.settings.workspaces.iter().zip([
@@ -2744,11 +2746,17 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     let autohide_chip = make_chip("Auto-hide");
     let widgets_chip = make_chip("Widgets");
     let nowplaying_chip = make_chip("Now playing");
+    let battery_chip = make_chip("Battery");
     let system_chip = make_chip("System card");
     let ws_chips = [make_chip("None"), make_chip("Current"), make_chip("All")];
     settings_row.append(&group(
         "Pill",
-        &[&autohide_chip, &widgets_chip, &nowplaying_chip],
+        &[
+            &autohide_chip,
+            &widgets_chip,
+            &nowplaying_chip,
+            &battery_chip,
+        ],
     ));
     settings_row.append(&group(
         "Workspaces",
@@ -2832,6 +2840,7 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
             autohide: autohide_chip,
             widgets: widgets_chip,
             nowplaying: nowplaying_chip,
+            battery: battery_chip,
             system: system_chip,
             workspaces: ws_chips,
             prefs: Cell::new(crate::spotlight_prefs::load()),
@@ -3020,6 +3029,10 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         let s = stage.clone();
         stage.settings.nowplaying.connect_clicked(move |_| {
             s.change_prefs(|p| p.nowplaying = Some(!p.nowplaying_on()));
+        });
+        let s = stage.clone();
+        stage.settings.battery.connect_clicked(move |_| {
+            s.change_prefs(|p| p.battery = Some(!p.battery_on()));
         });
         let s = stage.clone();
         stage.settings.system.connect_clicked(move |_| {
