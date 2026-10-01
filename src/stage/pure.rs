@@ -151,24 +151,119 @@ pub struct OpenWindow {
     pub workspace: i32,
 }
 
-/// Filters `windows` by `query` the mockup's way: a case-insensitive
-/// substring of "`app` `title`" (`hit(a+" "+title,t)`), where `app` is the
-/// window's display name.
-pub fn filter_windows(
+// ── Matching ────────────────────────────────────────────────────────────────
+
+/// How well a query matched one piece of text: lower `rank` sorts first
+/// (0 a prefix, 1 a substring, 2 a scattered subsequence), `spread` breaks
+/// ties between subsequences (the tighter the better), and `positions` are
+/// the matched characters' indices in the text, for highlighting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Match {
+    pub rank: u32,
+    pub spread: usize,
+    pub positions: Vec<usize>,
+}
+
+impl Match {
+    fn key(&self) -> (u32, usize) {
+        (self.rank, self.spread)
+    }
+}
+
+/// Case-insensitive match of `query` against `text`: a substring when there
+/// is one (so "fire" still ranks Firefox exactly as before), otherwise the
+/// query's characters in order anywhere in the text ("kis" finds kitty,
+/// "btset" finds Bluetooth settings). Whitespace in the query is ignored for
+/// the subsequence pass. `None` when the characters are not all there.
+pub fn match_text(query: &str, text: &str) -> Option<Match> {
+    let q: Vec<char> = query.trim().to_lowercase().chars().collect();
+    if q.is_empty() {
+        return Some(Match {
+            rank: 0,
+            spread: 0,
+            positions: Vec::new(),
+        });
+    }
+    let t: Vec<char> = text.to_lowercase().chars().collect();
+    if let Some(at) = t.windows(q.len()).position(|w| w == q.as_slice()) {
+        return Some(Match {
+            rank: if at == 0 { 0 } else { 1 },
+            spread: 0,
+            positions: (at..at + q.len()).collect(),
+        });
+    }
+    let wanted: Vec<char> = q.into_iter().filter(|c| !c.is_whitespace()).collect();
+    if wanted.is_empty() {
+        return None;
+    }
+    // A scattered match must start at a word start and stay compact, or a
+    // short query matches almost any long name letter by letter ("fire"
+    // across "Wi-Fi & internet").
+    let max_spread = 2 * wanted.len() + 2;
+    let mut best: Option<Vec<usize>> = None;
+    for start in 0..t.len() {
+        let word_start = start == 0 || !t[start - 1].is_alphanumeric();
+        if !word_start || t[start] != wanted[0] {
+            continue;
+        }
+        let mut positions = vec![start];
+        for (i, c) in t.iter().enumerate().skip(start + 1) {
+            if positions.len() == wanted.len() {
+                break;
+            }
+            if *c == wanted[positions.len()] {
+                positions.push(i);
+            }
+        }
+        if positions.len() < wanted.len() {
+            continue;
+        }
+        let spread = positions[positions.len() - 1] - start;
+        let better = best.as_ref().is_none_or(|b| spread < b[b.len() - 1] - b[0]);
+        if spread <= max_spread && better {
+            best = Some(positions);
+        }
+    }
+    best.map(|positions| Match {
+        rank: 2,
+        spread: positions[positions.len() - 1] - positions[0],
+        positions,
+    })
+}
+
+/// Sorts `(match, item)` pairs best first, keeping the input order among
+/// equal matches (the launcher's own ranking for apps).
+fn best_first<T>(mut hits: Vec<(Match, T)>) -> Vec<(Match, T)> {
+    hits.sort_by_key(|(m, _)| m.key());
+    hits
+}
+
+/// Matches `windows` against `query`: on the window's title, else on its
+/// app's display name (ranked after every title match), best first.
+pub fn window_hits<'a>(
     query: &str,
-    windows: &[OpenWindow],
+    windows: &'a [OpenWindow],
     apps: &[bread_launcher::DesktopEntry],
-) -> Vec<OpenWindow> {
-    let q = query.trim().to_lowercase();
-    windows
+) -> Vec<(Match, &'a OpenWindow)> {
+    let hits = windows
         .iter()
-        .filter(|w| {
-            format!("{} {}", window_app_name(&w.app, apps), w.title)
-                .to_lowercase()
-                .contains(&q)
+        .filter_map(|w| {
+            if let Some(m) = match_text(query, &w.title) {
+                return Some((m, w));
+            }
+            match_text(query, &window_app_name(&w.app, apps)).map(|m| {
+                (
+                    Match {
+                        rank: m.rank + 3,
+                        spread: m.spread,
+                        positions: Vec::new(),
+                    },
+                    w,
+                )
+            })
         })
-        .cloned()
-        .collect()
+        .collect();
+    best_first(hits)
 }
 
 // ── Result rows/groups (phase 3) ────────────────────────────────────────────
@@ -178,6 +273,8 @@ pub enum ResultKind {
     Window,
     App,
     Command,
+    /// A bos-settings page.
+    Setting,
 }
 
 impl ResultKind {
@@ -186,7 +283,7 @@ impl ResultKind {
     pub fn action_label(self) -> &'static str {
         match self {
             ResultKind::Window => "switch",
-            ResultKind::App => "open",
+            ResultKind::App | ResultKind::Setting => "open",
             ResultKind::Command => "run",
         }
     }
@@ -201,10 +298,13 @@ pub struct ResultRow {
     pub name: String,
     pub sub: String,
     /// What activating the row acts on, unambiguously: a window's Hyprland
-    /// address, an app's desktop-file id, a command's id. Display names
-    /// are not unique (two terminals can share a title), so activation
-    /// never looks a row back up by `name`.
+    /// address, an app's desktop-file id, a command's id, a settings page
+    /// id. Display names are not unique (two terminals can share a title),
+    /// so activation never looks a row back up by `name`.
     pub target: String,
+    /// Indices of the characters of `name` the query matched, highlighted
+    /// in the row.
+    pub marks: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,8 +315,9 @@ pub struct ResultGroup {
 
 /// The stage's full results view for one query, mirroring the mockup's own
 /// `render()`: calc mode shows one answer line, command mode shows one
-/// group, plain-text mode shows "Open windows" then "Apps" (empty groups
-/// dropped), and no rows at all (in any mode) shows the empty-state hint.
+/// group, plain-text mode shows "Open windows", "Apps" then "Settings"
+/// (empty groups dropped), and no rows at all (in any mode) shows the
+/// empty-state hint.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StageResults {
     Calc {
@@ -242,7 +343,11 @@ impl StageResults {
     }
 }
 
-fn window_row(w: &OpenWindow, apps: &[bread_launcher::DesktopEntry]) -> ResultRow {
+fn window_row(
+    w: &OpenWindow,
+    apps: &[bread_launcher::DesktopEntry],
+    marks: Vec<usize>,
+) -> ResultRow {
     let app = window_app_name(&w.app, apps);
     ResultRow {
         kind: ResultKind::Window,
@@ -250,26 +355,40 @@ fn window_row(w: &OpenWindow, apps: &[bread_launcher::DesktopEntry]) -> ResultRo
         name: w.title.clone(),
         sub: format!("{app} · ws {}", w.workspace),
         target: w.address.clone(),
+        marks,
     }
 }
 
-fn app_row(entry: &bread_launcher::DesktopEntry) -> ResultRow {
+fn app_row(entry: &bread_launcher::DesktopEntry, marks: Vec<usize>) -> ResultRow {
     ResultRow {
         kind: ResultKind::App,
         glyph: first_char_upper(&entry.name),
         name: entry.name.clone(),
         sub: app_kind(&entry.categories),
         target: entry.id.clone(),
+        marks,
     }
 }
 
-fn command_row(cmd: &StageCommand) -> ResultRow {
+fn command_row(cmd: &StageCommand, marks: Vec<usize>) -> ResultRow {
     ResultRow {
         kind: ResultKind::Command,
         glyph: "\u{203a}".to_string(),
         name: cmd.name.to_string(),
         sub: cmd.sub.to_string(),
         target: cmd.id.to_string(),
+        marks,
+    }
+}
+
+fn setting_row(page: &SettingsPage, marks: Vec<usize>) -> ResultRow {
+    ResultRow {
+        kind: ResultKind::Setting,
+        glyph: first_char_upper(page.name),
+        name: page.name.to_string(),
+        sub: "settings".to_string(),
+        target: page.id.to_string(),
+        marks,
     }
 }
 
@@ -279,26 +398,149 @@ fn first_char_upper(s: &str) -> String {
         .map_or_else(String::new, |c| c.to_uppercase().collect::<String>())
 }
 
-/// Builds phase 3's grouped results for one query, given the current data
-/// sources. `apps` should already be `bread_launcher::load_sorted_entries`'s
-/// output (ranking is inherited; this only filters and groups). Matching is
-/// the mockup's: a case-insensitive substring, of "`name` `kind`" for apps.
 /// Most rows a result group shows. Every row is a real widget, and a single
 /// letter matches most installed apps (99 rows for "o" on a 129-app machine),
 /// which stalled each keystroke by up to half a second in layout. The stage
 /// also keeps exactly this many pooled row widgets per group.
 pub const MAX_GROUP_ROWS: usize = 8;
 
-/// Most result groups at once (open windows + apps); the pool's size.
-pub const MAX_GROUPS: usize = 2;
+/// The Settings group is a supplement to apps and windows, so it stays short.
+pub const MAX_SETTINGS_ROWS: usize = 4;
 
+/// Most result groups at once (open windows + apps + settings); the pool's
+/// size.
+pub const MAX_GROUPS: usize = 3;
+
+/// One bos-settings page the search can open (`bos-settings --page <id>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsPage {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// Other words people use for it ("wifi", "battery"), matched too.
+    pub keywords: &'static str,
+}
+
+/// The pages people reach for from a search, named as bos-settings' own
+/// sidebar names them.
+pub const SETTINGS_PAGES: &[SettingsPage] = &[
+    SettingsPage {
+        id: "network",
+        name: "Wi-Fi & internet",
+        keywords: "wifi wireless network internet",
+    },
+    SettingsPage {
+        id: "breadcrumbs",
+        name: "Saved networks",
+        keywords: "wifi profiles breadcrumbs",
+    },
+    SettingsPage {
+        id: "bluetooth",
+        name: "Bluetooth",
+        keywords: "bluetooth devices headphones",
+    },
+    SettingsPage {
+        id: "sound",
+        name: "Sound",
+        keywords: "audio volume speakers microphone",
+    },
+    SettingsPage {
+        id: "displays",
+        name: "Displays",
+        keywords: "monitor screen resolution scale",
+    },
+    SettingsPage {
+        id: "appearance",
+        name: "Appearance",
+        keywords: "theme colours wallpaper dark",
+    },
+    SettingsPage {
+        id: "shelltheme",
+        name: "Shell theme",
+        keywords: "bar theme spotlight",
+    },
+    SettingsPage {
+        id: "nightlight",
+        name: "Night light",
+        keywords: "night blue light warm",
+    },
+    SettingsPage {
+        id: "power",
+        name: "Power & battery",
+        keywords: "battery power suspend",
+    },
+    SettingsPage {
+        id: "input",
+        name: "Keyboard & mouse",
+        keywords: "keyboard mouse touchpad input",
+    },
+    SettingsPage {
+        id: "keybinds",
+        name: "Shortcuts",
+        keywords: "keybinds hotkeys shortcuts",
+    },
+    SettingsPage {
+        id: "breadbar",
+        name: "Bar",
+        keywords: "breadbar pill notifications",
+    },
+    SettingsPage {
+        id: "datetime",
+        name: "Date & time",
+        keywords: "clock timezone date time",
+    },
+    SettingsPage {
+        id: "apps",
+        name: "Default apps",
+        keywords: "default applications browser",
+    },
+    SettingsPage {
+        id: "privacy",
+        name: "Privacy & users",
+        keywords: "privacy users accounts",
+    },
+    SettingsPage {
+        id: "updates",
+        name: "Updates",
+        keywords: "updates upgrade packages",
+    },
+];
+
+/// Matches the settings pages against `query`: on the page name, else on
+/// its keywords (ranked after every name match, nothing highlighted).
+pub fn filter_settings(query: &str) -> Vec<(Match, &'static SettingsPage)> {
+    let hits = SETTINGS_PAGES
+        .iter()
+        .filter_map(|p| {
+            if let Some(m) = match_text(query, p.name) {
+                return Some((m, p));
+            }
+            // Keywords only by substring: a scattered subsequence across a
+            // bag of words matches far too much.
+            let q = query.trim().to_lowercase();
+            (!q.is_empty() && p.keywords.contains(&q)).then(|| {
+                (
+                    Match {
+                        rank: 3,
+                        spread: 0,
+                        positions: Vec::new(),
+                    },
+                    p,
+                )
+            })
+        })
+        .collect();
+    best_first(hits)
+}
+
+/// Builds the grouped results for one query, given the current data sources.
+/// `apps` should already be `bread_launcher::load_sorted_entries`'s output:
+/// among equally good matches the launcher's ranking is kept.
 pub fn build_results(
     parsed: &bread_launcher::ParsedQuery,
     windows: &[OpenWindow],
     apps: &[bread_launcher::DesktopEntry],
 ) -> StageResults {
     use bread_launcher::QueryKind;
-    let q = parsed.value.trim().to_lowercase();
     match parsed.kind {
         QueryKind::Calc => StageResults::Calc {
             expr: parsed.value.clone(),
@@ -306,9 +548,9 @@ pub fn build_results(
         },
         QueryKind::Cmd => {
             let rows: Vec<ResultRow> = filter_stage_commands(&parsed.value)
-                .iter()
+                .into_iter()
                 .take(MAX_GROUP_ROWS)
-                .map(command_row)
+                .map(|(m, c)| command_row(c, m.positions))
                 .collect();
             if rows.is_empty() {
                 StageResults::Empty {
@@ -325,34 +567,51 @@ pub fn build_results(
         // the mockup; treated as a plain apps query so a `.`-prefixed query
         // still shows something rather than silently doing nothing.
         QueryKind::Apps | QueryKind::Url => {
-            let win_rows: Vec<ResultRow> = filter_windows(&parsed.value, windows, apps)
-                .iter()
+            let q = &parsed.value;
+            let win_rows: Vec<ResultRow> = window_hits(q, windows, apps)
+                .into_iter()
                 .take(MAX_GROUP_ROWS)
-                .map(|w| window_row(w, apps))
+                .map(|(m, w)| window_row(w, apps, m.positions))
                 .collect();
-            let app_rows: Vec<ResultRow> = apps
+            let app_hits = apps
                 .iter()
-                .filter(|e| {
-                    format!("{} {}", e.name, app_kind(&e.categories))
-                        .to_lowercase()
-                        .contains(&q)
+                .filter_map(|e| {
+                    if let Some(m) = match_text(q, &e.name) {
+                        return Some((m, e));
+                    }
+                    // The app's kind ("browser") by substring, as before.
+                    let ql = q.trim().to_lowercase();
+                    app_kind(&e.categories).contains(&ql).then(|| {
+                        (
+                            Match {
+                                rank: 3,
+                                spread: 0,
+                                positions: Vec::new(),
+                            },
+                            e,
+                        )
+                    })
                 })
-                .take(MAX_GROUP_ROWS)
-                .map(app_row)
                 .collect();
-            let mut groups = Vec::new();
-            if !win_rows.is_empty() {
-                groups.push(ResultGroup {
-                    title: "Open windows",
-                    rows: win_rows,
-                });
-            }
-            if !app_rows.is_empty() {
-                groups.push(ResultGroup {
-                    title: "Apps",
-                    rows: app_rows,
-                });
-            }
+            let app_rows: Vec<ResultRow> = best_first(app_hits)
+                .into_iter()
+                .take(MAX_GROUP_ROWS)
+                .map(|(m, e)| app_row(e, m.positions))
+                .collect();
+            let setting_rows: Vec<ResultRow> = filter_settings(q)
+                .into_iter()
+                .take(MAX_SETTINGS_ROWS)
+                .map(|(m, p)| setting_row(p, m.positions))
+                .collect();
+            let groups: Vec<ResultGroup> = [
+                ("Open windows", win_rows),
+                ("Apps", app_rows),
+                ("Settings", setting_rows),
+            ]
+            .into_iter()
+            .filter(|(_, rows)| !rows.is_empty())
+            .map(|(title, rows)| ResultGroup { title, rows })
+            .collect();
             if groups.is_empty() {
                 StageResults::Empty {
                     query: parsed.value.clone(),
@@ -361,6 +620,26 @@ pub fn build_results(
                 StageResults::Groups(groups)
             }
         }
+    }
+}
+
+/// What the calculator shows for `eval_calc`'s answer. `bread_launcher`
+/// reports a half-typed sum ("=2*") as "err" and characters it cannot
+/// evaluate at all ("=2^10") as "bad expr"; neither is a result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CalcView {
+    /// Nothing to show yet: "…" and "keep typing".
+    Pending,
+    /// The expression uses something the calculator cannot do.
+    Unsupported,
+    Answer(String),
+}
+
+pub fn calc_view(answer: Option<&str>) -> CalcView {
+    match answer {
+        None | Some("err") => CalcView::Pending,
+        Some("bad expr") => CalcView::Unsupported,
+        Some(a) => CalcView::Answer(a.to_string()),
     }
 }
 
@@ -469,6 +748,19 @@ pub fn break_markup_at_spaces(markup: &str, after: &[usize]) -> String {
     out
 }
 
+/// One history entry as the notifications zone needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteIn<T: Clone> {
+    pub id: u32,
+    pub app: String,
+    pub title: String,
+    pub body: String,
+    pub time: T,
+    pub critical: bool,
+    /// `(key, label)` pairs the sender offered and can still receive.
+    pub actions: Vec<(String, String)>,
+}
+
 /// One notification row after stacking: consecutive entries with the same
 /// app and message collapse into one row with a count and the newest time,
 /// the mockup's `top.n++;top.t=now()` (`×3`).
@@ -484,30 +776,72 @@ pub struct NoteRow<T: Clone> {
     pub count: usize,
     /// Every stacked entry's id, so dismissing the row removes them all.
     pub ids: Vec<u32>,
+    /// Any stacked entry was critical.
+    pub critical: bool,
+    /// The newest entry's actions, as buttons.
+    pub actions: Vec<(String, String)>,
 }
 
-/// Stacks `entries` (newest first: `(id, app, title, body, time)`) into rows.
-/// Only entries whose app, title AND body all match stack, so two different
-/// messages that share a title stay separate.
-pub fn stack_notes<T: Clone>(entries: &[(u32, String, String, String, T)]) -> Vec<NoteRow<T>> {
+/// Stacks `entries` (newest first) into rows. Only entries whose app, title
+/// AND body all match stack, so two different messages that share a title
+/// stay separate. Critical rows are then pinned above the rest, each group
+/// keeping its newest-first order.
+pub fn stack_notes<T: Clone>(entries: &[NoteIn<T>]) -> Vec<NoteRow<T>> {
     let mut rows: Vec<NoteRow<T>> = Vec::new();
-    for (id, app, msg, body, time) in entries {
+    for e in entries {
         match rows.last_mut() {
-            Some(last) if &last.app == app && &last.msg == msg && &last.body == body => {
+            Some(last) if last.app == e.app && last.msg == e.title && last.body == e.body => {
                 last.count += 1;
-                last.ids.push(*id);
+                last.ids.push(e.id);
+                last.critical |= e.critical;
             }
             _ => rows.push(NoteRow {
-                app: app.clone(),
-                msg: msg.clone(),
-                body: body.clone(),
-                time: time.clone(),
+                app: e.app.clone(),
+                msg: e.title.clone(),
+                body: e.body.clone(),
+                time: e.time.clone(),
                 count: 1,
-                ids: vec![*id],
+                ids: vec![e.id],
+                critical: e.critical,
+                actions: e.actions.clone(),
             }),
         }
     }
-    rows
+    let (mut pinned, rest): (Vec<_>, Vec<_>) = rows.into_iter().partition(|r| r.critical);
+    pinned.extend(rest);
+    pinned
+}
+
+/// How many notification rows show before "Show all".
+pub const NOTES_COLLAPSED: usize = 5;
+
+/// The buttons a notification row shows for `actions`: its own actions in
+/// the sender's order, with the spec's `default` action named "Open". The
+/// inline-reply action needs a text field the stage does not have, so it is
+/// left to the sender's own window.
+pub fn note_buttons(actions: &[(String, String)], inline_reply_key: &str) -> Vec<(String, String)> {
+    actions
+        .iter()
+        .filter(|(key, _)| key != inline_reply_key)
+        .map(|(key, label)| {
+            let label = if key == "default" && (label.is_empty() || label == "default") {
+                "Open".to_string()
+            } else {
+                label.clone()
+            };
+            (key.clone(), label)
+        })
+        .take(3)
+        .collect()
+}
+
+/// A network rate for the System card: "84 KB/s", "1.2 MB/s".
+pub fn format_rate(kbs: f32) -> String {
+    if kbs >= 1000.0 {
+        format!("{:.1} MB/s", kbs / 1024.0)
+    } else {
+        format!("{:.0} KB/s", kbs.max(0.0))
+    }
 }
 
 /// A short, lower-case kind for an app row's sub label (the mockup's
@@ -556,6 +890,12 @@ pub enum CommandAction {
     Shell(&'static str),
     /// Flip do-not-disturb (handled in-process).
     ToggleDnd,
+    /// Flip the Wi-Fi radio.
+    ToggleWifi,
+    /// Flip the Bluetooth adapter's power.
+    ToggleBluetooth,
+    /// Empty the notification history.
+    ClearNotifications,
 }
 
 /// One entry in the stage's `>` command list.
@@ -568,9 +908,10 @@ pub struct StageCommand {
     pub action: CommandAction,
 }
 
-/// The mockup's `CMDS`, in order, each wired to the real tool it names.
-/// Kept here rather than in `bread_launcher::builtin_commands` so breadbox's
-/// own command palette is unaffected.
+/// The mockup's `CMDS`, in order, each wired to the real tool it names, then
+/// BAR-38's radio and notification commands. Kept here rather than in
+/// `bread_launcher::builtin_commands` so breadbox's own command palette is
+/// unaffected.
 pub const STAGE_COMMANDS: &[StageCommand] = &[
     StageCommand {
         id: "lock",
@@ -602,17 +943,49 @@ pub const STAGE_COMMANDS: &[StageCommand] = &[
         sub: "notifications",
         action: CommandAction::ToggleDnd,
     },
+    StageCommand {
+        id: "wifi",
+        name: "Toggle Wi-Fi",
+        sub: "network",
+        action: CommandAction::ToggleWifi,
+    },
+    StageCommand {
+        id: "bluetooth",
+        name: "Toggle Bluetooth",
+        sub: "bluetooth",
+        action: CommandAction::ToggleBluetooth,
+    },
+    StageCommand {
+        id: "clear-notifications",
+        name: "Clear notifications",
+        sub: "notifications",
+        action: CommandAction::ClearNotifications,
+    },
 ];
 
-/// The mockup's command filter: a case-insensitive substring of
-/// "`name` `sub`" (`hit(n+" "+s,t)`); an empty query lists everything.
-pub fn filter_stage_commands(query: &str) -> Vec<StageCommand> {
+/// Filters the command list: a match on the name, else a substring of the
+/// owning tool, best first; an empty query lists everything in order.
+pub fn filter_stage_commands(query: &str) -> Vec<(Match, &'static StageCommand)> {
     let q = query.trim().to_lowercase();
-    STAGE_COMMANDS
+    let hits = STAGE_COMMANDS
         .iter()
-        .filter(|c| format!("{} {}", c.name, c.sub).to_lowercase().contains(&q))
-        .copied()
-        .collect()
+        .filter_map(|c| {
+            if let Some(m) = match_text(query, c.name) {
+                return Some((m, c));
+            }
+            c.sub.contains(&q).then(|| {
+                (
+                    Match {
+                        rank: 3,
+                        spread: 0,
+                        positions: Vec::new(),
+                    },
+                    c,
+                )
+            })
+        })
+        .collect();
+    best_first(hits)
 }
 
 /// The display name for a window's app: the matching desktop entry's name
@@ -712,14 +1085,50 @@ pub fn card_parts(spec: &bread_shared::widget::WidgetSpec) -> CardParts {
     }
 }
 
+/// Which keys the footer describes: they depend on what Enter would do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HintMode {
+    Idle,
+    Search,
+    Calc,
+    Command,
+}
+
+impl HintMode {
+    pub fn from_query(kind: bread_launcher::QueryKind, query_empty: bool) -> Self {
+        use bread_launcher::QueryKind;
+        match kind {
+            _ if query_empty => HintMode::Idle,
+            QueryKind::Calc => HintMode::Calc,
+            QueryKind::Cmd => HintMode::Command,
+            QueryKind::Apps | QueryKind::Url => HintMode::Search,
+        }
+    }
+}
+
 /// The key-hint footer (`.foot`): each hint's key and its description.
-pub const FOOTER_HINTS: &[(&str, &str)] = &[
-    ("\u{2190}\u{2192}\u{2191}\u{2193}", "move"),
-    ("enter", "open"),
-    ("=", "calculate"),
-    (">", "command"),
-    ("esc", "close"),
-];
+pub fn footer_hints(mode: HintMode) -> &'static [(&'static str, &'static str)] {
+    match mode {
+        HintMode::Idle => &[
+            ("\u{2190}\u{2192}\u{2191}\u{2193}", "move"),
+            ("enter", "open"),
+            ("=", "calculate"),
+            (">", "command"),
+            ("esc", "close"),
+        ],
+        HintMode::Search => &[
+            ("\u{2191}\u{2193}", "move"),
+            ("enter", "open or switch"),
+            ("esc", "clear"),
+        ],
+        HintMode::Calc => &[("enter", "copy answer"), ("esc", "clear")],
+        HintMode::Command => &[
+            ("\u{2191}\u{2193}", "move"),
+            ("enter", "run"),
+            ("esc", "clear"),
+        ],
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -878,7 +1287,7 @@ mod tests {
         assert!(pc.armed_id().is_none());
     }
 
-    // ---- filter_windows --------------------------------------------------
+    // ---- window_hits --------------------------------------------------
 
     #[test]
     fn filter_windows_matches_app_or_title() {
@@ -886,17 +1295,17 @@ mod tests {
             window("firefox", "breadboard: ECO board", 1),
             window("kitty", "~/Projects/breadbar", 1),
         ];
-        let hits = filter_windows("bread", &windows, &[]);
+        let hits = window_hits("bread", &windows, &[]);
         assert_eq!(hits.len(), 2);
-        let hits = filter_windows("firefox", &windows, &[]);
+        let hits = window_hits("firefox", &windows, &[]);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].app, "firefox");
+        assert_eq!(hits[0].1.app, "firefox");
     }
 
     #[test]
     fn filter_windows_empty_query_matches_all() {
         let windows = vec![window("firefox", "a", 1), window("kitty", "b", 2)];
-        assert_eq!(filter_windows("", &windows, &[]).len(), 2);
+        assert_eq!(window_hits("", &windows, &[]).len(), 2);
     }
 
     // ---- build_results --------------------------------------------------
@@ -968,7 +1377,18 @@ mod tests {
         match build_results(&parsed("shell"), &windows, &apps) {
             StageResults::Groups(groups) => {
                 assert!(groups.len() <= MAX_GROUPS);
-                assert!(groups.iter().all(|g| g.rows.len() == MAX_GROUP_ROWS));
+                for g in &groups {
+                    let cap = if g.title == "Settings" {
+                        MAX_SETTINGS_ROWS
+                    } else {
+                        MAX_GROUP_ROWS
+                    };
+                    assert!(g.rows.len() <= cap, "{}", g.title);
+                }
+                assert!(groups
+                    .iter()
+                    .filter(|g| g.title != "Settings")
+                    .all(|g| g.rows.len() == MAX_GROUP_ROWS));
             }
             other => panic!("expected Groups, got {other:?}"),
         }
@@ -1003,11 +1423,11 @@ mod tests {
         let r = StageResults::Groups(vec![
             ResultGroup {
                 title: "Open windows",
-                rows: vec![window_row(&window("firefox", "a", 1), &[])],
+                rows: vec![window_row(&window("firefox", "a", 1), &[], vec![])],
             },
             ResultGroup {
                 title: "Apps",
-                rows: vec![app_row(&entry("Firefox"))],
+                rows: vec![app_row(&entry("Firefox"), vec![])],
             },
         ]);
         assert_eq!(r.rows().len(), 2);
@@ -1020,6 +1440,7 @@ mod tests {
         assert_eq!(ResultKind::Window.action_label(), "switch");
         assert_eq!(ResultKind::App.action_label(), "open");
         assert_eq!(ResultKind::Command.action_label(), "run");
+        assert_eq!(ResultKind::Setting.action_label(), "open");
     }
 
     // ---- clamp_selection --------------------------------------------------
@@ -1089,9 +1510,7 @@ mod tests {
 
     #[test]
     fn identical_consecutive_notes_stack() {
-        let e = |id: u32, app: &str, msg: &str, t: u32| {
-            (id, app.to_string(), msg.to_string(), String::new(), t)
-        };
+        let e = |id: u32, app: &str, msg: &str, t: u32| note(id, app, msg, "", t, false);
         let rows = stack_notes(&[
             e(5, "kitty", "waiting", 50),
             e(4, "kitty", "waiting", 40),
@@ -1108,15 +1527,7 @@ mod tests {
 
     #[test]
     fn same_title_with_a_different_body_does_not_stack() {
-        let e = |id: u32, body: &str| {
-            (
-                id,
-                "chat".to_string(),
-                "bread".to_string(),
-                body.to_string(),
-                id,
-            )
-        };
+        let e = |id: u32, body: &str| note(id, "chat", "bread", body, id, false);
         let rows = stack_notes(&[e(3, "hello"), e(2, "hello"), e(1, "different")]);
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[0].count, rows[0].body.as_str()), (2, "hello"));
@@ -1142,17 +1553,19 @@ mod tests {
                 "Reload bar",
                 "Switch theme",
                 "Take screenshot",
-                "Toggle do not disturb"
+                "Toggle do not disturb",
+                "Toggle Wi-Fi",
+                "Toggle Bluetooth",
+                "Clear notifications",
             ]
         );
-        assert_eq!(filter_stage_commands("").len(), 5);
-        assert_eq!(filter_stage_commands("breadshot")[0].id, "screenshot");
-        assert_eq!(filter_stage_commands("THEME")[0].id, "switch-theme");
+        let first = |q: &str| filter_stage_commands(q)[0].1;
+        assert_eq!(filter_stage_commands("").len(), STAGE_COMMANDS.len());
+        assert_eq!(first("breadshot").id, "screenshot");
+        assert_eq!(first("THEME").id, "switch-theme");
         assert!(filter_stage_commands("zzz").is_empty());
-        assert_eq!(
-            filter_stage_commands("disturb")[0].action,
-            CommandAction::ToggleDnd
-        );
+        assert_eq!(first("disturb").action, CommandAction::ToggleDnd);
+        assert_eq!(first("wifi").action, CommandAction::ToggleWifi);
     }
 
     #[test]
@@ -1165,7 +1578,7 @@ mod tests {
         assert_eq!(window_app_name("firefox", &apps), "Firefox");
         assert_eq!(window_app_name("kitty", &apps), "Kitty");
         assert_eq!(window_app_name("mystery", &apps), "mystery");
-        let row = window_row(&window("firefox", "Arch Wiki", 1), &apps);
+        let row = window_row(&window("firefox", "Arch Wiki", 1), &apps, vec![]);
         assert_eq!(row.sub, "Firefox · ws 1");
         assert_eq!(row.glyph, "F");
     }
@@ -1175,10 +1588,149 @@ mod tests {
         let mut ff = entry("Firefox");
         ff.categories = vec!["WebBrowser".into()];
         let r = build_results(&parsed("browser"), &[], &[ff]);
-        assert_eq!(r.rows().len(), 1);
-        // Subsequence-only matches are not the mockup's behaviour.
-        let r = build_results(&parsed("ffx"), &[], &[entry("Firefox")]);
-        assert!(matches!(r, StageResults::Empty { .. }));
+        let apps: Vec<_> = r
+            .rows()
+            .into_iter()
+            .filter(|r| r.kind == ResultKind::App)
+            .collect();
+        assert_eq!(apps.len(), 1);
+        // "browser" is also a keyword of the Default apps settings page.
+        assert!(r.rows().iter().any(|r| r.target == "apps"));
+    }
+
+    // ---- BAR-38 --------------------------------------------------------------
+
+    fn note(id: u32, app: &str, title: &str, body: &str, t: u32, critical: bool) -> NoteIn<u32> {
+        NoteIn {
+            id,
+            app: app.into(),
+            title: title.into(),
+            body: body.into(),
+            time: t,
+            critical,
+            actions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn match_prefers_prefix_then_substring_then_subsequence() {
+        let prefix = match_text("fire", "Firefox").unwrap();
+        assert_eq!(
+            (prefix.rank, prefix.positions.clone()),
+            (0, vec![0, 1, 2, 3])
+        );
+        let sub = match_text("fox", "Firefox").unwrap();
+        assert_eq!((sub.rank, sub.positions.clone()), (1, vec![4, 5, 6]));
+        let scattered = match_text("kty", "Kitty").unwrap();
+        assert_eq!(
+            (scattered.rank, scattered.positions.clone()),
+            (2, vec![0, 2, 4])
+        );
+        let words = match_text("wsh", "web shell").unwrap();
+        assert_eq!(words.positions, vec![0, 4, 5]);
+        assert!(match_text("zq", "Firefox").is_none());
+        // Too spread out, or not starting a word: no match.
+        assert!(match_text("fire", "Wi-Fi & internet").is_none());
+        assert_eq!(match_text("tty", "Kitty").map(|m| m.rank), Some(1));
+        assert!(match_text("tty", "Kit ty").is_none());
+        assert!(match_text("", "anything").is_some());
+    }
+
+    #[test]
+    fn loose_matches_rank_after_exact_ones_and_carry_highlights() {
+        let apps = vec![entry("Files"), entry("Kitty")];
+        let r = build_results(&parsed("kty"), &[], &apps);
+        let rows = r.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Kitty");
+        assert_eq!(rows[0].marks, vec![0, 2, 4]);
+        // A substring still outranks a scattered match, whatever the order.
+        let apps = vec![entry("Firefox"), entry("Shell for fox")];
+        let r = build_results(&parsed("fox"), &[], &apps);
+        assert_eq!(r.rows()[0].name, "Firefox");
+    }
+
+    #[test]
+    fn settings_pages_match_by_name_or_keyword() {
+        let r = build_results(&parsed("wifi"), &[], &[]);
+        let StageResults::Groups(groups) = r else {
+            panic!("expected groups");
+        };
+        assert_eq!(groups[0].title, "Settings");
+        assert_eq!(groups[0].rows[0].target, "network");
+        assert_eq!(groups[0].rows[0].kind, ResultKind::Setting);
+        let r = build_results(&parsed("blue"), &[], &[]);
+        assert_eq!(r.rows()[0].target, "bluetooth");
+        assert_eq!(r.rows()[0].marks, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn calc_view_hides_errors_while_typing() {
+        assert_eq!(calc_view(None), CalcView::Pending);
+        assert_eq!(calc_view(Some("err")), CalcView::Pending);
+        assert_eq!(calc_view(Some("bad expr")), CalcView::Unsupported);
+        assert_eq!(calc_view(Some("87")), CalcView::Answer("87".into()));
+        let half = build_results(&parsed("=2*"), &[], &[]);
+        let StageResults::Calc { answer, .. } = half else {
+            panic!("expected calc");
+        };
+        assert_eq!(calc_view(answer.as_deref()), CalcView::Pending);
+    }
+
+    #[test]
+    fn footer_hints_follow_the_mode() {
+        use bread_launcher::QueryKind;
+        assert_eq!(HintMode::from_query(QueryKind::Calc, true), HintMode::Idle);
+        assert_eq!(HintMode::from_query(QueryKind::Calc, false), HintMode::Calc);
+        assert_eq!(
+            HintMode::from_query(QueryKind::Cmd, false),
+            HintMode::Command
+        );
+        let enter = |m| {
+            footer_hints(m)
+                .iter()
+                .find(|(k, _)| *k == "enter")
+                .map(|(_, w)| *w)
+        };
+        assert_eq!(enter(HintMode::Idle), Some("open"));
+        assert_eq!(enter(HintMode::Calc), Some("copy answer"));
+        assert_eq!(enter(HintMode::Command), Some("run"));
+    }
+
+    #[test]
+    fn critical_notes_are_pinned_first() {
+        let rows = stack_notes(&[
+            note(3, "chat", "hi", "", 30, false),
+            note(2, "power", "Battery low", "", 20, true),
+            note(1, "mail", "new", "", 10, false),
+        ]);
+        let order: Vec<_> = rows.iter().map(|r| r.ids[0]).collect();
+        assert_eq!(order, vec![2, 3, 1]);
+        assert!(rows[0].critical && !rows[1].critical);
+    }
+
+    #[test]
+    fn note_buttons_name_default_and_skip_inline_reply() {
+        let a = |k: &str, l: &str| (k.to_string(), l.to_string());
+        let buttons = note_buttons(
+            &[
+                a("default", ""),
+                a("inline-reply", "Reply"),
+                a("mark-read", "Mark read"),
+            ],
+            "inline-reply",
+        );
+        assert_eq!(
+            buttons,
+            vec![a("default", "Open"), a("mark-read", "Mark read")]
+        );
+    }
+
+    #[test]
+    fn rates_read_as_kb_then_mb() {
+        assert_eq!(format_rate(84.2), "84 KB/s");
+        assert_eq!(format_rate(1228.8), "1.2 MB/s");
+        assert_eq!(format_rate(-3.0), "0 KB/s");
     }
 
     #[test]
