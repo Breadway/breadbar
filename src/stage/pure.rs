@@ -1482,21 +1482,15 @@ mod tests {
     }
 
     #[test]
-    fn status_sentence_matches_the_mockup_copy() {
-        let s = status_sentence(
-            "Sunday, September 27",
-            Some(83),
-            false,
-            Some(300),
-            "Totally NCC",
-        );
+    fn status_sentence_matches_the_mockup_copy_with_neutral_text() {
+        let s = status_sentence("Tuesday", Some(83), false, Some(300), "Home Wi-Fi");
         let em = |t: &str| format!("<span weight=\"500\" fgalpha=\"100%\">{t}</span>");
         assert_eq!(
             s,
             format!(
-                "<span fgalpha=\"52%\">Sunday, September 27. {} battery, 5h left. On {}.</span>",
+                "<span fgalpha=\"52%\">Tuesday. {} battery, 5h left. On {}.</span>",
                 em("83%"),
-                em("Totally NCC")
+                em("Home Wi-Fi")
             )
         );
         let low = status_sentence("D", Some(12), true, Some(20), "");
@@ -1506,6 +1500,8 @@ mod tests {
             ac.contains("On AC power.") && ac.contains("Net &amp; Co"),
             "{ac}"
         );
+        let escaped = status_sentence("D", None, false, None, "<Example>");
+        assert!(escaped.contains("&lt;Example&gt;"), "{escaped}");
     }
 
     #[test]
@@ -1743,12 +1739,12 @@ mod tests {
             on_click: None,
         };
         let spec = WidgetSpec {
-            id: "claude.usage".into(),
-            module: "claude".into(),
+            id: "disk.usage".into(),
+            module: "disk".into(),
             placement: WidgetPlacement::RightOfClock,
             order: 0,
             visible: true,
-            tooltip: Some("Claude usage\nResets 12:20".into()),
+            tooltip: Some("Disk usage\nSample data".into()),
             root: WidgetNode::Box {
                 orientation: Orientation::Horizontal,
                 spacing: None,
@@ -1768,9 +1764,9 @@ mod tests {
             updated_at: 0,
         };
         let c = card_parts(&spec);
-        assert_eq!(c.title, "Claude usage");
-        assert_eq!(c.tag, "claude");
-        assert_eq!(c.sub.as_deref(), Some("Resets 12:20"));
+        assert_eq!(c.title, "Disk usage");
+        assert_eq!(c.tag, "disk");
+        assert_eq!(c.sub.as_deref(), Some("Sample data"));
         assert_eq!(c.rail, Some(0.81));
         match c.value {
             Some(WidgetNode::Box { children, .. }) => assert_eq!(children.len(), 1),
@@ -1782,7 +1778,28 @@ mod tests {
             ..spec
         };
         let c = card_parts(&bare);
-        assert_eq!((c.title.as_str(), c.sub, c.rail), ("claude", None, None));
+        assert_eq!((c.title.as_str(), c.sub, c.rail), ("disk", None, None));
+    }
+
+    /// BAR-52: the `--screenshot` fixtures must not carry personal data.
+    /// This scans the two files that build them (`main.rs`'s capture setup
+    /// and `stage/mod.rs`'s sample notifications) for the strings that were
+    /// replaced with neutral placeholders: a real network name, a real city,
+    /// an artist/track pair, and personal AI-tool strings.
+    #[test]
+    fn screenshot_sources_carry_no_personal_fixture_strings() {
+        const DENYLIST: &[&str] = &["Totally NCC", "Perth", "Claude", "Kavinsky", "Nightcall"];
+        for (name, source) in [
+            ("main.rs", include_str!("../main.rs")),
+            ("stage/mod.rs", include_str!("mod.rs")),
+        ] {
+            for banned in DENYLIST {
+                assert!(
+                    !source.contains(banned),
+                    "{name} still contains the personal fixture string {banned:?}"
+                );
+            }
+        }
     }
 
     #[test]
