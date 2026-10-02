@@ -2806,8 +2806,8 @@ impl SimpleComponent for App {
                 // overwrite it is skipped for these views (see the poller
                 // spawns above).
                 model.stage.set_media(&bar::media::MediaState {
-                    title: "Nightcall".into(),
-                    artist: "Kavinsky".into(),
+                    title: "Sample Track".into(),
+                    artist: "Example Artist".into(),
                     playing: true,
                     has_player: true,
                     player: "Spotify".into(),
@@ -2857,7 +2857,7 @@ impl SimpleComponent for App {
                     },
                     stage::pure::OpenWindow {
                         address: "0x4".into(),
-                        title: "Nightcall \u{00b7} Kavinsky".into(),
+                        title: "Sample Track \u{00b7} Example Artist".into(),
                         app: "spotify".into(),
                         workspace: 2,
                     },
@@ -2953,7 +2953,7 @@ impl SimpleComponent for App {
                         &surtitle_sender,
                         AppInput::NotificationArrived {
                             app: "kitty".into(),
-                            summary: "Claude is waiting for your input".into(),
+                            summary: "Task complete".into(),
                             critical: false,
                         },
                     ),
