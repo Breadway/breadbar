@@ -51,9 +51,13 @@ jobs:
             echo "::error::BAKERY_MINISIGN_SEC_KEY_PATH secret not set; refusing to regenerate index.json unsigned (would leave a stale signature mismatched against fresh content and break bakery for everyone)"
             exit 1
           fi
-          rm -rf /tmp/bread-ecosystem-ci
-          git clone https://git.breadway.dev/Breadway/bread-ecosystem.git /tmp/bread-ecosystem-ci
-          bash /tmp/bread-ecosystem-ci/scripts/gen-index.sh
+          # Use a distinct prefix so older workflows' broad cleanup cannot
+          # remove this job's active checkout during the rollout, and let the
+          # EXIT trap clean up after a failed clone or index run too.
+          ECOSYSTEM_CI_DIR="$(mktemp -d /tmp/bread-index-release-XXXXXX)"
+          trap 'rm -rf -- "${ECOSYSTEM_CI_DIR}"' EXIT
+          git clone https://git.breadway.dev/Breadway/bread-ecosystem.git "${ECOSYSTEM_CI_DIR}"
+          bash "${ECOSYSTEM_CI_DIR}/scripts/gen-index.sh"
 
       - name: upload to GitHub Release
         env:
