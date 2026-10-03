@@ -1113,17 +1113,41 @@ impl Stage {
         let mut store = self.shared.store.lock().unwrap();
         store.clear();
         for (id, app, summary, body, received) in [
-            (5u32, "kitty", "Claude is waiting for your input", "", at(6)),
-            (4, "kitty", "Claude is waiting for your input", "", at(8)),
-            (3, "kitty", "Claude is waiting for your input", "", at(9)),
+            (
+                5u32,
+                "Breadbar",
+                "Build finished",
+                "The workspace checks passed.",
+                at(6),
+            ),
+            (
+                4,
+                "Terminal",
+                "Task complete",
+                "The sample command finished successfully.",
+                at(8),
+            ),
+            (
+                3,
+                "Calendar",
+                "Sample event",
+                "Design review starts in 15 minutes.",
+                at(9),
+            ),
             (
                 2,
-                "breadshot",
-                "Screenshot",
-                "Saved to ~/Pictures/Screenshots/2026-09-26.png",
+                "Disk monitor",
+                "Storage report",
+                "Project files use 62% of sample storage.",
                 at(69),
             ),
-            (1, "breadcrumbs", "Back online on Totally NCC", "", at(166)),
+            (
+                1,
+                "System update",
+                "Update ready",
+                "Restart when convenient to apply changes.",
+                at(166),
+            ),
         ] {
             store.push_back(history::Entry {
                 id,
