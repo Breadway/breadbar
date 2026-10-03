@@ -2464,6 +2464,38 @@ impl SimpleComponent for App {
             .shared
             .clone()
             .unwrap_or_else(|| stage::Shared::new(notif_store));
+        if init.primary && screenshot_req.is_none() {
+            let prefs = notifications::preferences::load();
+            shared.paint_dnd(notifications::preferences::effective_dnd(
+                &prefs,
+                notifications::preferences::clock_minute(),
+            ));
+            let provider = gtk4::CssProvider::new();
+            provider.load_from_string(&notifications::preferences::text_css());
+            if let Some(display) = gtk4::gdk::Display::default() {
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
+                );
+            }
+            let mut previous_css = notifications::preferences::text_css();
+            let shared_policy = shared.clone();
+            gtk4::glib::timeout_add_seconds_local(2, move || {
+                let css = notifications::preferences::text_css();
+                if css != previous_css {
+                    provider.load_from_string(&css);
+                    previous_css = css;
+                }
+                let prefs = notifications::preferences::load();
+                shared_policy.refresh_open_notifications();
+                shared_policy.paint_dnd(notifications::preferences::effective_dnd(
+                    &prefs,
+                    notifications::preferences::clock_minute(),
+                ));
+                gtk4::glib::ControlFlow::Continue
+            });
+        }
         let dnd = shared.dnd.clone();
         let stage = stage::build(sender.clone(), shared.clone());
         let surtitle = surtitle::spawn();
@@ -3458,7 +3490,7 @@ impl SimpleComponent for App {
                 // the stage's 30); the dot only lights while no stage is
                 // open. Peeks and the dot reach every monitor's pill.
                 self.shared.refresh_open_notifications();
-                if self.dnd.get() {
+                if self.dnd.get() && !critical {
                     return;
                 }
                 if self.shared.open_stage().is_none() {

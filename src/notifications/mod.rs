@@ -1,5 +1,6 @@
 pub mod history;
 pub mod popup;
+pub mod preferences;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -64,6 +65,7 @@ pub enum NotifEvent {
     },
     Close(u32),
     ToggleHistory,
+    HistoryChanged,
 }
 
 /// In-process handle to the notification event loop, handed back by
@@ -254,6 +256,7 @@ pub fn invoke_action(id: u32, key: String) {
 /// client of `ToggleHistory`; `breadbar --pill toggle|show` and
 /// `breadbar --stage toggle|show|hide` are the other methods here.
 struct BarService {
+    history: history::Store,
     tx: mpsc::Sender<NotifEvent>,
     pill_tx: mpsc::UnboundedSender<PillCmd>,
     stage_tx: mpsc::UnboundedSender<StageCmd>,
@@ -261,6 +264,43 @@ struct BarService {
 
 #[zbus::interface(name = "dev.breadway.Bar")]
 impl BarService {
+    fn get_notification_preferences(&self) -> String {
+        let mut prefs = preferences::load();
+        prefs
+            .extra
+            .insert("api_version".into(), serde_json::json!(1));
+        prefs.extra.insert(
+            "effective_dnd".into(),
+            serde_json::json!(preferences::effective_dnd(
+                &prefs,
+                preferences::clock_minute()
+            )),
+        );
+        prefs.extra.insert(
+            "sound_available".into(),
+            serde_json::json!(std::env::var_os("PATH")
+                .is_some_and(|paths| std::env::split_paths(&paths)
+                    .any(|p| p.join("canberra-gtk-play").is_file()))),
+        );
+        for entry in self.history.lock().unwrap().iter() {
+            prefs.apps.entry(entry.app_name.clone()).or_default();
+        }
+        serde_json::to_string(&prefs).unwrap_or_default()
+    }
+    fn set_notification_preferences(&self, json: &str) -> zbus::fdo::Result<()> {
+        if json.len() > 131072 {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "Settings are too large".into(),
+            ));
+        }
+        let mut prefs: preferences::Preferences =
+            serde_json::from_str(json).map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
+        for key in ["api_version", "effective_dnd", "sound_available"] {
+            prefs.extra.remove(key);
+        }
+        preferences::save(&prefs).map_err(zbus::fdo::Error::Failed)
+    }
+
     async fn toggle_history(&self) {
         if HISTORY_OPENS_STAGE.load(Ordering::Relaxed) {
             let _ = self.stage_tx.send(StageCmd::Toggle);
@@ -410,6 +450,24 @@ impl NotifServer {
         let actions = parse_actions(&actions);
         let inline_reply = inline_reply_placeholder(&actions, &hints);
 
+        let prefs = if self.persist_history {
+            preferences::load()
+        } else {
+            preferences::Preferences {
+                sound: false,
+                ..Default::default()
+            }
+        };
+        let delivery = preferences::presentation(
+            &prefs,
+            app_name,
+            urgency == Urgency::Critical,
+            preferences::clock_minute(),
+            false,
+        );
+        if !delivery.retain {
+            return id;
+        }
         history::record(
             &self.history,
             history::Entry {
@@ -426,6 +484,47 @@ impl NotifServer {
             history::persist(&self.history);
         }
 
+        if !delivery.banner {
+            let _ = self.tx.send(NotifEvent::HistoryChanged).await;
+            return id;
+        }
+        if self.persist_history && !prefs.lock_screen {
+            // breadlock is a lock process, not a background daemon. Also support
+            // lock implementations which publish logind's session hint.
+            if tokio::process::Command::new("pgrep")
+                .args(["-q", "-x", "breadlock"])
+                .status()
+                .await
+                .is_ok_and(|s| s.success())
+            {
+                let _ = self.tx.send(NotifEvent::HistoryChanged).await;
+                return id;
+            }
+            if let Ok(session) = std::env::var("XDG_SESSION_ID") {
+                if let Ok(out) = tokio::process::Command::new("loginctl")
+                    .args(["show-session", &session, "--property=LockedHint", "--value"])
+                    .output()
+                    .await
+                {
+                    if String::from_utf8_lossy(&out.stdout).trim() == "yes" {
+                        let _ = self.tx.send(NotifEvent::HistoryChanged).await;
+                        return id;
+                    }
+                }
+            }
+        }
+        let quiet = hints
+            .get("suppress-sound")
+            .and_then(|v| bool::try_from(v).ok())
+            .unwrap_or(false);
+        if delivery.sound && !quiet {
+            let _ = std::process::Command::new("canberra-gtk-play")
+                .args(["-i", "message"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
         let _ = self
             .tx
             .send(NotifEvent::Show {
@@ -544,10 +643,11 @@ pub fn spawn(
                     tx: tx.clone(),
                     next_id: AtomicU32::new(next_id),
                     sync_tags: Mutex::new(HashMap::new()),
-                    history: store,
+                    history: store.clone(),
                     persist_history: true,
                 };
                 let bar = BarService {
+                    history: store,
                     tx,
                     pill_tx,
                     stage_tx,

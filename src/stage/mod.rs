@@ -161,6 +161,19 @@ impl Shared {
     }
 
     pub fn set_dnd(&self, on: bool) {
+        let mut p = crate::notifications::preferences::load();
+        p.dnd = on;
+        // A manual toggle takes precedence over a scheduled interval.
+        if !on {
+            p.schedule = false;
+        }
+        if let Err(e) = crate::notifications::preferences::save(&p) {
+            eprintln!("Could not save notification settings: {e}");
+            return;
+        }
+        self.paint_dnd(on);
+    }
+    pub fn paint_dnd(&self, on: bool) {
         self.dnd.set(on);
         for stage in self.live_stages() {
             set_chip_on(&stage.dnd_chip, on);

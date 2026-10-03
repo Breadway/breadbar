@@ -7,7 +7,19 @@ pub fn now() -> gtk4::glib::DateTime {
 
 pub fn time() -> String {
     let dt = now();
-    format!("{:02}:{:02}", dt.hour(), dt.minute())
+    if clock_24h() == Some(false) {
+        format!(
+            "{:02}:{:02}",
+            if dt.hour() % 12 == 0 {
+                12
+            } else {
+                dt.hour() % 12
+            },
+            dt.minute()
+        )
+    } else {
+        format!("{:02}:{:02}", dt.hour(), dt.minute())
+    }
 }
 
 pub fn date() -> String {
@@ -25,8 +37,9 @@ pub fn current() -> String {
 /// not crash the bar, same as every other "malformed theme" fallback in
 /// this system.
 pub fn formatted(format: &str) -> String {
+    let preset = clock_24h().map(|v| if v { "%H:%M" } else { "%I:%M %p" });
     now()
-        .format(format)
+        .format(preset.unwrap_or(format))
         .map(|s| s.to_string())
         .unwrap_or_else(|_| time())
 }
@@ -41,4 +54,17 @@ pub fn spawn_ticker(sender: ComponentSender<App>) {
             tokio::time::sleep(std::time::Duration::from_secs(wait.max(1))).await;
         }
     });
+}
+
+fn clock_24h() -> Option<bool> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        });
+    let text = std::fs::read_to_string(base.join("breadbar/clock.json")).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()?
+        .get("clock_24h")?
+        .as_bool()
 }
