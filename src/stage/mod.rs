@@ -2237,11 +2237,12 @@ fn run_shell(cmd: &str) {
     }
 }
 
-/// Focus the window at `address`. Stock Hyprland takes
-/// `hyprctl dispatch focuswindow address:X`; Lua-config Hyprland (BOS)
-/// rewrites that into `hl.dispatch(focuswindow address:X)`, a Lua syntax
-/// error, so fall back to `hl.dsp.focus({window=...})` via `hyprctl eval`,
-/// the same two-step `bar::workspaces::switch_workspace` uses.
+/// Focus the window at `address`. Hyprland configured with `hyprland.conf`
+/// takes `hyprctl dispatch focuswindow address:X`; Hyprland configured with
+/// `hyprland.lua` (as on BOS) rewrites that into
+/// `hl.dispatch(focuswindow address:X)`, a Lua syntax error, so fall back to
+/// `hl.dsp.focus({window=...})` via `hyprctl eval`, the same two-step
+/// `bar::workspaces::switch_workspace` uses. Both are stock upstream Hyprland.
 fn focus_window(address: String) {
     relm4::spawn(async move {
         let selector = format!("address:{address}");
