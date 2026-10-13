@@ -15,9 +15,10 @@ use relm4::ComponentSender;
 
 use crate::AppInput;
 
-/// Stock Hyprland accepts `hyprctl dispatch workspace N`. Lua-config
-/// Hyprland (BOS) rewrites that as `hl.dispatch(workspace N)`, which is
-/// a syntax error: the working form is `hl.dsp.focus({workspace=N})`.
+/// Hyprland configured with `hyprland.conf` accepts `hyprctl dispatch
+/// workspace N`. Hyprland configured with `hyprland.lua` (as on BOS) rewrites
+/// that as `hl.dispatch(workspace N)`, which is a syntax error: the working
+/// form is `hl.dsp.focus({workspace=N})`. Both are stock upstream Hyprland.
 async fn switch_workspace(id: hyprland::shared::WorkspaceId) {
     let arg = id.to_string();
     let stock = tokio::process::Command::new("hyprctl")
