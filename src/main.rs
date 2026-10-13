@@ -430,6 +430,28 @@ pub struct App {
     bar_cpu_lbl: gtk4::Label,
     bar_ram_lbl: gtk4::Label,
     gpu_lbl: gtk4::Label,
+    // ── breadram pressure ───────────────────────────────────────────────
+    // The last daemon snapshot (or an absent one), plus the RAM rows in the
+    // control panel's SYSTEM section. Updated by `AppInput::RamUpdate`;
+    // never read back, only relabeled.
+    ram_seen_at_ms: u64,
+    ram_polls_since_digest: u32,
+    ram_mem_base: String,
+    ram_prev_pressure: bar::ram::Pressure,
+    ram_prev_present: bool,
+    /// Notifications (and the history writes behind them) only run live.
+    /// Screenshot captures force sample snapshots instead, so a capture
+    /// never tells the user anything and never pollutes their history.
+    ram_live: bool,
+    ram_notif: Option<notifications::NotifHandle>,
+    ram_store: notifications::history::Store,
+    ram_panel_status_lbl: gtk4::Label,
+    ram_panel_mem_lbl: gtk4::Label,
+    ram_pause_btn: gtk4::Button,
+    ram_pause_lbl: gtk4::Label,
+    /// Whether the daemon last reported monitor mode. Drives the
+    /// pause/resume button label.
+    ram_paused: bool,
     // Odometer-style digit chips (plan: "ODOMETER DIGITS FOR NUMERIC
     // CHIPS"), reuses the clock's `make_clock_digits`/`flip_clock_digits`
     // machinery (see `make_digit_chip`/`flip_digit_chip` below), so the
@@ -629,6 +651,18 @@ pub enum AppInput {
     BtPopoverData(bar::bluetooth::BtPopoverData),
     MediaUpdate(bar::media::MediaState),
     ControlPanelData(bar::control::ControlPanelData),
+    /// A breadram status poll landed: pressure, mode, memory, and the
+    /// newest-first action history.
+    RamUpdate(bar::ram::RamSnapshot),
+    /// A management pause or resume finished: whether it was asked for and
+    /// whether the daemon accepted it.
+    RamModeSet {
+        paused: bool,
+        ok: bool,
+    },
+    /// The control panel's pause/resume button was clicked. The handler
+    /// reads the last reported mode and asks for the other one.
+    RamPauseToggle,
     WidgetsUpdate(Vec<bread_shared::widget::WidgetSpec>),
     /// The primary's full widget list (daemon + theme widgets), forwarded to
     /// a satellite bar, which has no widget sources of its own.
@@ -1351,6 +1385,31 @@ impl SimpleComponent for App {
         sys_row2.append(&pwr_pair);
         system_stats_box.append(&sys_row1);
         system_stats_box.append(&sys_row2);
+        // breadram pressure row: daemon state plus a pause/resume button.
+        // Same `.sys-stat` chip chrome as the rows above (its own label
+        // instance: a widget has one parent, so `mem_lbl` cannot be
+        // reused here without reparenting it out of its chip). The button
+        // is plain text so it stays legible at panel widths.
+        let ram_panel_mem_lbl = stat_label();
+        ram_panel_mem_lbl.set_label("—");
+        let ram_pair = stat_pair(asset!("RAM Usage.svg"), &ram_panel_mem_lbl);
+        ram_pair.add_css_class("sys-stat");
+        ram_pair.set_hexpand(true);
+        let ram_panel_status_lbl = gtk4::Label::new(Some("breadram: —"));
+        ram_panel_status_lbl.set_xalign(0.0);
+        ram_panel_status_lbl.set_hexpand(true);
+        let ram_pause_lbl = gtk4::Label::new(Some("Pause"));
+        let ram_pause_btn = gtk4::Button::new();
+        ram_pause_btn.add_css_class("flat");
+        ram_pause_btn.set_child(Some(&ram_pause_lbl));
+        ram_pause_btn.set_tooltip_text(Some(
+            "Pause automatic memory management (temporary, not saved)",
+        ));
+        let sys_row3 = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        sys_row3.append(&ram_pair);
+        sys_row3.append(&ram_panel_status_lbl);
+        sys_row3.append(&ram_pause_btn);
+        system_stats_box.append(&sys_row3);
         let system_sep = gtk4::Separator::new(gtk4::Orientation::Vertical);
         system_sep.add_css_class("bar-sep");
         system_sep.set_visible(false);
@@ -1718,6 +1777,19 @@ impl SimpleComponent for App {
                 panels.toggle(&win);
             });
         }
+        // The RAM chip opens the control panel, where the SYSTEM section
+        // carries the daemon state and the pause button: same one-click
+        // reach as the connectivity chip above it.
+        {
+            let panels = panels.clone();
+            let win = panels.control.clone();
+            let gesture = gtk4::GestureClick::new();
+            gesture.connect_released(move |_, _, _, _| {
+                panels.toggle(&win);
+            });
+            bar_ram_pair.add_controller(gesture);
+            bar_ram_pair.set_tooltip_text(Some("Memory: open control panel"));
+        }
         // Power actions. Restart/off are one stray click from losing the
         // session, so they arm on the first click (label swaps to
         // "confirm") and only run on a second click within
@@ -1773,6 +1845,14 @@ impl SimpleComponent for App {
                             .args(&args[1..])
                             .spawn();
                     });
+                });
+            }
+            // breadram pause/resume: the handler reads the last reported
+            // mode, so the click only says "the other one".
+            {
+                let sender = sender.clone();
+                ram_pause_btn.connect_clicked(move |_| {
+                    post(&sender, AppInput::RamPauseToggle);
                 });
             }
             panels.control.connect_unmap(move |_| disarm());
@@ -2344,6 +2424,7 @@ impl SimpleComponent for App {
         let notif_sample = screenshot_req.as_ref().and_then(|r| match r.view.as_str() {
             "notification" => Some(notifications::SampleKind::Normal),
             "notification-critical" => Some(notifications::SampleKind::Critical),
+            "notification-ram" => Some(notifications::SampleKind::Ram),
             _ => None,
         });
         // A screenshot run must never touch the real session bus: zbus's
@@ -2463,7 +2544,7 @@ impl SimpleComponent for App {
         let shared = init
             .shared
             .clone()
-            .unwrap_or_else(|| stage::Shared::new(notif_store));
+            .unwrap_or_else(|| stage::Shared::new(notif_store.clone()));
         let dnd = shared.dnd.clone();
         let stage = stage::build(sender.clone(), shared.clone());
         let surtitle = surtitle::spawn();
@@ -2508,6 +2589,19 @@ impl SimpleComponent for App {
             bar_cpu_lbl,
             bar_ram_lbl,
             gpu_lbl,
+            ram_seen_at_ms: 0,
+            ram_polls_since_digest: 0,
+            ram_mem_base: String::new(),
+            ram_prev_pressure: bar::ram::Pressure::Unknown,
+            ram_prev_present: false,
+            ram_live: screenshot_req.is_none(),
+            ram_notif: notif_handle.clone(),
+            ram_store: notif_store,
+            ram_panel_status_lbl,
+            ram_panel_mem_lbl,
+            ram_pause_btn,
+            ram_pause_lbl,
+            ram_paused: false,
             vol_lbl,
             vol_digits,
             bat_lbl,
@@ -2648,6 +2742,13 @@ impl SimpleComponent for App {
             bar::wifi::spawn_status_poller(sender.clone());
             bar::media::spawn_poller(sender.clone());
         }
+        // The RAM poller never runs in a screenshot capture: it would dial
+        // the live daemon socket, racing real state into the capture (and
+        // touching the session the capture must leave alone). RAM views
+        // force their snapshot below instead.
+        if screenshot_req.is_none() {
+            bar::ram::spawn_poller(sender.clone());
+        }
         if init.primary {
             // Same D-Bus name-stealing hazard as the notification server
             // above: a screenshot run must not take
@@ -2694,8 +2795,12 @@ impl SimpleComponent for App {
         }
 
         if let Some(req) = screenshot_req {
-            let notification_window = notification_window
-                .filter(|_| matches!(req.view.as_str(), "notification" | "notification-critical"));
+            let notification_window = notification_window.filter(|_| {
+                matches!(
+                    req.view.as_str(),
+                    "notification" | "notification-critical" | "notification-ram"
+                )
+            });
             let osd_window =
                 osd_window.filter(|_| matches!(req.view.as_str(), "osd-volume" | "osd-brightness"));
             // BAR-27 phase 1: force the spotlight pill into the exact state
@@ -2708,9 +2813,10 @@ impl SimpleComponent for App {
             // mockup's own `.wick:hover` background shade, so phase 1's
             // capture of "hovering" and "shown some other way" render
             // pixel-identical anyway (see the task report).
-            if req.view.starts_with("pill-")
+            if (req.view.starts_with("pill-")
                 && req.view != "pill-tucked"
-                && req.view != "pill-tucked-input"
+                && req.view != "pill-tucked-input")
+                || req.view == "ram-bar"
             {
                 model.pill_hovering = true;
             }
@@ -2718,6 +2824,33 @@ impl SimpleComponent for App {
                 if let Some(debug) = &pill_hotzone_debug {
                     pill_hotzone::set_debug_visible(debug, true);
                 }
+            }
+            // RAM views force a pressured snapshot through the same
+            // handler live polls take: no daemon is dialed in an
+            // isolated capture, and notifications stay off (`ram_live`
+            // is false) so nothing pops up or pollutes history.
+            if req.view.as_str() == "ram-bar" || req.view.as_str() == "ram-panel" {
+                let paused = req.view.as_str() == "ram-panel";
+                model.apply_ram_snapshot(bar::ram::RamSnapshot {
+                    present: true,
+                    pressure: bar::ram::Pressure::Pressured,
+                    mode: if paused {
+                        bar::ram::RamMode::Monitor
+                    } else {
+                        bar::ram::RamMode::Automatic
+                    },
+                    available_bytes: Some(3_221_225_472),
+                    total_bytes: Some(16_106_127_360),
+                    history: vec![bar::ram::RamAction {
+                        scope: "unit:app.service".to_string(),
+                        kind: "cgroup_soft_limit".to_string(),
+                        state: "confirmed".to_string(),
+                        reason: "over budget".to_string(),
+                        requested_bytes: Some(-20_971_520),
+                        observed_bytes: Some(-4_194_304),
+                        at_ms: 1_000,
+                    }],
+                });
             }
             if req.view.as_str() == "pill-low-battery" {
                 model.pill_low_battery = true;
@@ -3101,6 +3234,8 @@ impl SimpleComponent for App {
                 // (see the App struct field docs for why).
                 self.bar_cpu_lbl.set_label(&cpu);
                 self.bar_ram_lbl.set_label(&stats.mem);
+                self.ram_mem_base = stats.mem.clone();
+                self.sync_ram_chip();
                 match stats.gpu_usage {
                     Some(g) => {
                         let gpu = match stats.gpu_temp {
@@ -3143,10 +3278,10 @@ impl SimpleComponent for App {
                     minutes_left: stats.bat_minutes_left,
                 });
                 // The battery item, when shown, carries the low warning
-                // itself; the flag is for when it is off.
-                self.pill_flag.set_visible(low && !self.battery_item_on());
+                // itself; the flag is for when it is off. Visibility and
+                // label both live in `sync_pill_flag`, which also carries
+                // the pressure flag, so neither poller fights the other.
                 self.refresh_battery();
-                self.pill_flag_label.set_label(&format!("{}%", stats.bat));
                 if low != self.pill_low_battery {
                     self.pill_low_battery = low;
                     self.update_pill();
@@ -3175,6 +3310,22 @@ impl SimpleComponent for App {
                     stats.wifi_icon
                 };
                 self.wifi_img.set_icon_name(Some(icon));
+            }
+            AppInput::RamUpdate(snapshot) => {
+                self.apply_ram_snapshot(snapshot);
+            }
+            AppInput::RamPauseToggle => {
+                let paused = !self.ram_paused;
+                bar::ram::spawn_set_mode(paused, sender.clone());
+            }
+            AppInput::RamModeSet { paused, ok } => {
+                if !ok {
+                    self.ram_panel_status_lbl
+                        .set_label("breadram: pause refused");
+                    return;
+                }
+                self.ram_paused = paused;
+                self.sync_ram_pause_button();
             }
             AppInput::TrayUpdate(bar::tray::TrayUpdate::Add { id, icon, title }) => {
                 // Only the primary watches the tray; every monitor's stage
@@ -3842,11 +3993,216 @@ impl App {
                 tip.push_str(&format!(", {}", stage::pure::format_time_left(m)));
             }
             self.pill_battery.set_tooltip_text(Some(&tip));
-            self.pill_flag
-                .set_visible(b.low && !shown && self.pill_leveled.borrow().is_empty());
+            self.sync_pill_flag();
         }
         self.set_pill_item_visible(self.pill_battery.upcast_ref(), shown);
         fit_pill_width(&self.root);
+    }
+
+    /// breadram pressure state: the bar chip, the control panel's SYSTEM
+    /// rows, and intervention notifications.
+    ///
+    /// The pill chip keeps the local memory readout and gains a short state
+    /// marker only while the daemon reports worse than healthy; the tooltip
+    /// always carries the full sentence (pressure, available memory, mode),
+    /// which is also the accessible description. An absent daemon is
+    /// ordinary: the pill stays exactly as the stats poll left it, the
+    /// panel shows the same em dash every other missing reading uses, and
+    /// nothing notifies.
+    fn apply_ram_snapshot(&mut self, snapshot: bar::ram::RamSnapshot) {
+        use bar::ram::{Pressure, RamMode};
+        if snapshot.present {
+            let previously = self.ram_prev_pressure;
+            self.ram_prev_pressure = snapshot.pressure;
+            self.ram_prev_present = true;
+            // The stats poll owns the number; the marker is ours. Suffixing
+            // keeps one chip instead of growing the bar at narrow widths.
+            // The base text is remembered from the last stats poll because
+            // the two pollers run on different ticks.
+            self.sync_ram_chip();
+            let available = snapshot
+                .available_bytes
+                .map(bar::ram::bytes_text)
+                .unwrap_or_else(|| "unknown".to_string());
+            // Spotlight has no RAM chip: the pill flag carries pressure
+            // there, through the same sync the battery warning uses, so
+            // the two pollers never fight over the box.
+            self.sync_pill_flag();
+            self.bar_ram_lbl.set_tooltip_text(Some(&format!(
+                "breadram {} · {} available · {}",
+                match snapshot.pressure {
+                    Pressure::Healthy => "healthy",
+                    Pressure::Pressured => "pressured",
+                    Pressure::Critical => "critical",
+                    Pressure::Unknown => "unknown",
+                },
+                available,
+                match snapshot.mode {
+                    RamMode::Automatic => "automatic",
+                    RamMode::Monitor => "management paused",
+                    RamMode::Unknown => "mode unknown",
+                }
+            )));
+            self.ram_panel_mem_lbl
+                .set_label(&format!("{available} free"));
+            self.ram_panel_status_lbl.set_label(&format!(
+                "breadram: {} · {}",
+                match snapshot.pressure {
+                    Pressure::Healthy => "healthy",
+                    Pressure::Pressured => "pressured",
+                    Pressure::Critical => "critical",
+                    Pressure::Unknown => "unknown",
+                },
+                match snapshot.mode {
+                    RamMode::Automatic => "auto",
+                    RamMode::Monitor => "paused",
+                    RamMode::Unknown => "—",
+                }
+            ));
+            self.ram_paused = snapshot.mode == RamMode::Monitor;
+            // Pressure transitions notify (cooled down by change, not by
+            // time): a newly pressured or critical host deserves one card.
+            if self.ram_live
+                && snapshot.pressure != previously
+                && snapshot.pressure != Pressure::Healthy
+                && snapshot.pressure != Pressure::Unknown
+            {
+                self.post_ram_notice(
+                    if snapshot.pressure == Pressure::Critical {
+                        "Memory pressure critical"
+                    } else {
+                        "Memory pressure rising"
+                    },
+                    &format!("breadram reports {available} available"),
+                    snapshot.pressure == Pressure::Critical,
+                );
+            }
+            // Journal entries newer than the last poll: failures now,
+            // successes as a rate-limited digest.
+            self.ram_polls_since_digest += 1;
+            if self.ram_live {
+                let digest_due = self.ram_polls_since_digest >= bar::ram::SUCCESS_DIGEST_POLLS;
+                let (notices, newest, digested) =
+                    bar::ram::decide_notices(&snapshot.history, self.ram_seen_at_ms, digest_due);
+                self.ram_seen_at_ms = newest;
+                if digested {
+                    self.ram_polls_since_digest = 0;
+                }
+                for notice in notices {
+                    self.post_ram_notice(&notice.summary, &notice.body, notice.critical);
+                }
+            }
+        } else {
+            // Absent is ordinary: leave the stats readout alone, show the
+            // same em dash every other missing reading uses, and never
+            // notify.
+            self.ram_panel_mem_lbl.set_label("—");
+            self.ram_panel_status_lbl.set_label("breadram: —");
+            self.ram_prev_present = false;
+            self.sync_pill_flag();
+        }
+        self.sync_ram_pause_button();
+    }
+
+    /// Post one RAM card internally and record it to history.
+    ///
+    /// Internal, never over D-Bus: a capture or test run must not page the
+    /// live bar, and the live bar must not page anyone else. History is
+    /// recorded alongside the card so `--history` shows what popped up.
+    fn post_ram_notice(&self, summary: &str, body: &str, critical: bool) {
+        use notifications::{history, Urgency};
+        let Some(handle) = &self.ram_notif else {
+            return;
+        };
+        handle.notify(
+            bar::ram::RAM_NOTIF_ID,
+            "RAM",
+            summary,
+            body,
+            if critical {
+                Urgency::Critical
+            } else {
+                Urgency::Normal
+            },
+        );
+        history::record(
+            &self.ram_store,
+            history::Entry {
+                id: bar::ram::RAM_NOTIF_ID,
+                app_name: "RAM".to_string(),
+                summary: summary.to_string(),
+                body: body.to_string(),
+                urgency: if critical {
+                    Urgency::Critical
+                } else {
+                    Urgency::Normal
+                },
+                received: std::time::SystemTime::now(),
+                actions: Vec::new(),
+            },
+        );
+    }
+
+    /// The bar chip shows the stats poll's number plus our pressure marker.
+    ///
+    /// Both pollers write this label on their own ticks (stats every 2 s,
+    /// RAM every 5 s), so each one re-applies the full text: whichever runs
+    /// second never wipes the other's half.
+    fn sync_ram_chip(&self) {
+        if !self.ram_prev_present {
+            return;
+        }
+        let marker = match self.ram_prev_pressure {
+            bar::ram::Pressure::Healthy => String::new(),
+            bar::ram::Pressure::Pressured => " BUSY".to_string(),
+            bar::ram::Pressure::Critical => " FULL".to_string(),
+            bar::ram::Pressure::Unknown => String::new(),
+        };
+        self.bar_ram_lbl
+            .set_label(&format!("{}{marker}", self.ram_mem_base));
+    }
+
+    /// The pill flag shows at most one warning: a low battery outranks
+    /// memory pressure, and pressure outranks silence. Both pollers call
+    /// this after their own updates, so whichever runs second converges on
+    /// the same box instead of wiping the other's half.
+    fn sync_pill_flag(&self) {
+        use bar::ram::Pressure;
+        if self.pill_low_battery && !self.battery_item_on() && self.pill_leveled.borrow().is_empty()
+        {
+            if let Some(battery) = &self.battery {
+                self.pill_flag_label.set_label(&format!("{}%", battery.pct));
+            }
+            self.pill_flag.set_visible(true);
+            return;
+        }
+        if self.ram_prev_present
+            && matches!(
+                self.ram_prev_pressure,
+                Pressure::Pressured | Pressure::Critical
+            )
+        {
+            let critical = self.ram_prev_pressure == Pressure::Critical;
+            self.pill_flag_label
+                .set_label(if critical { "MEM FULL" } else { "MEM BUSY" });
+            self.pill_flag.set_visible(true);
+        } else {
+            self.pill_flag.set_visible(false);
+        }
+    }
+
+    /// The pause/resume button follows the last reported mode.
+    fn sync_ram_pause_button(&self) {
+        if self.ram_paused {
+            self.ram_pause_lbl.set_label("Resume");
+            self.ram_pause_btn
+                .set_tooltip_text(Some("Resume automatic memory management"));
+        } else {
+            self.ram_pause_lbl.set_label("Pause");
+            self.ram_pause_btn.set_tooltip_text(Some(
+                "Pause automatic memory management (temporary, not saved)",
+            ));
+        }
     }
 
     /// The pill's now-playing title: shown while a player plays (and the
