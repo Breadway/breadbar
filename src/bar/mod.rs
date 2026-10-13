@@ -3,6 +3,7 @@ pub mod clock;
 pub mod control;
 pub mod media;
 pub mod proc;
+pub mod ram;
 pub mod slots;
 pub mod stats;
 pub mod tray;
