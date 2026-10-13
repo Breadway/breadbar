@@ -84,6 +84,25 @@ impl NotifHandle {
     pub fn toggle_history(&self) {
         let _ = self.tx.try_send(NotifEvent::ToggleHistory);
     }
+
+    /// Post a notification from inside the bar, without a D-Bus round trip.
+    ///
+    /// The card replaces any earlier card with the same id, which is how
+    /// repeat senders group into one card instead of stacking. The history
+    /// store is the caller's to record: this loop never sees the D-Bus
+    /// server path that records for external senders.
+    pub fn notify(&self, id: u32, app_name: &str, summary: &str, body: &str, urgency: Urgency) {
+        let _ = self.tx.try_send(NotifEvent::Show {
+            id,
+            app_name: app_name.to_string(),
+            summary: summary.to_string(),
+            body: body.to_string(),
+            urgency,
+            expire: Expire::After(Duration::from_secs(8)),
+            actions: Vec::new(),
+            inline_reply: None,
+        });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -572,19 +591,42 @@ pub type OnShow = Box<dyn Fn(&str, &str, bool)>;
 pub enum SampleKind {
     Normal,
     Critical,
+    /// A failed breadram intervention, so the RAM card has a fixed visual
+    /// without racing a real daemon in an isolated capture.
+    Ram,
 }
 
 impl SampleKind {
     fn sample_event(&self) -> NotifEvent {
-        let urgency = match self {
-            SampleKind::Normal => Urgency::Normal,
-            SampleKind::Critical => Urgency::Critical,
+        let (urgency, id, app_name, summary, body) = match self {
+            SampleKind::Normal => (
+                Urgency::Normal,
+                1,
+                "Sample App".into(),
+                "Sample notification".into(),
+                "This is what a notification card looks like.".into(),
+            ),
+            SampleKind::Critical => (
+                Urgency::Critical,
+                1,
+                "Sample App".into(),
+                "Sample notification".into(),
+                "This is what a notification card looks like.".into(),
+            ),
+            SampleKind::Ram => (
+                Urgency::Critical,
+                crate::bar::ram::RAM_NOTIF_ID,
+                "RAM".into(),
+                "Memory intervention failed".into(),
+                "cgroup_soft_limit on unit:app.service: expected freed 20 MiB, measured freed 4 MiB: over budget"
+                    .into(),
+            ),
         };
         NotifEvent::Show {
-            id: 1,
-            app_name: "Sample App".into(),
-            summary: "Sample notification".into(),
-            body: "This is what a notification card looks like.".into(),
+            id,
+            app_name,
+            summary,
+            body,
             urgency,
             expire: Expire::Never,
             actions: vec![],

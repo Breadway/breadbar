@@ -50,6 +50,9 @@ const KNOWN_VIEWS: &[&str] = &[
     "media-popover",
     "notification",
     "notification-critical",
+    "notification-ram",
+    "ram-bar",
+    "ram-panel",
     "osd-volume",
     "osd-brightness",
     "wifi-add-dialog",
@@ -276,6 +279,35 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                 height,
             );
         }
+        // "ram-bar" frames the pill like the `pill-*` views (the pill is
+        // what carries the pressure flag under spotlight); "ram-panel"
+        // opens the control panel like "control-panel". The RAM snapshot
+        // itself is forced in `main.rs` before dispatch, so these arms
+        // only frame.
+        "ram-bar" => {
+            root.connect_map(move |_| {
+                let output = output.clone();
+                gtk4::glib::timeout_add_local_once(SETTLE_DELAY, move || {
+                    finish(bread_screenshots::capture_region(
+                        0,
+                        0,
+                        width,
+                        PILL_CAPTURE_HEIGHT,
+                        &output,
+                    ));
+                });
+            });
+        }
+        "ram-panel" => {
+            open_panel_on_root_map(
+                root,
+                handles.control_panel,
+                SETTLE_DELAY,
+                output,
+                width,
+                height,
+            );
+        }
         "connectivity-wifi" => {
             handles.wifi_tab_btn.set_active(true);
             open_panel_on_root_map(
@@ -317,7 +349,7 @@ pub fn dispatch(root: &gtk4::ApplicationWindow, req: ScreenshotRequest, handles:
                 height,
             );
         }
-        "notification" | "notification-critical" => {
+        "notification" | "notification-critical" | "notification-ram" => {
             let Some(window) = handles.notification_window else {
                 eprintln!(
                     "breadbar: internal error: no notification window built for '{}'",
