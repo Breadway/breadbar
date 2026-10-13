@@ -185,6 +185,48 @@ fn compute_expire(expire_timeout: i32, urgency_critical: bool) -> Expire {
     }
 }
 
+/// Whether the session is currently locked. breadlock is a lock process,
+/// not a background daemon; lock implementations which publish logind's
+/// session hint are supported too. Factored out of `notify` so the delivery
+/// decision itself stays a pure function of the typed preferences.
+async fn session_locked() -> bool {
+    if tokio::process::Command::new("pgrep")
+        .args(["-q", "-x", "breadlock"])
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
+    {
+        return true;
+    }
+    if let Ok(session) = std::env::var("XDG_SESSION_ID") {
+        if let Ok(out) = tokio::process::Command::new("loginctl")
+            .args(["show-session", &session, "--property=LockedHint", "--value"])
+            .output()
+            .await
+        {
+            return String::from_utf8_lossy(&out.stdout).trim() == "yes";
+        }
+    }
+    false
+}
+
+/// Sound plays when the per-app policy and the global switch allow it
+/// (`delivery.sound`) and the sender did not set the `suppress-sound` hint.
+fn should_play_sound(eligible: bool, quiet: bool) -> bool {
+    eligible && !quiet
+}
+
+/// The player invocation, factored out so tests can assert the exact command
+/// without playing audio.
+fn sound_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("canberra-gtk-play");
+    cmd.args(["-i", "message"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
 struct NotifServer {
     tx: mpsc::Sender<NotifEvent>,
     next_id: AtomicU32,
@@ -301,9 +343,19 @@ impl BarService {
                 .is_some_and(|paths| std::env::split_paths(&paths)
                     .any(|p| p.join("canberra-gtk-play").is_file()))),
         );
-        for entry in self.history.lock().unwrap().iter() {
-            prefs.apps.entry(entry.app_name.clone()).or_default();
-        }
+        // Apps seen in history are reported separately so Settings can offer
+        // them: merging them into `apps` here would make a later Set persist
+        // policies the user never chose.
+        let known = {
+            let guard = self.history.lock().unwrap();
+            let mut known: Vec<String> = guard.iter().map(|e| e.app_name.clone()).collect();
+            known.sort();
+            known.dedup();
+            known
+        };
+        prefs
+            .extra
+            .insert("known_apps".into(), serde_json::json!(known));
         serde_json::to_string(&prefs).unwrap_or_default()
     }
     fn set_notification_preferences(&self, json: &str) -> zbus::fdo::Result<()> {
@@ -477,13 +529,79 @@ impl NotifServer {
                 ..Default::default()
             }
         };
-        let delivery = preferences::presentation(
-            &prefs,
+        // Without a persisted store there is no lock-screen preview setting
+        // to honor, so headless tests (and any future non-persisting caller)
+        // skip live lock detection the same way they skip preference reads.
+        let locked = if self.persist_history {
+            session_locked().await
+        } else {
+            false
+        };
+        let quiet = hints
+            .get("suppress-sound")
+            .and_then(|v| bool::try_from(v).ok())
+            .unwrap_or(false);
+        self.deliver(
+            id,
             app_name,
-            urgency == Urgency::Critical,
+            summary,
+            body,
+            urgency,
+            expire,
+            actions,
+            inline_reply,
+            &prefs,
+            locked,
             preferences::clock_minute(),
-            false,
-        );
+            quiet,
+        )
+        .await
+    }
+
+    async fn close_notification(&self, id: u32) {
+        let _ = self.tx.send(NotifEvent::Close(id)).await;
+    }
+
+    fn get_capabilities(&self) -> Vec<String> {
+        CAPABILITIES.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn get_server_information(&self) -> (String, String, String, String) {
+        (
+            "breadbar".into(),
+            "breadway".into(),
+            env!("CARGO_PKG_VERSION").into(),
+            "1.2".into(),
+        )
+    }
+}
+
+impl NotifServer {
+    /// Shared core of [`NotifServer::notify`] and the headless tests: route
+    /// one notification through the typed preferences. `locked` is the live
+    /// [`session_locked`] result in production and an explicit value in
+    /// tests; `now` is minutes since midnight. Delivery follows
+    /// [`preferences::presentation`], the single source of truth both paths
+    /// agree on: DND suppresses ordinary banners only, and critical alerts
+    /// keep history plus banner even on a locked session.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver(
+        &self,
+        id: u32,
+        app_name: &str,
+        summary: &str,
+        body: &str,
+        urgency: Urgency,
+        expire: Expire,
+        actions: Vec<Action>,
+        inline_reply: Option<String>,
+        prefs: &preferences::Preferences,
+        locked: bool,
+        now: u32,
+        quiet: bool,
+    ) -> u32 {
+        let delivery =
+            preferences::presentation(prefs, app_name, urgency == Urgency::Critical, now, locked);
         if !delivery.retain {
             return id;
         }
@@ -507,42 +625,8 @@ impl NotifServer {
             let _ = self.tx.send(NotifEvent::HistoryChanged).await;
             return id;
         }
-        if self.persist_history && !prefs.lock_screen {
-            // breadlock is a lock process, not a background daemon. Also support
-            // lock implementations which publish logind's session hint.
-            if tokio::process::Command::new("pgrep")
-                .args(["-q", "-x", "breadlock"])
-                .status()
-                .await
-                .is_ok_and(|s| s.success())
-            {
-                let _ = self.tx.send(NotifEvent::HistoryChanged).await;
-                return id;
-            }
-            if let Ok(session) = std::env::var("XDG_SESSION_ID") {
-                if let Ok(out) = tokio::process::Command::new("loginctl")
-                    .args(["show-session", &session, "--property=LockedHint", "--value"])
-                    .output()
-                    .await
-                {
-                    if String::from_utf8_lossy(&out.stdout).trim() == "yes" {
-                        let _ = self.tx.send(NotifEvent::HistoryChanged).await;
-                        return id;
-                    }
-                }
-            }
-        }
-        let quiet = hints
-            .get("suppress-sound")
-            .and_then(|v| bool::try_from(v).ok())
-            .unwrap_or(false);
-        if delivery.sound && !quiet {
-            let _ = std::process::Command::new("canberra-gtk-play")
-                .args(["-i", "message"])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+        if should_play_sound(delivery.sound, quiet) {
+            let _ = sound_command().spawn();
         }
         let _ = self
             .tx
@@ -558,23 +642,6 @@ impl NotifServer {
             })
             .await;
         id
-    }
-
-    async fn close_notification(&self, id: u32) {
-        let _ = self.tx.send(NotifEvent::Close(id)).await;
-    }
-
-    fn get_capabilities(&self) -> Vec<String> {
-        CAPABILITIES.iter().map(|s| (*s).to_string()).collect()
-    }
-
-    fn get_server_information(&self) -> (String, String, String, String) {
-        (
-            "breadbar".into(),
-            "breadway".into(),
-            env!("CARGO_PKG_VERSION").into(),
-            "1.2".into(),
-        )
     }
 }
 
@@ -784,6 +851,30 @@ mod tests {
             },
             rx,
         )
+    }
+
+    /// Run `test` with XDG config/state pointed at a fresh temp dir (and no
+    /// session id, so live lock detection would report unlocked), holding
+    /// the shared env lock and restoring every variable afterwards. All
+    /// tests that touch process environment must go through here.
+    use preferences::with_isolated_home;
+
+    fn persist_server() -> (NotifServer, mpsc::Receiver<NotifEvent>) {
+        let (tx, rx) = mpsc::channel(32);
+        (
+            NotifServer {
+                tx,
+                next_id: AtomicU32::new(1),
+                sync_tags: Mutex::new(HashMap::new()),
+                history: history::new_store(),
+                persist_history: true,
+            },
+            rx,
+        )
+    }
+
+    fn plain_hints() -> HashMap<String, OwnedValue> {
+        HashMap::new()
     }
 
     fn sync_hints(tag: &str) -> HashMap<String, OwnedValue> {
@@ -1017,5 +1108,270 @@ mod tests {
         assert_eq!(hist.len(), 1);
         assert_eq!(hist[0].summary, "Alice");
         assert_eq!(hist[0].body, "hello");
+    }
+
+    /// Per-app policy on the user-visible path: History records without a
+    /// banner, Off drops the notification, and the default policy banners.
+    /// Driven through `notify()` with persistence on so the stored
+    /// preferences are actually loaded.
+    #[test]
+    fn notify_routes_history_banner_and_off_through_preferences() {
+        with_isolated_home("policy", |_dir| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let mut prefs = preferences::Preferences::default();
+                prefs
+                    .apps
+                    .insert("hist-app".into(), preferences::AppPolicy::History);
+                prefs
+                    .apps
+                    .insert("off-app".into(), preferences::AppPolicy::Off);
+                preferences::save(&prefs).unwrap();
+                let (server, mut rx) = persist_server();
+
+                server
+                    .notify("hist-app", 0, "", "quiet", "", vec![], plain_hints(), -1)
+                    .await;
+                assert_eq!(server.history.lock().unwrap().len(), 1);
+                assert!(matches!(
+                    rx.recv().await.expect("HistoryChanged event"),
+                    NotifEvent::HistoryChanged
+                ));
+
+                server
+                    .notify("off-app", 0, "", "gone", "", vec![], plain_hints(), -1)
+                    .await;
+                assert_eq!(server.history.lock().unwrap().len(), 1);
+                assert!(rx.try_recv().is_err(), "Off must emit no event");
+
+                server
+                    .notify("chat", 0, "", "hello", "", vec![], plain_hints(), -1)
+                    .await;
+                assert_eq!(server.history.lock().unwrap().len(), 2);
+                assert!(matches!(
+                    rx.recv().await.expect("Show event"),
+                    NotifEvent::Show { summary, .. } if summary == "hello"
+                ));
+            });
+        });
+    }
+
+    /// Twin of the `critical_under_dnd_and_lock_keeps_history_plus_banner`
+    /// predicate test: a critical alert under manual DND on a locked session
+    /// keeps history plus banner, while an ordinary one keeps history only.
+    /// If `presentation()` and the live path disagree, one of the two fails.
+    #[test]
+    fn notify_critical_keeps_history_plus_banner_under_dnd_and_lock() {
+        with_isolated_home("critical-lock", |_dir| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                for lock_screen in [false, true] {
+                    let prefs = preferences::Preferences {
+                        dnd: true,
+                        lock_screen,
+                        ..preferences::Preferences::default()
+                    };
+                    preferences::save(&prefs).unwrap();
+                    let (server, mut rx) = persist_server();
+                    let stored = preferences::load();
+
+                    let mut critical_hints = HashMap::new();
+                    critical_hints.insert(
+                        "urgency".to_string(),
+                        OwnedValue::try_from(zbus::zvariant::Value::from(2u8)).unwrap(),
+                    );
+                    let id = server
+                        .deliver(
+                            7,
+                            "app",
+                            "critical",
+                            "",
+                            Urgency::Critical,
+                            Expire::Never,
+                            vec![],
+                            None,
+                            &stored,
+                            true,
+                            12 * 60,
+                            false,
+                        )
+                        .await;
+                    assert_eq!(id, 7);
+                    assert_eq!(server.history.lock().unwrap().len(), 1);
+                    assert!(
+                        matches!(
+                            rx.recv().await.expect("Show event"),
+                            NotifEvent::Show { summary, .. } if summary == "critical"
+                        ),
+                        "critical must banner under DND and lock (lock_screen={lock_screen})"
+                    );
+
+                    server
+                        .deliver(
+                            8,
+                            "app",
+                            "ordinary",
+                            "",
+                            Urgency::Normal,
+                            Expire::Never,
+                            vec![],
+                            None,
+                            &stored,
+                            true,
+                            12 * 60,
+                            false,
+                        )
+                        .await;
+                    assert_eq!(server.history.lock().unwrap().len(), 2);
+                    assert!(
+                        matches!(
+                            rx.recv().await.expect("HistoryChanged event"),
+                            NotifEvent::HistoryChanged
+                        ),
+                        "ordinary stays suppressed under DND and lock (lock_screen={lock_screen})"
+                    );
+                }
+            });
+        });
+    }
+
+    /// `persist_history: false` never reads the stored preferences and never
+    /// touches disk: even with DND persisted on, `notify()` still banners,
+    /// and no state file appears.
+    #[test]
+    fn notify_without_persistence_ignores_stored_preferences() {
+        with_isolated_home("no-persist", |dir| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let prefs = preferences::Preferences {
+                    dnd: true,
+                    ..preferences::Preferences::default()
+                };
+                preferences::save(&prefs).unwrap();
+                let (server, mut rx) = test_server();
+                server
+                    .notify("app", 0, "", "still shows", "", vec![], plain_hints(), -1)
+                    .await;
+                assert!(matches!(
+                    rx.recv().await.expect("Show event"),
+                    NotifEvent::Show { .. }
+                ));
+                assert_eq!(server.history.lock().unwrap().len(), 1);
+                assert!(
+                    !dir.join("state/breadbar/history.json").exists(),
+                    "unpersisted server must not write history to disk"
+                );
+            });
+        });
+    }
+
+    /// The provider half of the round trip: Set persists, Get reads back,
+    /// unknown keys survive, a second write keeps a backup, bad writes are
+    /// rejected without touching the file, and history apps are reported via
+    /// `known_apps` without being absorbed into `apps`.
+    #[test]
+    fn provider_set_then_get_round_trip() {
+        with_isolated_home("provider", |dir| {
+            let (tx, _rx) = mpsc::channel(32);
+            let (pill_tx, _) = mpsc::unbounded_channel();
+            let (stage_tx, _) = mpsc::unbounded_channel();
+            let store = history::new_store();
+            let service = BarService {
+                history: store.clone(),
+                tx,
+                pill_tx,
+                stage_tx,
+            };
+            let path = dir.join("config/breadbar/notifications.json");
+
+            service
+                .set_notification_preferences(
+                    r#"{"dnd": true, "apps": {"chat": "history"}, "mystery": 42}"#,
+                )
+                .unwrap();
+            let got: serde_json::Value =
+                serde_json::from_str(&service.get_notification_preferences()).unwrap();
+            assert_eq!(got["dnd"], true);
+            assert_eq!(got["apps"]["chat"], "history");
+            assert_eq!(got["mystery"], 42, "unknown keys must be preserved");
+            assert_eq!(got["api_version"], 1);
+            assert!(got["effective_dnd"].is_boolean());
+            assert!(got["sound_available"].is_boolean());
+            assert_eq!(got["known_apps"], serde_json::json!([]));
+
+            // A history app shows up for Settings without becoming policy.
+            history::record(
+                &store,
+                history::Entry {
+                    id: 1,
+                    app_name: "seen-app".into(),
+                    summary: "hi".into(),
+                    body: String::new(),
+                    urgency: Urgency::Normal,
+                    received: std::time::SystemTime::now(),
+                    actions: vec![],
+                },
+            );
+            let got: serde_json::Value =
+                serde_json::from_str(&service.get_notification_preferences()).unwrap();
+            assert_eq!(got["known_apps"], serde_json::json!(["seen-app"]));
+            assert!(
+                got["apps"].get("seen-app").is_none(),
+                "a read must not absorb history apps into persisted policy"
+            );
+
+            // Second write backs up the first; the unknown key rides along.
+            service
+                .set_notification_preferences(
+                    r#"{"dnd": false, "apps": {"chat": "history"}, "mystery": 42}"#,
+                )
+                .unwrap();
+            let backup = dir.join("config/breadbar/notifications.json.bak");
+            assert!(backup.exists(), "second write must keep a backup");
+            let old: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&backup).unwrap()).unwrap();
+            assert_eq!(old["dnd"], true);
+            let got: serde_json::Value =
+                serde_json::from_str(&service.get_notification_preferences()).unwrap();
+            assert_eq!(got["dnd"], false);
+            assert_eq!(got["mystery"], 42);
+
+            // Bad writes are rejected and leave the file alone.
+            let before = std::fs::read_to_string(&path).unwrap();
+            assert!(service.set_notification_preferences("not json").is_err());
+            assert!(service
+                .set_notification_preferences(r#"{"start": "xx", "end": "yy"}"#)
+                .is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        });
+    }
+
+    /// The sound gate without playing audio: policy eligibility plus the
+    /// sender hint decide, and the spawned command is exactly
+    /// `canberra-gtk-play -i message` with silenced stdio.
+    #[test]
+    fn sound_gate_and_command_construction() {
+        assert!(should_play_sound(true, false));
+        assert!(!should_play_sound(true, true), "suppress-sound hint wins");
+        assert!(
+            !should_play_sound(false, false),
+            "ineligible policy stays silent"
+        );
+        let cmd = sound_command();
+        assert_eq!(cmd.get_program().to_string_lossy(), "canberra-gtk-play");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["-i".to_string(), "message".to_string()]);
     }
 }

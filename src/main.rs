@@ -2569,7 +2569,7 @@ impl SimpleComponent for App {
                     previous_css = css;
                 }
                 let prefs = notifications::preferences::load();
-                shared_policy.refresh_open_notifications();
+                shared_policy.refresh_all_notifications();
                 shared_policy.paint_dnd(notifications::preferences::effective_dnd(
                     &prefs,
                     notifications::preferences::clock_minute(),
