@@ -161,6 +161,19 @@ impl Shared {
     }
 
     pub fn set_dnd(&self, on: bool) {
+        let mut p = crate::notifications::preferences::load();
+        p.dnd = on;
+        // A manual toggle takes precedence over a scheduled interval.
+        if !on {
+            p.schedule = false;
+        }
+        if let Err(e) = crate::notifications::preferences::save(&p) {
+            eprintln!("Could not save notification settings: {e}");
+            return;
+        }
+        self.paint_dnd(on);
+    }
+    pub fn paint_dnd(&self, on: bool) {
         self.dnd.set(on);
         for stage in self.live_stages() {
             set_chip_on(&stage.dnd_chip, on);
@@ -183,6 +196,16 @@ impl Shared {
     /// or was dismissed elsewhere).
     pub fn refresh_open_notifications(&self) {
         if let Some(stage) = self.open_stage() {
+            stage.refresh_notifications();
+        }
+    }
+
+    /// Re-renders every live stage's notifications, open or not, so a
+    /// preference or history change reaches all monitors together. The
+    /// primary's 2s policy poll uses this; `NotificationArrived` keeps the
+    /// targeted [`Shared::refresh_open_notifications`].
+    pub fn refresh_all_notifications(&self) {
+        for stage in self.live_stages() {
             stage.refresh_notifications();
         }
     }
@@ -3079,4 +3102,73 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         button.btn.connect_clicked(move |_| s.press_power(id));
     }
     stage
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::notifications::preferences;
+
+    /// A stage toggle and a Settings read see the same value: `set_dnd`
+    /// persists, and turning DND off also clears a scheduled interval, so
+    /// the manual toggle is an explicit override.
+    #[test]
+    fn stage_dnd_toggle_round_trips_through_settings_store() {
+        preferences::with_isolated_home("stage-dnd", |_dir| {
+            let shared = Shared::new(history::new_store());
+            assert!(!shared.dnd.get());
+            shared.set_dnd(true);
+            assert!(shared.dnd.get());
+            assert!(preferences::load().dnd);
+            shared.set_dnd(false);
+            assert!(!shared.dnd.get());
+            let prefs = preferences::load();
+            assert!(!prefs.dnd);
+            assert!(!prefs.schedule);
+        });
+    }
+
+    /// Cloned handles (what each monitor's bar holds) share one DND flag, so
+    /// one write is visible everywhere without any further sync.
+    #[test]
+    fn shared_clones_share_one_dnd_flag() {
+        let primary = Shared::new(history::new_store());
+        let satellite = primary.clone();
+        primary.paint_dnd(true);
+        assert!(satellite.dnd.get());
+        satellite.paint_dnd(false);
+        assert!(!primary.dnd.get());
+    }
+
+    /// Refresh with no stages registered is a safe no-op (the common case
+    /// for a bar with no stage open on any monitor).
+    #[test]
+    fn refresh_without_stages_is_safe() {
+        let shared = Shared::new(history::new_store());
+        shared.refresh_open_notifications();
+        shared.refresh_all_notifications();
+        assert!(shared.open_stage().is_none());
+    }
+
+    /// One DND write updates every registered indicator together. Needs a
+    /// display; without one the test reports a skip instead of failing, so
+    /// headless CI stays green while a headed run proves the fan-out.
+    #[test]
+    fn paint_dnd_updates_every_registered_mark() {
+        if gtk4::init().is_err() {
+            eprintln!("SKIP: paint_dnd_updates_every_registered_mark needs a display");
+            return;
+        }
+        let shared = Shared::new(history::new_store());
+        let first = gtk4::Label::new(Some("dnd"));
+        let second = gtk4::Label::new(Some("dnd"));
+        shared.register_dnd_mark(first.upcast_ref());
+        shared.register_dnd_mark(second.upcast_ref());
+        shared.paint_dnd(true);
+        assert!(first.is_visible());
+        assert!(second.is_visible());
+        shared.paint_dnd(false);
+        assert!(!first.is_visible());
+        assert!(!second.is_visible());
+    }
 }

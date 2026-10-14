@@ -186,6 +186,11 @@ pub async fn run(
                     emit_closed(&conn, id, close_reason::CLOSE_NOTIFICATION_CALL).await;
                 }
             }
+            NotifEvent::HistoryChanged => {
+                if let Some(ui) = &history_ui {
+                    history::refresh_if_visible(ui);
+                }
+            }
             NotifEvent::ToggleHistory => {
                 if let Some(ui) = &history_ui {
                     history::toggle(ui);
