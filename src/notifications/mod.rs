@@ -339,9 +339,9 @@ impl BarService {
         );
         prefs.extra.insert(
             "sound_available".into(),
-            serde_json::json!(std::env::var_os("PATH")
-                .is_some_and(|paths| std::env::split_paths(&paths)
-                    .any(|p| p.join("canberra-gtk-play").is_file()))),
+            serde_json::json!(std::env::var_os("PATH").is_some_and(|paths| {
+                std::env::split_paths(&paths).any(|p| p.join("canberra-gtk-play").is_file())
+            })),
         );
         // Apps seen in history are reported separately so Settings can offer
         // them: merging them into `apps` here would make a later Set persist
@@ -1348,9 +1348,11 @@ mod tests {
             // Bad writes are rejected and leave the file alone.
             let before = std::fs::read_to_string(&path).unwrap();
             assert!(service.set_notification_preferences("not json").is_err());
-            assert!(service
-                .set_notification_preferences(r#"{"start": "xx", "end": "yy"}"#)
-                .is_err());
+            assert!(
+                service
+                    .set_notification_preferences(r#"{"start": "xx", "end": "yy"}"#)
+                    .is_err()
+            );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
         });
     }
