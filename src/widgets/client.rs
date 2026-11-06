@@ -51,7 +51,7 @@ pub fn spawn(sender: ComponentSender<App>) {
     let live = sender.clone();
     let client = BreadClient::connect(APP_ID);
     let subscription = client.subscribe("bread.widget.**", move |_event| {
-        fetch_and_send(&live);
+        crate::resilience::guarded("widgets", || fetch_and_send(&live));
     });
     std::mem::forget(subscription);
 
@@ -93,7 +93,10 @@ fn fetch_and_send(sender: &ComponentSender<App>) {
             }
         })
         .collect();
-    sender.input(AppInput::WidgetsUpdate(specs));
+    // Sending can fail if relm4 has already shut the App runtime down. That is
+    // not a reason to kill the subscription thread: a later event would then
+    // find a dead thread and an unread socket (BAR-59).
+    let _ = sender.input_sender().send(AppInput::WidgetsUpdate(specs));
 }
 
 /// Publish a widget click back to breadd. `action` is whatever opaque value
