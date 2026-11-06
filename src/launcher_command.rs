@@ -101,7 +101,11 @@ pub fn spawn(sender: ComponentSender<App>) -> LauncherSubscriptions {
     subscriptions.start_with(|verb| {
         let sender = sender.clone();
         client.subscribe(verb, move |_event| {
-            sender.input(AppInput::OpenLauncher);
+            crate::resilience::guarded("launcher", || {
+                // Fallible: relm4 may already have stopped the App runtime.
+                // A failed send must not panic the subscription thread (BAR-59).
+                let _ = sender.input_sender().send(AppInput::OpenLauncher);
+            });
         })
     });
     subscriptions

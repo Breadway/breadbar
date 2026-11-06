@@ -12,6 +12,7 @@ mod osd;
 mod panel;
 mod pill_autohide;
 mod pill_hotzone;
+mod resilience;
 mod screenshot;
 mod spotlight_prefs;
 mod stage;
