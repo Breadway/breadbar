@@ -98,6 +98,11 @@ exec-once = /path/to/breadbar
 
 breadbar claims `org.freedesktop.Notifications` on the session D-Bus on startup. If another notification daemon is already running, startup will fail; stop the other daemon first.
 
+A subscription callback panic is caught and logged instead of ending the
+subscription thread. Because the compositor normally discards stderr, set
+`BREADBAR_PANIC_LOG=/tmp/breadbar-panic.log` in the launch environment to keep
+the panic text on disk (BAR-59 diagnostics).
+
 ## Theming
 
 ### Palette integration

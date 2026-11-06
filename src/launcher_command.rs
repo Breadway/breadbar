@@ -46,7 +46,11 @@ pub fn spawn(sender: ComponentSender<App>) {
     for verb in ["bread.box.open_requested", "bread.command.box.open"] {
         let sender = sender.clone();
         let subscription = client.subscribe(verb, move |_event| {
-            sender.input(AppInput::OpenLauncher);
+            crate::resilience::guarded("launcher", || {
+                // Fallible: relm4 may already have stopped the App runtime.
+                // A failed send must not panic the subscription thread (BAR-59).
+                let _ = sender.input_sender().send(AppInput::OpenLauncher);
+            });
         });
         std::mem::forget(subscription);
     }
