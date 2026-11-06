@@ -74,6 +74,14 @@ async fn sync_state(sender: &ComponentSender<crate::App>) {
     });
 }
 
+/// `ActiveWindowChanged` carries `Some` for a real toplevel and `None` when
+/// Hyprland clears the active window (a layer surface took keyboard). Only a
+/// real toplevel should dismiss the stage; a `None` is the stage itself
+/// taking focus.
+fn active_window_dismisses_stage(has_toplevel: bool) -> bool {
+    has_toplevel
+}
+
 pub fn spawn_watcher(sender: ComponentSender<crate::App>) {
     relm4::spawn(async move {
         sync_state(&sender).await;
@@ -112,7 +120,7 @@ pub fn spawn_watcher(sender: ComponentSender<crate::App>) {
                         // stop drawing over it. `None` is Hyprland clearing
                         // the active window (e.g. a layer surface taking
                         // keyboard), not another window.
-                        if data.is_some() {
+                        if active_window_dismisses_stage(data.is_some()) {
                             sender.input(AppInput::StageDismissForExternal);
                         }
                     }
@@ -761,5 +769,20 @@ mod squash_tests {
         let out = squash_geom(g, 1.0);
         assert_eq!(out.y, g.y);
         assert_eq!(out.h, g.h);
+    }
+}
+
+#[cfg(test)]
+mod stage_dismissal_tests {
+    use super::active_window_dismisses_stage;
+
+    #[test]
+    fn active_window_with_a_toplevel_dismisses_the_stage() {
+        assert!(active_window_dismisses_stage(true));
+    }
+
+    #[test]
+    fn active_window_with_none_keeps_the_stage() {
+        assert!(!active_window_dismisses_stage(false));
     }
 }

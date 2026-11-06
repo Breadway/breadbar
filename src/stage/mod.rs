@@ -69,6 +69,12 @@ const STAGE_LAUNCHED_EVENT: &str = "bread.bar.launched";
 /// `@media (max-width:860px)`.
 const NARROW_BREAKPOINT_PX: i32 = 860;
 
+/// The history-only panel's width: the normal 640px content block, capped by
+/// the output. Kept as a function so a resize re-applies the same width.
+fn history_panel_width(layout_width: i32) -> i32 {
+    layout_width.min(CONTENT_WIDTH)
+}
+
 /// State every bar instance shares, so a satellite monitor's stage shows the
 /// primary's notification history, flips the same do-not-disturb flag, and
 /// only one stage is ever open at a time.
@@ -580,6 +586,10 @@ impl Stage {
         gtk4::glib::idle_add_local_once(move || {
             if width != s.layout_width.get() {
                 s.apply_layout(width);
+                // History's centered 640px panel is a mode-level override of
+                // the three-column grid; re-apply it after the grid is
+                // resized or it collapses back to the notification column.
+                s.apply_mode(s.mode.get());
             }
         });
     }
@@ -736,10 +746,11 @@ impl Stage {
                 let has_query = !self.query.borrow().is_empty();
                 self.idle_box.set_visible(!has_query);
                 self.results_box.set_visible(has_query && chrome.results);
-                // `apply_layout` owns the normal three-column widths.
+                // `apply_layout` owns the normal three-column widths; do not
+                // reset the notification zone's width here or the grid comes
+                // back as the history-only width.
                 self.floor.set_halign(gtk4::Align::Fill);
                 self.settings.revealer.set_visible(true);
-                self.notif_zone.set_size_request(-1, -1);
                 self.notif_zone.set_halign(gtk4::Align::Fill);
                 self.notif_zone.set_hexpand(false);
             }
@@ -752,7 +763,7 @@ impl Stage {
                 self.settings.revealer.set_visible(false);
                 self.floor.set_halign(gtk4::Align::Center);
                 self.notif_zone
-                    .set_size_request(self.output_width().min(CONTENT_WIDTH), -1);
+                    .set_size_request(history_panel_width(self.layout_width.get()), -1);
                 self.notif_zone.set_halign(gtk4::Align::Center);
                 self.notif_zone.set_hexpand(false);
             }
@@ -3239,6 +3250,15 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
 mod tests {
     use super::*;
     use crate::notifications::preferences;
+
+    #[test]
+    fn history_panel_width_is_capped_by_the_layout_width() {
+        assert_eq!(history_panel_width(1920), CONTENT_WIDTH);
+        assert_eq!(history_panel_width(1024), CONTENT_WIDTH);
+        assert_eq!(history_panel_width(640), 640);
+        assert_eq!(history_panel_width(480), 480);
+        assert_eq!(history_panel_width(0), 0);
+    }
 
     /// A stage toggle and a Settings read see the same value: `set_dnd`
     /// persists, and turning DND off also clears a scheduled interval, so
