@@ -257,6 +257,9 @@ pub enum StageCmd {
     Toggle,
     Show,
     Hide,
+    /// `breadbar --history` under the spotlight theme: the notification
+    /// panel only, not the launcher dashboard.
+    ToggleHistory,
 }
 
 /// Set while the active theme shows notifications on the spotlight stage:
@@ -374,7 +377,7 @@ impl BarService {
 
     async fn toggle_history(&self) {
         if HISTORY_OPENS_STAGE.load(Ordering::Relaxed) {
-            let _ = self.stage_tx.send(StageCmd::Toggle);
+            let _ = self.stage_tx.send(StageCmd::ToggleHistory);
         } else {
             let _ = self.tx.send(NotifEvent::ToggleHistory).await;
         }

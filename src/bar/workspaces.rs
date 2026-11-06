@@ -106,8 +106,24 @@ pub fn spawn_watcher(sender: ComponentSender<crate::App>) {
                         sender.input(AppInput::MonitorRemoved(name));
                         sync_state(&sender).await;
                     }
-                    Event::ActiveWindowChanged(_) => {
+                    Event::ActiveWindowChanged(data) => {
                         sender.input(AppInput::DismissPanels);
+                        // Any real toplevel taking focus means the stage must
+                        // stop drawing over it. `None` is Hyprland clearing
+                        // the active window (e.g. a layer surface taking
+                        // keyboard), not another window.
+                        if data.is_some() {
+                            sender.input(AppInput::StageDismissForExternal);
+                        }
+                    }
+                    Event::WindowOpened(data)
+                        // A window mapping is enough even if focus has not
+                        // moved to it yet (the reported overlay-over-terminal
+                        // case). The stage's own surface is a layer event,
+                        // and the bar is already mapped, so this is external.
+                        if crate::stage::pure::is_external_window_class(&data.window_class) =>
+                    {
+                        sender.input(AppInput::StageDismissForExternal);
                     }
                     _ => {}
                 }
