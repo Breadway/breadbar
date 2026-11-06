@@ -12,6 +12,7 @@ mod osd;
 mod panel;
 mod pill_autohide;
 mod pill_hotzone;
+mod resilience;
 mod screenshot;
 mod spotlight_prefs;
 mod stage;
@@ -533,6 +534,12 @@ pub struct App {
     theme_widget_values: std::collections::HashMap<String, String>,
     theme_widget_pollers: Vec<theme_widgets::PollHandle>,
 
+    /// BAR-66: the launcher-bus subscriptions, owned so `shutdown` can stop
+    /// their threads. `Some` on the primary only, where
+    /// `launcher_command::spawn` runs. Started regardless of the initial
+    /// theme; each request is gated on the theme current at delivery time.
+    launcher_subscriptions: Option<launcher_command::LauncherSubscriptions>,
+
     panels: panel::PanelSet,
 
     // ── Live theme switch ────────────────────────────────────────────────
@@ -680,10 +687,11 @@ pub enum AppInput {
     /// re-fill the slot containers in place. The primary forwards this to
     /// every satellite.
     ShellThemeChanged(Box<bread_theme::shell::ShellTheme>),
-    // `bread.command.box.open` (plan §7 phase 6c, `launcher_command`
-    // module): only ever dispatched when the active theme's launcher is
-    // `Embedded`: `launcher_command::spawn` never subscribes otherwise.
-    // Focuses `launcher_entry` AND calls `self.launcher_open_fn()`
+    // `bread.box.open_requested` / `bread.command.box.open` (plan §7 phase
+    // 6c, `launcher_command` module). BAR-66: the subscription is
+    // process-lifetime, started regardless of the initial theme, so the
+    // handler first drops the request unless the CURRENT theme's launcher is
+    // `Embedded`. Focuses `launcher_entry` AND calls `self.launcher_open_fn()`
     // directly (its handler below): the hotkey/command itself is the
     // real-user-input signal, the same status a mouse click into the
     // entry has at its own call site. Deliberately does NOT rely on
@@ -2691,6 +2699,10 @@ impl SimpleComponent for App {
             theme_widgets: Vec::new(),
             theme_widget_values: std::collections::HashMap::new(),
             theme_widget_pollers: Vec::new(),
+            // Started below, primary only, once the model exists. BAR-66:
+            // independent of the initial theme; the handler gates on the
+            // current one instead.
+            launcher_subscriptions: None,
             panels,
             root: root.clone(),
             bar_modules,
@@ -2818,12 +2830,15 @@ impl SimpleComponent for App {
             model.theme_widget_pollers =
                 theme_widgets::spawn_pollers(&model.theme_widgets, &sender);
             model.reconcile_all_widgets();
-            // `bread.command.box.open` (plan §7 phase 6c): one subscriber,
-            // same reasoning as `widgets::client::spawn` above: a keybind
-            // should focus ONE capsule, not every satellite monitor's.
-            // A no-op call under every theme but spotlight (see the
-            // module's own doc comment).
-            launcher_command::spawn(sender.clone());
+            // `bread.box.open_requested` / `bread.command.box.open` (plan §7
+            // phase 6c): one subscriber, same reasoning as
+            // `widgets::client::spawn` above: a keybind should focus ONE
+            // capsule, not every satellite monitor's. BAR-66: started
+            // whatever the initial theme is; the `AppInput::OpenLauncher`
+            // handler gates each request on the theme current at that
+            // moment, so a runtime switch to spotlight (or back) takes
+            // effect without resubscribing. Owned so `shutdown` stops it.
+            model.launcher_subscriptions = Some(launcher_command::spawn(sender.clone()));
             // Live theme.toml/extra.css/`active` reload (plan §10). One watch
             // per process, so only the primary arms it; a CSS/geometry/slots
             // change routes back here as `ShellThemeChanged` (the primary
@@ -3151,6 +3166,11 @@ impl SimpleComponent for App {
     /// there; the satellite's other layer surfaces would otherwise outlive it
     /// with signal handlers still aimed at the shut-down runtime.
     fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
+        // BAR-66: stop the launcher-bus subscription threads with the bar
+        // that started them instead of leaving them to process exit.
+        if let Some(mut subscriptions) = self.launcher_subscriptions.take() {
+            subscriptions.stop();
+        }
         if let Some(hz) = &self.pill_hotzone {
             hz.destroy();
         }
@@ -3550,12 +3570,20 @@ impl SimpleComponent for App {
                 self.rebuild_from_theme(&theme, &sender);
             }
             AppInput::OpenLauncher => {
+                // BAR-66: the bus subscription is process-lifetime, so the
+                // theme decides per request whether this event is ours at
+                // all. Every non-`Embedded`-launcher theme keeps its own
+                // overlay launcher and never routes Super+Space here.
+                let theme = theme::shell_theme();
+                if !launcher_command::open_request_is_for_this_process(&theme) {
+                    return;
+                }
                 // Themes without the embedded capsule in any slot (spotlight
                 // since BAR-30) launch from the stage instead: breadbox still
                 // forwards Super+Space here because the theme's launcher mode
                 // is "embedded", and without this the request was dropped.
                 // Toggle, so a second press closes it like breadbox would.
-                if open_request_goes_to_stage(&theme::shell_theme()) {
+                if open_request_goes_to_stage(&theme) {
                     post(&sender, AppInput::StageToggleCmd);
                     return;
                 }
