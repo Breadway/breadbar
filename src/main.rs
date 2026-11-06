@@ -745,6 +745,9 @@ pub enum AppInput {
     /// The stage opened or closed: feeds `pill_autohide::State.open` (the
     /// pill stays down the whole time) and re-evaluates the pill.
     StageOpenChanged(bool),
+    /// Hyprland reports another toplevel taking focus or mapping. The
+    /// stage must not stay drawn over a window that now owns input.
+    StageDismissForExternal,
     /// `spotlight.json` changed (the stage settings menu, or a hand edit).
     PrefsChanged(spotlight_prefs::Prefs),
     /// `breadbar --stage toggle` reaches the primary instance the same way
@@ -753,6 +756,8 @@ pub enum AppInput {
     StageToggleCmd,
     StageShowCmd,
     StageHideCmd,
+    /// `breadbar --history`: notification panel only under spotlight.
+    StageHistoryCmd,
     /// The pill's time was clicked: toggles this instance's own stage (the
     /// click already happened on this monitor, so no focus routing).
     StageClockClicked,
@@ -2482,6 +2487,9 @@ impl SimpleComponent for App {
                             notifications::StageCmd::Hide => {
                                 post(&stage_cmd_sender, AppInput::StageHideCmd)
                             }
+                            notifications::StageCmd::ToggleHistory => {
+                                post(&stage_cmd_sender, AppInput::StageHistoryCmd)
+                            }
                         }
                     }
                 });
@@ -3013,6 +3021,8 @@ impl SimpleComponent for App {
                     });
                 model.stage.set_wifi_radio(true);
                 model.stage.set_bluetooth(&bar::bluetooth::BtPopoverData {
+                    service: bar::bluetooth::BtServiceState::Active,
+                    adapter_present: true,
                     powered: false,
                     devices: vec![],
                 });
@@ -3449,7 +3459,7 @@ impl SimpleComponent for App {
             AppInput::BtPopoverData(data) => {
                 self.stage.set_bluetooth(&data);
                 self.bt_popover_data = Some(data);
-                self.rebuild_bt_popover();
+                self.rebuild_bt_popover(&sender);
             }
             AppInput::SetProfile(name) => {
                 self.wifi_profile = Some(name);
@@ -3542,6 +3552,13 @@ impl SimpleComponent for App {
             }
             AppInput::DismissPanels => {
                 self.panels.hide_all();
+            }
+            AppInput::StageDismissForExternal => {
+                // Close whichever monitor's stage is up: a new toplevel owns
+                // input now, so the overlay must not stay drawn under it.
+                if let Some(open) = self.shared.open_stage() {
+                    open.close();
+                }
             }
             AppInput::ShellThemeChanged(theme) => {
                 if self.primary {
@@ -3804,6 +3821,23 @@ impl SimpleComponent for App {
                         }
                     }
                     self.stage.toggle();
+                }
+            }
+            AppInput::StageHistoryCmd => {
+                if let Some(open) = self.shared.open_stage() {
+                    open.toggle_history();
+                    return;
+                }
+                let satellite_names: Vec<&str> =
+                    self.satellites.iter().map(|(n, _)| n.as_str()).collect();
+                let focused = primary_hypr_monitor();
+                match resolve_launcher_route(focused.as_deref(), &self.monitor, &satellite_names) {
+                    LauncherRoute::Satellite(name) => {
+                        if let Some((_, ctrl)) = self.satellites.iter().find(|(n, _)| *n == name) {
+                            ctrl.sender().emit(AppInput::StageHistoryCmd);
+                        }
+                    }
+                    LauncherRoute::Local => self.stage.toggle_history(),
                 }
             }
             AppInput::StageHideCmd => {
@@ -5018,13 +5052,13 @@ impl App {
         self.wifi_pane.append(&settings_row);
     }
 
-    fn rebuild_bt_popover(&mut self) {
+    fn rebuild_bt_popover(&mut self, sender: &ComponentSender<App>) {
         while let Some(child) = self.bt_pane.first_child() {
             self.bt_pane.remove(&child);
         }
 
         let Some(data) = &self.bt_popover_data else {
-            let lbl = gtk4::Label::new(Some("Loading…"));
+            let lbl = gtk4::Label::new(Some("Checking Bluetooth…"));
             lbl.add_css_class("wifi-popover-loading");
             self.bt_pane.append(&lbl);
             return;
@@ -5039,10 +5073,12 @@ impl App {
         toggle_lbl.set_xalign(0.0);
         let toggle_switch = gtk4::Switch::new();
         toggle_switch.add_css_class("bt-switch");
-        toggle_switch.set_active(data.powered);
+        toggle_switch.set_active(data.is_on());
+        toggle_switch.set_sensitive(data.service.is_active() && data.adapter_present);
         toggle_switch.set_valign(gtk4::Align::Center);
-        toggle_switch.connect_state_set(|_, on| {
-            bar::bluetooth::spawn_set_powered(on);
+        let reload_sender = sender.clone();
+        toggle_switch.connect_state_set(move |_, on| {
+            bar::bluetooth::spawn_set_powered(reload_sender.clone(), on);
             gtk4::glib::Propagation::Proceed
         });
         toggle_row.append(&toggle_lbl);
@@ -5051,8 +5087,8 @@ impl App {
         self.bt_pane
             .append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
 
-        if !data.powered {
-            let lbl = gtk4::Label::new(Some("Bluetooth is off"));
+        if let Some(note) = data.drawer_note() {
+            let lbl = gtk4::Label::new(Some(note));
             lbl.add_css_class("wifi-popover-loading");
             self.bt_pane.append(&lbl);
         } else if data.devices.is_empty() {

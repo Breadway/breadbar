@@ -45,7 +45,7 @@ use crate::bar::wifi::{CrumbsStatus, WifiPopoverData};
 use crate::motion;
 use crate::notifications::history;
 use crate::{App, AppInput};
-use pure::{HintMode, OpenWindow, PowerConfirm, StageResults};
+use pure::{chrome_for, HintMode, OpenWindow, PowerConfirm, StageMode, StageResults};
 
 /// How many recent-app tiles the idle row shows (the mockup's `RECENT`).
 const MAX_RECENT_TILES: usize = 6;
@@ -68,6 +68,12 @@ const STAGE_LAUNCHED_EVENT: &str = "bread.bar.launched";
 /// Below this output width (logical px) the floor stacks: the mockup's
 /// `@media (max-width:860px)`.
 const NARROW_BREAKPOINT_PX: i32 = 860;
+
+/// The history-only panel's width: the normal 640px content block, capped by
+/// the output. Kept as a function so a resize re-applies the same width.
+fn history_panel_width(layout_width: i32) -> i32 {
+    layout_width.min(CONTENT_WIDTH)
+}
 
 /// State every bar instance shares, so a satellite monitor's stage shows the
 /// primary's notification history, flips the same do-not-disturb flag, and
@@ -302,6 +308,8 @@ pub struct Stage {
     /// Bumped on every open/close so a finished close fade only unmaps a
     /// stage nothing has re-opened in the meantime.
     fade_token: Cell<u32>,
+    /// Launcher dashboard or notification-history-only (`--history`).
+    mode: Cell<StageMode>,
     search_row: gtk4::Box,
     entry: gtk4::Entry,
     mode_badge: gtk4::Label,
@@ -357,8 +365,14 @@ pub struct Stage {
     notes_more_btn: gtk4::Button,
     notes_expanded: Cell<bool>,
     clear_all_btn: gtk4::Button,
+    /// History-only mode's focus anchor and explicit dismiss control. The
+    /// search entry is hidden there, so this button is what keeps the
+    /// layer-shell surface keyboard-active (Esc reaches the window-level
+    /// controller even when there are no notification rows).
+    history_close_btn: gtk4::Button,
 
     // Power row
+    power_block: gtk4::Box,
     power_buttons: Vec<PowerButton>,
     power_confirm: RefCell<PowerConfirm>,
     power_hint: gtk4::Label,
@@ -413,10 +427,23 @@ impl Stage {
     /// query, selects the first recent tile, and refreshes its data (the
     /// mockup's `setOpen(true)`: `recSel=0; drawRecent(); q.focus();`).
     pub fn open(&self) {
+        self.open_with_mode(StageMode::Launcher, true);
+    }
+
+    /// Opens only the notification-history panel (`breadbar --history` under
+    /// spotlight). The stage surface is reused, but the launcher chrome
+    /// (search field, recent tiles, controls/centre columns) is hidden so
+    /// the search field is not what takes focus.
+    pub fn open_history(&self) {
+        self.open_with_mode(StageMode::History, true);
+    }
+
+    fn open_with_mode(&self, mode: StageMode, pin: bool) {
         if self.open.get() {
+            self.set_mode(mode);
             return;
         }
-        self.open_common(true);
+        self.open_common(pin, mode);
         crate::bar::control::spawn_load(self.sender.clone());
         // The Bluetooth chip names the connected device, which only this
         // load reports.
@@ -431,10 +458,10 @@ impl Stage {
         if self.open.get() {
             return;
         }
-        self.open_common(false);
+        self.open_common(false, StageMode::Launcher);
     }
 
-    fn open_common(&self, pin: bool) {
+    fn open_common(&self, pin: bool, mode: StageMode) {
         self.open.set(true);
         *self.shared.open.borrow_mut() = self.self_weak.borrow().clone();
         // `setOpen(true)` clears the unread dot and the surtitle.
@@ -464,14 +491,15 @@ impl Stage {
             crate::theme::pin_focused_output(&self.window);
         }
         self.apply_layout(self.output_width());
+        self.apply_mode(mode);
         self.render_status();
-        self.window.set_keyboard_mode(KeyboardMode::OnDemand);
+        self.apply_keyboard_mode(mode);
         if let Some(surface) = self.window.surface() {
             surface.set_input_region(None);
         }
         self.window.set_visible(true);
         self.window.present();
-        self.entry.grab_focus();
+        self.focus_for(mode);
 
         // The fade and slide start from the hidden state on the next
         // main-loop turn, once the surface is mapped (a CSS transition needs
@@ -558,6 +586,10 @@ impl Stage {
         gtk4::glib::idle_add_local_once(move || {
             if width != s.layout_width.get() {
                 s.apply_layout(width);
+                // History's centered 640px panel is a mode-level override of
+                // the three-column grid; re-apply it after the grid is
+                // resized or it collapses back to the notification column.
+                s.apply_mode(s.mode.get());
             }
         });
     }
@@ -662,6 +694,109 @@ impl Stage {
         }
     }
 
+    /// `breadbar --history` under spotlight: open only the notification
+    /// panel, or close it if that is already what is on screen. A second
+    /// press on a normal launcher stage switches it to history rather than
+    /// stacking a second surface.
+    pub fn toggle_history(&self) {
+        if !self.open.get() {
+            self.open_history();
+        } else if self.mode.get() == StageMode::History {
+            self.close();
+        } else {
+            self.set_mode(StageMode::History);
+        }
+    }
+
+    fn set_mode(&self, mode: StageMode) {
+        if self.mode.get() == mode {
+            return;
+        }
+        if mode == StageMode::History {
+            self.entry.set_text("");
+            *self.query.borrow_mut() = String::new();
+            self.rec_sel.set(0);
+            self.render_recent();
+            self.render_results();
+            self.refresh_notifications();
+        }
+        self.apply_layout(self.output_width());
+        self.apply_mode(mode);
+        self.apply_keyboard_mode(mode);
+        self.focus_for(mode);
+    }
+
+    /// Applies a mode's visible regions. Called before `present()` so the
+    /// hidden launcher chrome never flashes, and again when an already-open
+    /// stage switches modes.
+    fn apply_mode(&self, mode: StageMode) {
+        self.mode.set(mode);
+        let chrome = chrome_for(mode);
+        self.search_row.set_visible(chrome.search);
+        self.recent_box.set_visible(chrome.recent);
+        self.controls_zone.set_visible(chrome.controls);
+        self.centre_zone.set_visible(chrome.centre);
+        self.notif_zone.set_visible(chrome.notifications);
+        self.power_block.set_visible(chrome.power);
+        self.history_close_btn
+            .set_visible(mode == StageMode::History);
+        self.foot.set_visible(chrome.footer);
+        match mode {
+            StageMode::Launcher => {
+                let has_query = !self.query.borrow().is_empty();
+                self.idle_box.set_visible(!has_query);
+                self.results_box.set_visible(has_query && chrome.results);
+                // `apply_layout` owns the normal three-column widths; do not
+                // reset the notification zone's width here or the grid comes
+                // back as the history-only width.
+                self.floor.set_halign(gtk4::Align::Fill);
+                self.settings.revealer.set_visible(true);
+                self.notif_zone.set_halign(gtk4::Align::Fill);
+                self.notif_zone.set_hexpand(false);
+            }
+            StageMode::History => {
+                // Keep `idle_box`: the notification zone is one of the
+                // floor's children, and hiding its parent would hide it too.
+                self.idle_box.set_visible(true);
+                self.results_box.set_visible(false);
+                self.settings.revealer.set_reveal_child(false);
+                self.settings.revealer.set_visible(false);
+                self.floor.set_halign(gtk4::Align::Center);
+                self.notif_zone
+                    .set_size_request(history_panel_width(self.layout_width.get()), -1);
+                self.notif_zone.set_halign(gtk4::Align::Center);
+                self.notif_zone.set_hexpand(false);
+            }
+        }
+    }
+
+    /// The launcher has the search entry as its natural keyboard target, so
+    /// `OnDemand` is enough there. History-only has no text input; make the
+    /// surface `Exclusive` while it is open so Esc reaches the window-level
+    /// controller (which is also why focus loss closes it).
+    fn apply_keyboard_mode(&self, mode: StageMode) {
+        self.window.set_keyboard_mode(match mode {
+            StageMode::History => KeyboardMode::Exclusive,
+            StageMode::Launcher => KeyboardMode::OnDemand,
+        });
+    }
+
+    fn focus_for(&self, mode: StageMode) {
+        match mode {
+            StageMode::Launcher => {
+                self.entry.grab_focus();
+            }
+            StageMode::History => {
+                // The search entry is hidden in this mode. Focus the Close
+                // control so the layer surface keeps keyboard focus and the
+                // window-level capture controller still sees Esc.
+                if !self.history_close_btn.grab_focus() {
+                    self.window.grab_focus();
+                }
+            }
+        }
+    }
+
     // ── Data feeds (called from `App::update`, forwarding the bar's own
     //    pollers rather than running a second copy of each) ─────────────
 
@@ -753,20 +888,10 @@ impl Stage {
     }
 
     pub fn set_bluetooth(&self, data: &BtPopoverData) {
-        set_split_on(&self.bt, data.powered);
-        let connected: Vec<&str> = data
-            .devices
-            .iter()
-            .filter(|d| d.connected)
-            .map(|d| d.name.as_str())
-            .collect();
-        let sub = match (data.powered, connected.as_slice()) {
-            (false, _) => "Off".to_string(),
-            (true, []) => "On".to_string(),
-            (true, [one]) => (*one).to_string(),
-            (true, [first, rest @ ..]) => format!("{first} +{}", rest.len()),
-        };
-        self.bt.sub.set_label(&sub);
+        // The chip class and label come from the same real state: service,
+        // adapter and adapter power. Never from the previous chip class.
+        set_split_on(&self.bt, data.is_on());
+        self.bt.sub.set_label(&data.chip_label());
         *self.bt_data.borrow_mut() = Some(data.clone());
         if self.bt.drawer.is_visible() {
             self.render_bt_drawer();
@@ -904,11 +1029,11 @@ impl Stage {
         clear_box(drawer);
         let data = self.bt_data.borrow().clone();
         let Some(data) = data else {
-            drawer.append(&drawer_note("Loading devices\u{2026}"));
+            drawer.append(&drawer_note("Checking Bluetooth\u{2026}"));
             return;
         };
-        if !data.powered {
-            drawer.append(&drawer_note("Bluetooth is off"));
+        if let Some(note) = data.drawer_note() {
+            drawer.append(&drawer_note(note));
             return;
         }
         let paired: Vec<_> = data.devices.iter().filter(|d| d.paired).collect();
@@ -1791,9 +1916,12 @@ impl Stage {
                             self.set_wifi_radio(on);
                         }
                         pure::CommandAction::ToggleBluetooth => {
-                            let on = !self.bt.root.has_css_class("on");
-                            crate::bar::bluetooth::spawn_set_powered(on);
-                            set_split_on(&self.bt, on);
+                            let on = !self
+                                .bt_data
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(crate::bar::bluetooth::BtPopoverData::is_on);
+                            crate::bar::bluetooth::spawn_set_powered(self.sender.clone(), on);
                         }
                         pure::CommandAction::ClearNotifications => {
                             self.shared.clear_notifications();
@@ -2726,6 +2854,11 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
     clear_all_btn.add_css_class("stage-clear");
     clear_all_btn.set_valign(gtk4::Align::Center);
     notif_header.append(&clear_all_btn);
+    let history_close_btn = gtk4::Button::with_label("Close");
+    history_close_btn.add_css_class("stage-clear");
+    history_close_btn.set_valign(gtk4::Align::Center);
+    history_close_btn.set_visible(false);
+    notif_header.append(&history_close_btn);
     notif_zone.append(&notif_header);
     let notes_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     notes_box.add_css_class("stage-notes");
@@ -2871,6 +3004,7 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         column,
         column_anim: RefCell::new(None),
         fade_token: Cell::new(0),
+        mode: Cell::new(StageMode::Launcher),
         search_row,
         entry,
         mode_badge,
@@ -2924,6 +3058,8 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         notes_more_btn,
         notes_expanded: Cell::new(false),
         clear_all_btn,
+        history_close_btn,
+        power_block,
         power_buttons,
         power_confirm: RefCell::new(PowerConfirm::new()),
         power_hint,
@@ -2979,6 +3115,7 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         let s = stage.clone();
         stage.window.connect_unmap(move |_| s.close());
     }
+
     {
         let s = stage.clone();
         stage
@@ -2990,6 +3127,8 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
         stage
             .clear_all_btn
             .connect_clicked(move |_| s.shared.clear_notifications());
+        let s = stage.clone();
+        stage.history_close_btn.connect_clicked(move |_| s.close());
         let s = stage.clone();
         stage.notes_more_btn.connect_clicked(move |_| {
             s.notes_expanded.set(!s.notes_expanded.get());
@@ -3046,9 +3185,12 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
             .connect_clicked(move |_| s.toggle_wifi_drawer());
         let s = stage.clone();
         stage.bt.main.connect_clicked(move |_| {
-            let on = !s.bt.root.has_css_class("on");
-            crate::bar::bluetooth::spawn_set_powered(on);
-            set_split_on(&s.bt, on);
+            let on = !s
+                .bt_data
+                .borrow()
+                .as_ref()
+                .is_some_and(crate::bar::bluetooth::BtPopoverData::is_on);
+            crate::bar::bluetooth::spawn_set_powered(s.sender.clone(), on);
         });
         let s = stage.clone();
         stage.bt.more.connect_clicked(move |_| s.toggle_bt_drawer());
@@ -3108,6 +3250,15 @@ pub fn build(sender: ComponentSender<App>, shared: Shared) -> Rc<Stage> {
 mod tests {
     use super::*;
     use crate::notifications::preferences;
+
+    #[test]
+    fn history_panel_width_is_capped_by_the_layout_width() {
+        assert_eq!(history_panel_width(1920), CONTENT_WIDTH);
+        assert_eq!(history_panel_width(1024), CONTENT_WIDTH);
+        assert_eq!(history_panel_width(640), 640);
+        assert_eq!(history_panel_width(480), 480);
+        assert_eq!(history_panel_width(0), 0);
+    }
 
     /// A stage toggle and a Settings read see the same value: `set_dnd`
     /// persists, and turning DND off also clears a scheduled interval, so

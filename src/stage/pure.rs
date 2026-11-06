@@ -32,6 +32,65 @@ pub fn esc_action(query_is_empty: bool) -> EscAction {
     }
 }
 
+// ── Stage mode and focus-loss chrome ───────────────────────────────────────
+
+/// Why the stage is open. `Launcher` is the normal Super+Space dashboard;
+/// `History` is `breadbar --history` under the spotlight theme, where the
+/// notification zone *is* the history: only that panel is shown, not the
+/// launcher chrome behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageMode {
+    Launcher,
+    History,
+}
+
+/// Which top-level stage regions are visible for a mode. `idle` stays true
+/// in `History` because the notification zone lives inside it, while the
+/// recent tiles, controls and centre columns are hidden.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageChrome {
+    pub search: bool,
+    pub recent: bool,
+    pub results: bool,
+    pub controls: bool,
+    pub centre: bool,
+    pub notifications: bool,
+    pub power: bool,
+    pub footer: bool,
+}
+
+pub fn chrome_for(mode: StageMode) -> StageChrome {
+    match mode {
+        StageMode::Launcher => StageChrome {
+            search: true,
+            recent: true,
+            results: true,
+            controls: true,
+            centre: true,
+            notifications: true,
+            power: true,
+            footer: true,
+        },
+        StageMode::History => StageChrome {
+            search: false,
+            recent: false,
+            results: false,
+            controls: false,
+            centre: false,
+            notifications: true,
+            power: false,
+            footer: false,
+        },
+    }
+}
+
+/// A Hyprland `openwindow` event for a real toplevel means another window
+/// mapped. The stage's own surface reports as a layer event, not a window,
+/// so any non-empty window class is external and should dismiss it.
+pub fn is_external_window_class(class: &str) -> bool {
+    !class.trim().is_empty()
+}
+
 // ── Power row: confirm-armed state machine ─────────────────────────────────
 
 /// One power-row press outcome: `Run` fires the action now (no confirmation
@@ -1162,6 +1221,36 @@ mod tests {
     fn esc_clears_before_closing() {
         assert_eq!(esc_action(false), EscAction::ClearQuery);
         assert_eq!(esc_action(true), EscAction::Close);
+    }
+
+    // ---- Stage mode / focus-loss chrome ------------------------------
+
+    #[test]
+    fn launcher_mode_shows_every_region() {
+        let c = chrome_for(StageMode::Launcher);
+        assert!(c.search && c.recent && c.results && c.controls);
+        assert!(c.centre && c.notifications && c.power && c.footer);
+    }
+
+    #[test]
+    fn history_mode_shows_only_the_notification_panel() {
+        let c = chrome_for(StageMode::History);
+        assert!(!c.search, "search must not be the focused surface");
+        assert!(!c.recent);
+        assert!(!c.results);
+        assert!(!c.controls);
+        assert!(!c.centre);
+        assert!(!c.power);
+        assert!(!c.footer);
+        assert!(c.notifications);
+    }
+
+    #[test]
+    fn a_real_toplevel_is_external_and_an_empty_class_is_not() {
+        assert!(is_external_window_class("kitty"));
+        assert!(is_external_window_class("com.mitchellh.ghostty"));
+        assert!(!is_external_window_class(""));
+        assert!(!is_external_window_class("   "));
     }
 
     // ---- PowerConfirm --------------------------------------------------
