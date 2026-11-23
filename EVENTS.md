@@ -1,4 +1,4 @@
-# breadbar: bread event integration
+# bar: bread event integration
 
 breadbar is a standalone status bar: it works exactly the same with or
 without `breadd` running. When breadd *is* present, breadbar publishes
